@@ -2,6 +2,10 @@
 //  BKDraftStore.swift
 //  bk剪辑 — 草稿落盘
 //
+//  【存的是什么】
+//  一个文件 = **一次导入的一整批**（BKDraftBatch），里面装着这一批的所有素材项。
+//  不是「一视频一文件」—— 皓哥 2026-10-02 定的两层模型，理由见 BKModels 的注释。
+//
 //  【要达成的效果：关掉 App 下次打开还在编辑同一条】
 //  这句话听起来像需要一个「退出时保存」的回调，但 iOS 不给这个机会 ——
 //  上滑强杀 App 时 applicationWillTerminate 不一定被调用。
@@ -14,6 +18,12 @@
 //  写到一半被杀 = 半个 JSON 文件 = 下次打开解析失败 = 用户以为工程丢了。
 //  atomic 是先写临时文件再 rename，rename 在文件系统层是原子的，
 //  要么拿到旧文件要么拿到新文件，不存在中间态。
+//
+//  【老草稿怎么办】
+//  这个版本之前，一个文件存的是一个 BKProject（单条素材）。
+//  皓哥手机上已经存着这类文件，直接换格式会让它们解析失败、看起来像「草稿没了」。
+//  所以 loadAll 里做了兼容：先按 BKDraftBatch 解，失败了再按老格式 BKProject 解，
+//  解出来就包成一个批接上去。老用户的历史不丢。
 //
 
 import Foundation
@@ -31,13 +41,12 @@ final class BKDraftStore {
         return url
     }()
 
-    private let lastOpenedKey = "bk_last_opened_project"
+    private let lastOpenedKey = "bk_last_opened_batch"
     private let debounceSec = BKConfig.Draft.debounceSec
-    private let keepHistory = BKConfig.Draft.keepHistory
 
     // MARK: - 内部状态
 
-    private var pending: BKProject?
+    private var pending: BKDraftBatch?
     private var scheduledWork: DispatchWorkItem?
     private let queue = DispatchQueue(label: "bk.draft.store", qos: .utility)
     private let encoder: JSONEncoder = {
@@ -58,15 +67,15 @@ final class BKDraftStore {
 
     /// 安排一次保存。连续调用只会落最后一次 —— debounce 的意义就在这：
     /// 拖滑块时每秒触发几十次，不该写几十次文件
-    func scheduleSave(_ project: BKProject) {
+    func scheduleSave(_ batch: BKDraftBatch) {
         queue.async { [weak self] in
             guard let self else { return }
-            self.pending = project
+            self.pending = batch
             self.scheduledWork?.cancel()
 
             let work = DispatchWorkItem { [weak self] in
-                guard let self, let p = self.pending else { return }
-                self.write(p)
+                guard let self, let b = self.pending else { return }
+                self.write(b)
             }
             self.scheduledWork = work
             self.queue.asyncAfter(deadline: .now() + self.debounceSec, execute: work)
@@ -80,20 +89,39 @@ final class BKDraftStore {
             guard let self else { return }
             self.scheduledWork?.cancel()
             self.scheduledWork = nil
-            guard let p = self.pending else { return }
-            self.write(p)
+            guard let b = self.pending else { return }
+            self.write(b)
         }
     }
 
-    private func write(_ project: BKProject) {
-        let url = fileURL(for: project.id)
-        rotateBackup(of: url)
+    /// 取消还没落盘的那一次写入。
+    ///
+    /// ⚠️ 必须有的一个口子：编辑页退出时若发现「整批一刀没切」会直接删掉草稿，
+    /// 但 debounce 队列里可能还压着一次待写 —— 不取消的话它两秒后照写不误，
+    /// 把刚删掉的文件又变回来（表现为「说好不留的草稿怎么还在」）
+    func cancelPending() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.scheduledWork?.cancel()
+            self.scheduledWork = nil
+            self.pending = nil
+        }
+    }
+
+    private func write(_ batch: BKDraftBatch) {
+        let url = fileURL(for: batch.id)
+        let bak = url.appendingPathExtension("bak1")
+        // 先删旧的再拷：copyItem 遇到已存在的目标会直接失败，
+        // 那样 .bak1 永远停留在第一次写的那一版，起不到备份作用
+        try? FileManager.default.removeItem(at: bak)
+        try? FileManager.default.copyItem(at: url, to: bak)
 
         do {
-            let data = try encoder.encode(project)
+            let data = try encoder.encode(batch)
             try data.write(to: url, options: .atomic)
             pending = nil
-            BKLog.shared.d("草稿已保存 \(project.id.uuidString.prefix(8)) · \(data.count / 1024) KB · \(project.cutCount) 刀")
+            BKLog.shared.d(String(format: "草稿已保存 %@ · %d KB · 合计 %d 刀",
+                                  batch.id.uuidString.prefix(8), data.count / 1024, batch.totalCuts))
         } catch {
             // 保存失败不打日志也白搭 —— 磁盘满是最常见的原因，
             // 而这类失败用户完全感知不到，只会觉得「上次的工程没了」
@@ -101,96 +129,132 @@ final class BKDraftStore {
         }
     }
 
-    /// 备份轮转。留最近 keepHistory 份旧版本，
-    /// 新的版本写坏时能往前回一步 —— 但也不会无限占空间
-    private func rotateBackup(of url: URL) {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: url.path) else { return }
-
-        // 先把最老的一份丢掉
-        let oldest = url.appendingPathExtension("bak\(keepHistory)")
-        try? fm.removeItem(at: oldest)
-
-        // 其余往后挪一位
-        for n in stride(from: keepHistory - 1, through: 1, by: -1) {
-            let from = url.appendingPathExtension("bak\(n)")
-            let to = url.appendingPathExtension("bak\(n + 1)")
-            if fm.fileExists(atPath: from.path) {
-                try? fm.moveItem(at: from, to: to)
-            }
-        }
-
-        try? fm.copyItem(at: url, to: url.appendingPathExtension("bak1"))
-    }
-
     // MARK: - 读取
 
-    func load(id: UUID) -> BKProject? {
-        let url = fileURL(for: id)
+    func load(id: UUID) -> BKDraftBatch? {
+        decodeBatch(at: fileURL(for: id))
+    }
+
+    /// 读一个文件。**兼容老格式**：先按批解，失败再按单条工程解并包成一批
+    private func decodeBatch(at url: URL) -> BKDraftBatch? {
         guard let data = try? Data(contentsOf: url) else { return nil }
-        do {
-            var p = try decoder.decode(BKProject.self, from: data)
-            // normalize 兜的是第 02 章那条底线：从磁盘读回来的东西不能无条件信任。
-            // 上一个版本可能有 bug、文件也可能被外部动过，交付给 UI 之前先修一遍
+
+        if var batch = try? decoder.decode(BKDraftBatch.self, from: data) {
+            batch.items = normalized(batch.items)
+            return batch
+        }
+
+        // 老格式：一个文件 = 一条素材。包成一个只有一条的批，历史不丢
+        if var old = try? decoder.decode(BKProject.self, from: data) {
+            old.marks = BKTimeline.normalize(old.marks, duration: old.duration)
+            var batch = BKDraftBatch(id: old.id,
+                                     title: old.assetName,
+                                     items: [old],
+                                     lastAssetId: old.assetLocalID,
+                                     createdAt: old.createdAt,
+                                     lastEditedAt: old.updatedAt,
+                                     everEdited: old.isEdited,
+                                     deletedAt: nil)
+            // 立刻按新格式回写一次，之后就走新路径了
+            write(batch)
+            BKLog.shared.i("老格式草稿已升级为批次 \(old.id.uuidString.prefix(8))")
+            return batch
+        }
+
+        BKLog.shared.e("草稿解析失败 \(url.lastPathComponent)，已跳过")
+        return nil
+    }
+
+    /// 从磁盘读回来的东西不能无条件信任：上一个版本可能有 bug。
+    /// 交付给 UI 之前，每条素材的 marks 都先过一遍 normalize 修回来
+    private func normalized(_ items: [BKProject]) -> [BKProject] {
+        items.map { item in
+            var p = item
             p.marks = BKTimeline.normalize(p.marks, duration: p.duration)
             return p
-        } catch {
-            BKLog.shared.e("草稿解析失败 \(id.uuidString.prefix(8))：\(error.localizedDescription)")
-            tryRecoverBackup(id: id)
-            return nil
         }
     }
 
-    /// 主文件坏了就往回试备份。这是留 .bak 的唯一价值
-    private func tryRecoverBackup(id: UUID) {
-        let base = fileURL(for: id)
-        for n in 1...keepHistory {
-            let url = base.appendingPathExtension("bak\(n)")
-            guard let data = try? Data(contentsOf: url),
-                  (try? decoder.decode(BKProject.self, from: data)) != nil else { continue }
-            try? FileManager.default.copyItem(at: url, to: base)
-            BKLog.shared.w("已从 bak\(n) 恢复工程 \(id.uuidString.prefix(8))")
-            return
-        }
-        BKLog.shared.e("工程 \(id.uuidString.prefix(8)) 所有备份均无法解析")
+    /// 网格里显示的草稿：没被删的、按最后编辑时间倒序、最多 10 批
+    var allBatches: [BKDraftBatch] {
+        purgeExpiredTrash()
+        let all = loadAll().filter { !$0.isTrashed }
+        return Array(all.prefix(BKConfig.Draft.maxBatches))
     }
 
-    /// 按素材 ID 找草稿。切换素材时要先看看这条素材有没有编过 ——
-    /// 没有才新建工程，否则用户之前的刀口会凭空消失
-    func draft(forLocalID id: String) -> BKProject? {
-        allDrafts.first { $0.assetLocalID == id }
+    /// 回收站里的草稿
+    var trashedBatches: [BKDraftBatch] {
+        loadAll().filter { $0.isTrashed }.sorted { ($0.deletedAt ?? .distantPast) > ($1.deletedAt ?? .distantPast) }
     }
 
-    /// 全部草稿，按更新时间倒序
-    var allDrafts: [BKProject] {
+    /// 读盘。一次全读，之后在内存里过滤 ——
+    /// 草稿最多十几个文件，每个几百字节，反复读盘的开销远小于维护索引的复杂度
+    private func loadAll() -> [BKDraftBatch] {
         let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else {
+        guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else {
             return []
         }
         return files
             .filter { $0.pathExtension == "json" }
-            .compactMap { url -> BKProject? in
-                guard let data = try? Data(contentsOf: url) else { return nil }
-                return try? decoder.decode(BKProject.self, from: data)
-            }
-            .sorted { $0.updatedAt > $1.updatedAt }
+            .compactMap { decodeBatch(at: $0) }
+            .sorted { $0.lastEditedAt > $1.lastEditedAt }
     }
 
-    func delete(id: UUID) {
-        let base = fileURL(for: id)
+    // MARK: - 删除 / 恢复 / 回收站
+
+    /// 删除 ≠ 销毁：打一个时间戳挪进「最近删除」，30 天后才真的清掉（定稿 3.2）
+    func moveToTrash(_ batch: BKDraftBatch) {
+        var b = batch
+        b.deletedAt = Date()
+        pending = b
+        write(b)
+        if lastOpenedID == b.id { lastOpenedID = nil }
+        BKLog.shared.i("草稿已移到最近删除 \(b.id.uuidString.prefix(8))")
+    }
+
+    /// 恢复。**先检查原视频还在不在相册里** ——
+    /// 用户可能删了草稿又把原片删了，那种情况给人话提示，别崩
+    func restore(_ batch: BKDraftBatch) -> (ok: Bool, missing: [String]) {
+        let missing = batch.items
+            .filter { BKVideoLibrary.phAsset(localID: $0.assetLocalID) == nil }
+            .map { $0.assetName }
+        var b = batch
+        b.deletedAt = nil
+        pending = b
+        write(b)
+        BKLog.shared.i("草稿已恢复 \(b.id.uuidString.prefix(8))\(missing.isEmpty ? "" : "（有 \(missing.count) 条原片已失效）")")
+        return (true, missing)
+    }
+
+    func permanentlyDelete(_ batch: BKDraftBatch) {
         let fm = FileManager.default
-        try? fm.removeItem(at: base)
-        for n in 1...keepHistory {
-            try? fm.removeItem(at: base.appendingPathExtension("bak\(n)"))
-        }
-        if lastOpenedID == id { lastOpenedID = nil }
-        BKLog.shared.i("草稿已删除 \(id.uuidString.prefix(8))")
+        try? fm.removeItem(at: fileURL(for: batch.id))
+        try? fm.removeItem(at: fileURL(for: batch.id).appendingPathExtension("bak1"))
+        BKCovers.remove(batchId: batch.id)
+        if lastOpenedID == batch.id { lastOpenedID = nil }
+        BKLog.shared.i("草稿已彻底删除 \(batch.id.uuidString.prefix(8))")
     }
 
-    // MARK: - 最后编辑的工程
-    //
-    // 「下次打开接着编」全靠这一个 UserDefaults key。
-    // 它很小，用 UserDefaults 而不是 draftStore 自己的文件，读起来最省事
+    /// 清空回收站
+    func emptyTrash() {
+        for b in trashedBatches { permanentlyDelete(b) }
+        BKLog.shared.i("回收站已清空")
+    }
+
+    /// 超过 30 天的自动清掉。每次读列表时顺手跑一次，不单独开定时器
+    private func purgeExpiredTrash() {
+        let limit = TimeInterval(BKConfig.Draft.trashKeepDays * 86400)
+        var purged = 0
+        for b in loadAll() where b.isTrashed {
+            if let d = b.deletedAt, Date().timeIntervalSince(d) > limit {
+                permanentlyDelete(b)
+                purged += 1
+            }
+        }
+        if purged > 0 { BKLog.shared.i("回收站自动清空 \(purged) 批（超过 \(BKConfig.Draft.trashKeepDays) 天）") }
+    }
+
+    // MARK: - 最后编辑的批
 
     var lastOpenedID: UUID? {
         get {
@@ -202,20 +266,12 @@ final class BKDraftStore {
 
     func markOpened(_ id: UUID) {
         lastOpenedID = id
-        BKLog.shared.d("记录最后编辑工程 \(id.uuidString.prefix(8))")
+        BKLog.shared.d("记录最后编辑批 \(id.uuidString.prefix(8))")
     }
 
-    /// 启动时决定打开哪一个。有上次打开的直接返回，否则给最近改过的那个
-    func resumeProject() -> BKProject? {
-        if let id = lastOpenedID, let p = load(id: id) { return p }
-        return allDrafts.first
-    }
-
-    /// 全部草稿累计导出的成品条数。起始页那句「v1.0 · 已导出 N 条」用它。
-    /// 走 allDrafts（真读文件）而不是缓存 —— 这个数只在进起始页时读一次，
-    /// 为了它单独维护一份索引不值当
+    /// 全部草稿累计导出的成品条数。起始页那句「v1.0 · 已导出 N 条」用它
     var totalExportCount: Int {
-        allDrafts.reduce(0) { $0 + $1.exportHistory.count }
+        loadAll().reduce(0) { $0 + $1.items.reduce(0) { $0 + $1.exportHistory.count } }
     }
 
     // MARK: - 工具

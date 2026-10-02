@@ -46,6 +46,13 @@ protocol BKTrackViewDelegate: AnyObject {
     func trackDidEndBoundaryDrag(_ view: BKTrackView)
     /// 缩放变了（滑杆或双指捏合）。screens 是「整条素材摊成几屏宽」
     func track(_ view: BKTrackView, didChangeZoomTo screens: CGFloat)
+    /// 手指一碰轨道。**正在播放时收到它就该立刻 pause**（定稿 4.5.1），
+    /// 晚一步就会在拖动的第一帧漏出一点声音
+    func trackDidTouchDown(_ view: BKTrackView)
+    /// 已经在片头，松手时还被往右拽过 60pt → 该换上一条了（定稿 4.5.3）
+    func trackDidPullBeyondHead(_ view: BKTrackView)
+    /// 已经在片尾，松手时还被往左拽过 60pt → 该换下一条了
+    func trackDidPullBeyondTail(_ view: BKTrackView)
 }
 
 final class BKTrackView: UIView {
@@ -72,6 +79,9 @@ final class BKTrackView: UIView {
 
     /// 整条素材摊成几屏宽。默认 6 屏：再密手指抹不开，再松就看不见气口
     private(set) var zoomScreens: CGFloat = 6
+
+    /// 允不允许「拖到头再拽」换素材。只有一条素材 / 正在加载时由外部关掉
+    var allowsSiblingSwitch = true
 
     /// 缩放上下限。1 屏 = 全览（看全局），20 屏 = 贴脸（单帧级微调）
     static let zoomMin: CGFloat = 1
@@ -333,6 +343,33 @@ extension BKTrackView: UIScrollViewDelegate {
         // 播放时是代码在推滚动 —— 这时候再去 seek 播放器就成死循环了
         guard !programmatic else { return }
         delegate?.track(self, didScrollTo: currentTime)
+    }
+
+    /// 手指一碰轨道就上报。播放中收到它就 pause —— 比等到「滚起来了」再停要早一帧，
+    /// 那一帧的差别就是「拖动会不会漏出一点声音」
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        delegate?.trackDidTouchDown(self)
+    }
+
+    /// 越界换素材的判定**放在松手那一刻**，不在滚动过程中。
+    ///
+    /// 两个原因：
+    /// 1. 定稿写的是「拽超过 60pt **再松手**」—— 判定点是松手，不是拖动中
+    /// 2. 滚动过程中系统会有一段回弹动画，那期间 contentOffset 也在动，
+    ///    中途判定会在回弹路上误触发第二次
+    ///
+    /// ⚠️ 判的是「越界了多少」，**不判手指速度** ——
+    /// 慢悠悠拖过头也算数，快甩一下但没过阈值也不算。
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        guard allowsSiblingSwitch else { return }
+        let threshold = BKConfig.Layout.siblingPullThreshold
+        let x = scrollView.contentOffset.x
+        let maxX = CGFloat(duration) * pps
+        if x < -threshold {
+            delegate?.trackDidPullBeyondHead(self)
+        } else if x > maxX + threshold {
+            delegate?.trackDidPullBeyondTail(self)
+        }
     }
 }
 

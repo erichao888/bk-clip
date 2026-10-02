@@ -3,9 +3,16 @@
 //  bk剪辑 — 气口检测
 //
 //  【移植纪律：这是 tools/preview_cut.py 检测管线的逐行翻译】
-//  流程：Otsu → 夹逼 → 找候选气口 → PAD → 最短片段合并 → 6dB 局部对比度复核
+//  流程：Otsu → 夹逼 → 找候选气口 → PAD → 最短片段合并 → 局部对比度复核（已归零）
 //  顺序、阈值、边界条件一律不做「顺手优化」—— 尺子和刀必须一致。
 //  这套逻辑已用 tools/verify_detector_port.py 与 Python 原版跑过 300 组随机对照。
+//
+//  【2026-10-02 定稿改动，三处逻辑翻转，全部有真实数据撑腰】
+//   1. detectGaps 不再跳过片头片尾的安静段（旧版方向反了）
+//   2. applyPad 片头 / 片尾不收留白，只有中间气口双侧收
+//   3. enforceMinSegment 改成「两刀并一刀」，旧版「两刀都撤」会把短素材撤成 0 刀
+//  四条样片实测：4580 13.7%→30.4%、4582 0刀→36.6%、4583 0刀→28.9%、4990 21.4%→44.2%
+//  参数取值见 docs/算法定稿.md，改之前先看那份。
 //
 //  与 Python 两处刻意不同的地方：
 //  1. 适用性判据（BGM / 响度归一化素材直接判不适用）：Python 里靠人看报告，
@@ -49,8 +56,9 @@ enum BKDetector {
         let used = clampDb(overrideThreshold ?? raw)
 
         // ③④ 顺序与 Python 一致：找气口 → PAD → 合并碎片 → 对比度复核
+        // （定稿第 2 节的八步管线，顺序不能变）
         let gaps = detectGaps(db: db, hopSec: hop, threshold: used, totalSec: total)
-        let padded = applyPad(gaps)
+        let padded = applyPad(gaps, totalSec: total)
         let merged = enforceMinSegment(padded, totalSec: total)
         let final = localContrastPass(merged, db: db, hopSec: hop, totalSec: total)
 
@@ -153,8 +161,12 @@ enum BKDetector {
 
     // MARK: - 候选气口
     //
-    // 低于阈值 → 连续区间。首尾的静音不算气口（视频开头结尾本来就静），
-    // 比 MIN_GAP 短的不切（切了句子会碎）。
+    // 低于阈值 → 连续区间。比 MIN_GAP 短的丢掉（那种是音节内的瞬态，碰了会把字切碎）。
+    //
+    // ⚠️ **片头片尾的安静段不再跳过**（2026-10-02 定稿，方向反过来了）。
+    // 旧版这里有一句 `if t0 > 0.02, t1 < totalSec - 0.02`，
+    // 皓哥手工刀口里头尾都是整段红的 —— 开头那两秒「嗯…」和结尾的收声都要切掉。
+    // 这条是 IMG_4582 / IMG_4583 原来一刀切不出来的元凶之一。
 
     static func detectGaps(db: [Double], hopSec: Double, threshold: Double, totalSec: Double) -> [(Double, Double)] {
         var gaps: [(Double, Double)] = []
@@ -166,7 +178,7 @@ enum BKDetector {
                 while j < n && db[j] < threshold { j += 1 }
                 let t0 = Double(i) * hopSec
                 let t1 = Double(j) * hopSec
-                if t0 > 0.02, t1 < totalSec - 0.02, (t1 - t0) >= BKConfig.Detect.minGap {
+                if (t1 - t0) >= BKConfig.Detect.minGap {
                     gaps.append((t0, t1))
                 }
                 i = j
@@ -178,12 +190,22 @@ enum BKDetector {
     }
 
     // MARK: - 头尾留白
+    //
+    // **只收「贴语音」的那一侧**：
+    //   片头段（t0 就在开头）→ 不往里收，安静段从第 0 帧切起
+    //   片尾段（t1 就在末尾）→ 不往里收，一直切到最后一帧
+    //   中间气口（两头都是语音）→ 双侧各收 PAD
+    // 旧版一律双侧收，配合 PAD=0.10 实际要求气口 ≥0.3s，把 0.16/0.21/0.26s
+    // 那一大批又短又深的换气全漏掉了。
 
-    static func applyPad(_ gaps: [(Double, Double)]) -> [(Double, Double)] {
+    static func applyPad(_ gaps: [(Double, Double)], totalSec: Double) -> [(Double, Double)] {
         var cuts: [(Double, Double)] = []
+        let pad = BKConfig.Detect.pad
         for (t0, t1) in gaps {
-            let s = t0 + BKConfig.Detect.pad
-            let e = t1 - BKConfig.Detect.pad
+            let head = t0 <= pad + 0.01
+            let tail = t1 >= totalSec - pad - 0.01
+            let s = head ? t0 : t0 + pad
+            let e = tail ? t1 : t1 - pad
             if (e - s) >= BKConfig.Detect.minCut {
                 cuts.append((s, e))
             }
@@ -193,43 +215,68 @@ enum BKDetector {
 
     // MARK: - 最短片段合并
     //
-    // 任何保留片段短于 MIN_SEG，就把造成它的那两刀撤掉，反复合并直到没有碎片。
-    // 这是防碎的第二重保险。
+    // 任何保留片段短于 MIN_SEG：
+    //   · 中间的过短片段 → 把夹着它的相邻两刀**合并成一刀**，中间那一小截语音也删掉
+    //   · 开头的过短片段 → 首刀起点扩到 0（开头那截杂音一并切掉）
+    //   · 结尾的过短片段 → 末刀终点扩到片尾
+    // 迭代直到稳定。
+    //
+    // ⚠️ 旧版是「把造成碎片的两刀都撤掉」—— 那等于放着两个气口不切，
+    // 短素材上一撤到底就归零了。IMG_4582 / IMG_4583 就是这么变成 0 刀的。
 
-    static func keptSegments(_ cuts: [(Double, Double)], totalSec: Double) -> [(Double, Double)] {
+    /// 与删除区间**严格按索引对齐**的保留片段（**不过滤**零宽段）。
+    ///
+    /// ⚠️ 不能拿 keptSegments 去做这件事 —— 它一过滤，段序号和刀序号就错位了，
+    /// 合并逻辑会拿着错位的索引去并刀，越并越乱。这个 bug 是 IMG_4582 的真实
+    /// 数据钓出来的：8 把刀只对出 8 个段（应该是 9 个），残留了一堆碎片段没人收拾。
+    static func segsAligned(_ dels: [(Double, Double)], totalSec: Double) -> [(Double, Double)] {
         var segs: [(Double, Double)] = []
         var cur = 0.0
-        for (s, e) in cuts {
+        for (s, e) in dels {
             segs.append((cur, s))
             cur = e
         }
         segs.append((cur, totalSec))
-        return segs.filter { $0.1 > $0.0 + 1e-6 }
+        return segs
+    }
+
+    /// 过滤掉零宽段之后的保留片段。只用于展示 / 导出，不参与判短
+    static func keptSegments(_ cuts: [(Double, Double)], totalSec: Double) -> [(Double, Double)] {
+        segsAligned(cuts, totalSec: totalSec).filter { $0.1 > $0.0 + 1e-6 }
     }
 
     static func enforceMinSegment(_ cuts: [(Double, Double)], totalSec: Double) -> [(Double, Double)] {
         var dels = cuts
-        for _ in 0..<200 {
-            let segs = keptSegments(dels, totalSec: totalSec)
-            if segs.count <= 1 { break }
+        for _ in 0 ..< 300 {
+            let segs = segsAligned(dels, totalSec: totalSec)
 
+            // ⚠️ 判短条件必须是「零宽 < 段长 < MIN_SEG」。
+            // 零宽段不能参与判断 —— 首刀起点扩到 0 之后该段变成 (0, 0)，
+            // 再判短就是原地打转，一直空转到循环上限退出，短片段根本没被收拾。
             var bad = -1
-            for (i, seg) in segs.enumerated() where (seg.1 - seg.0) < BKConfig.Detect.minSegment {
-                bad = i
-                break
-            }
-            if bad < 0 { break }
-
-            if bad == 0 {
-                dels.removeFirst()
-            } else if bad == segs.count - 1 {
-                dels.removeLast()
-            } else {
-                // 撤掉夹住这个碎片的两刀。用 Set 去重再倒序删，防止下标位移
-                for k in Array(Set([bad - 1, bad])).sorted(by: >) where k >= 0 && k < dels.count {
-                    dels.remove(at: k)
+            for (i, seg) in segs.enumerated() {
+                let len = seg.1 - seg.0
+                if len > 1e-6 && len < BKConfig.Detect.minSegment {
+                    bad = i
+                    break
                 }
             }
+            guard bad >= 0 else { break }
+
+            if bad == 0 {
+                dels[0].0 = 0.0
+            } else if bad == segs.count - 1 {
+                dels[dels.count - 1].1 = totalSec
+            } else {
+                // 把 bad-1 那一刀的终点拉到 bad 那一刀的终点（两刀并一刀），再删掉 bad
+                dels[bad - 1].1 = max(dels[bad - 1].1, dels[bad].1)
+                dels.remove(at: bad)
+            }
+
+            dels = dels.filter { $0.1 - $0.0 > 1e-6 }
+            // 显式比较器而不是元组比较：元组 < 在 Swift 里属于未公开的内部运算符
+            dels.sort { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }
+            if dels.isEmpty { break }
         }
         return dels
     }

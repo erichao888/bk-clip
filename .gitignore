@@ -16,6 +16,11 @@ spec_bisect_*.json
 tools/*.html
 tools/*.json
 
+# 样片：皓哥手工切割过的原始视频，放在 samples/ 里当标准答案用。
+# iPhone 拍的是 .MOV，几百 MB 起步，绝不能进仓库
+samples/*
+!samples/README.md
+
 # Xcode 工程是 XcodeGen 从 project.yml 生成的，不进版本库。
 # 传它反而有害：两边不一致时你根本不知道该信谁
 *.xcodeproj/

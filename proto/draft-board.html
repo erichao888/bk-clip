@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bk剪辑 · 界面草稿板（可拖动）</title>
+<style>
+  :root{
+    --bg:#EEEEEC; --panel:#FFFFFF; --line:#D8D8D4; --ink:#1A1A1A; --ink2:#5F5E5A;
+    --accent:#F09A28; --sel:#2F6FED;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:13px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  header{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+         padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--line)}
+  header b{font-size:14px;margin-right:6px}
+  button,a.btn{font:12px/1 inherit;padding:6px 10px;border:1px solid var(--line);
+       background:#fff;color:var(--ink);border-radius:6px;cursor:pointer;
+       display:inline-flex;align-items:center;gap:5px;text-decoration:none}
+  button:hover{border-color:#9A9A96}
+  button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.warn:hover{border-color:#C0392B;color:#C0392B}
+  label.chk{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--ink2)}
+  main{display:flex;gap:14px;padding:14px;align-items:flex-start}
+  .stage{flex:0 0 auto;overflow:auto;max-height:calc(100vh - 120px);
+         padding:6px;background:#E4E4E0;border:1px solid var(--line);border-radius:10px}
+  .phone{position:relative;width:430px;height:932px;background:#F7F7F4;
+         border-radius:22px;overflow:hidden;transform-origin:top left;
+         box-shadow:0 1px 8px rgba(0,0,0,.12)}
+  .statusbar,.homebar{position:absolute;left:0;right:0;background:#EFEFEB;
+         display:flex;align-items:center;justify-content:space-between;
+         padding:0 18px;font-size:10px;color:#8A8A85;pointer-events:none;z-index:5}
+  .statusbar{top:0;height:47px}
+  .homebar{bottom:0;height:34px;justify-content:center}
+
+  .item{position:absolute;border-radius:8px;cursor:grab;user-select:none}
+  .item.sel{cursor:grabbing}
+  .item.k-box{background:rgba(199,216,189,.30);border:1px dashed #9DB68F}
+  .item.k-btn{background:#FFFFFF;border:1px solid #D1D1D6;border-radius:50%;
+              display:flex;align-items:center;justify-content:center;color:#1A1A1A}
+  .item.k-bar{background:#F1F1EE;border:1px solid #D1D1D6}
+  .item.k-text{display:flex;align-items:center;color:#1A1A1A;font-size:11px;
+               border:1px dotted transparent}
+  .item.k-slider{background:#D1D1D6;border-radius:3px;overflow:hidden}
+  .item.k-media{background:#141414;border-radius:10px}
+  .item.k-fill{background:#C7D8BD;border-radius:10px}
+  .item.k-over{background:#8F9389;border-radius:6px}
+  .item:hover{outline:1px solid rgba(47,111,237,.45)}
+  .item.sel{outline:2px solid var(--sel);outline-offset:0;z-index:60}
+  .item .tag{position:absolute;left:0;top:100%;margin-top:2px;white-space:nowrap;
+             font-size:9px;color:#7A7A75;background:rgba(255,255,255,.85);
+             padding:0 3px;border-radius:3px;pointer-events:none}
+  .item .grip{position:absolute;right:-3px;bottom:-3px;width:10px;height:10px;
+              background:var(--sel);border:1px solid #fff;border-radius:2px;
+              display:none;cursor:nwse-resize}
+  .item.sel .grip{display:block}
+  .icon{width:60%;height:60%}
+
+  aside{width:296px;flex:0 0 296px;display:flex;flex-direction:column;gap:10px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+  .card h3{margin:0 0 9px;font-size:12px;font-weight:600;color:var(--ink)}
+  .row{display:flex;align-items:center;gap:7px;margin-bottom:7px}
+  .row:last-child{margin-bottom:0}
+  .row label{width:26px;font-size:11px;color:var(--ink2)}
+  .row input[type=number]{width:66px;padding:4px 6px;border:1px solid var(--line);
+       border-radius:5px;font:12px/1 inherit}
+  .row input[type=text]{flex:1;padding:4px 6px;border:1px solid var(--line);
+       border-radius:5px;font:12px/1 inherit}
+  .hint{font-size:11px;color:var(--ink2);line-height:1.7;margin:0}
+  textarea{width:100%;height:190px;font:11px/1.5 ui-monospace,Consolas,monospace;
+       border:1px solid var(--line);border-radius:6px;padding:8px;resize:vertical}
+  .empty{font-size:11px;color:#9A9A96}
+</style>
+</head>
+<body>
+
+<header>
+  <b>bk剪辑 · 界面草稿板</b>
+  <button id="addBtn">+ 加按钮</button>
+  <button id="addBox">+ 加区域</button>
+  <button id="addText">+ 加文字</button>
+  <span style="width:10px"></span>
+  <button id="up">置顶</button>
+  <button id="down">置底</button>
+  <button id="del" class="warn">删除</button>
+  <span style="width:10px"></span>
+  <label class="chk"><input type="checkbox" id="snap" checked> 吸附 8pt 网格</label>
+  <label class="chk">缩放
+    <select id="zoom">
+      <option value="1">100%</option>
+      <option value="0.85" selected>85%</option>
+      <option value="0.7">70%</option>
+      <option value="0.55">55%</option>
+    </select>
+  </label>
+  <span style="flex:1"></span>
+  <button id="save">保存</button>
+  <button id="load">载入</button>
+  <button id="reset" class="warn">恢复默认</button>
+</header>
+
+<main>
+  <div class="stage" id="stage">
+    <div class="phone" id="phone">
+      <div class="statusbar"><span>9:41</span><span>bk剪辑</span></div>
+      <div class="homebar">—</div>
+    </div>
+  </div>
+
+  <aside>
+    <div class="card">
+      <h3>选中的元素</h3>
+      <div id="props"><p class="empty">点画布上任意一个元素选中它。<br>拖动移动，右下角小方块改大小。</p></div>
+    </div>
+
+    <div class="card">
+      <h3>怎么给我结果</h3>
+      <p class="hint">
+        1. 用鼠标把按钮拖到你想要的位置<br>
+        2. 点「导出布局」，复制下面那串 JSON<br>
+        3. 粘给我 —— 我就照着这个坐标写代码<br>
+        <span style="color:#8A8A85">（方向键微调 1pt，Shift+方向键 8pt，Delete 删除）</span>
+      </p>
+      <div class="row" style="margin-top:8px">
+        <button id="exp">导出布局</button>
+        <button id="copy">复制</button>
+      </div>
+      <textarea id="out" placeholder="点「导出布局」后这里会出现 JSON"></textarea>
+    </div>
+  </aside>
+</main>
+
+<script>
+(function(){
+  var W = 430, H = 932, GRID = 8;
+  var phone = document.getElementById('phone');
+  var stage = document.getElementById('stage');
+  var outEl = document.getElementById('out');
+  var propsEl = document.getElementById('props');
+  var KEY = 'bk_draft_board_v2';
+
+  // 图标：全部内联 SVG，线风格，跟 SF Symbols 一个路子
+  var ICONS = {
+    stop:'<svg class="icon" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
+    play:'<svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4l13 8-13 8z"/></svg>',
+    // 连播（跳过红区只播绿区）—— 皓哥 2026-10-02 从五个方案里挑的 E：三角夹在两条竖线中间，
+    // 竖线就是被跳过的气口，两边各一道 = 段与段之间一路跳过去
+    skip:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="5.5" y1="6" x2="5.5" y2="18"/><path d="M9 6l7 6-7 6z" fill="currentColor" stroke="none"/><line x1="18.5" y1="6" x2="18.5" y2="18"/></svg>',
+    loop:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12a7 7 0 0 1 14 0"/><path d="M19 12a7 7 0 0 1-14 0"/><path d="M16 9l3 3 3-3"/><path d="M8 15l-3-3-3 3"/></svg>',
+    scissors:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="8" y1="8" x2="17" y2="16"/><line x1="17" y1="8" x2="8" y2="16"/></svg>',
+    dropper:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 3l3 3-9 9-4 1 1-4z"/><path d="M15 6l3 3"/></svg>',
+    undo:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>',
+    redo:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg>',
+    minus:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+    plus:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><line x1="12" y1="5" x2="12" y2="19"/></svg>',
+    list:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>',
+    export:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M4 15v4h16v-4"/></svg>'
+  };
+
+  // 默认布局 = 现在代码里跑出来的那版，你在这个基础上改
+  function defaults(){
+    return [
+      // 导航栏：三个元素都垂直居中在 47..91 的中线上（中心 y=69）
+      {id:'nav',    name:'导航栏',    kind:'bar',   x:0,   y:47,  w:430, h:44},
+      {id:'navList',name:'☰ 素材列表',kind:'btn',  x:20,  y:57,  w:24,  h:24,  icon:'list'},
+      {id:'navTitle',name:'文件名',   kind:'text',  x:165, y:60,  w:100, h:18},
+      {id:'navExp', name:'导出',      kind:'text',  x:354, y:60,  w:60,  h:18},
+
+      // 画面紧跟导航栏，做大（皓哥拖的版本）：16..414 宽 398
+      {id:'preview',name:'视频画面',  kind:'media', x:16,  y:107, w:398, h:310},
+
+      // 数字行：左右分布 —— 左时间码、右统计
+      {id:'tTime',  name:'时间码',    kind:'text',  x:16,  y:433, w:110, h:20},
+      {id:'tStat',  name:'统计数字',  kind:'text',  x:210, y:433, w:204, h:20},
+
+      // 主轨道 + 概览条，x 一律 16，跟画面左右对齐
+      {id:'track',  name:'主轨道',    kind:'fill',  x:16,  y:469, w:398, h:170},
+      {id:'pointer',name:'橙色指针',  kind:'box',   x:214, y:469, w:2,   h:170},
+      {id:'overview',name:'概览条',   kind:'over',  x:16,  y:655, w:398, h:30},
+
+      // 阈值标题和滑杆重新配成一对，垂直居中于同一中线
+      {id:'thTitle',name:'阈值标题',  kind:'text',  x:16,  y:709, w:90,  h:28},
+      {id:'thSlider',name:'阈值滑杆', kind:'slider',x:114, y:721, w:300, h:4},
+      {id:'status', name:'状态提示',  kind:'text',  x:16,  y:753, w:398, h:18},
+
+      // 工具栏两排（皓哥 2026-10-02 晚拍板：− + 要给位置，当捏合失灵的保底）
+      // 第一排 7 个 44pt 图标：组内 8pt、组间 16pt，左右各留 13pt
+      // 第二排 − + 是 28pt 小圆，右边缘跟第一排最右那个键对齐到 401
+      {id:'toolbar',name:'工具栏底',  kind:'bar',   x:16,  y:782, w:398, h:100},
+      {id:'bUndo',  name:'↩ 撤销',    kind:'btn',   x:29,  y:792, w:44,  h:44,  icon:'undo'},
+      {id:'bRedo',  name:'↪ 重做',    kind:'btn',   x:81,  y:792, w:44,  h:44,  icon:'redo'},
+      {id:'bSkip',  name:'|▶| 联播',  kind:'btn',   x:141, y:792, w:44,  h:44,  icon:'skip'},
+      {id:'bPlay',  name:'▶ 播放/停止',kind:'btn',   x:193, y:792, w:44,  h:44,  icon:'play'},
+      {id:'bInv',   name:'⟳ 反选',    kind:'btn',   x:253, y:792, w:44,  h:44,  icon:'loop'},
+      {id:'bCut',   name:'✂ 切割',    kind:'btn',   x:305, y:792, w:44,  h:44,  icon:'scissors'},
+      {id:'bDet',   name:'吸管 检测', kind:'btn',   x:357, y:792, w:44,  h:44,  icon:'dropper'},
+      {id:'zOut',   name:'− 缩小',    kind:'btn',   x:337, y:844, w:28,  h:28,  icon:'minus'},
+      {id:'zIn',    name:'+ 放大',    kind:'btn',   x:373, y:844, w:28,  h:28,  icon:'plus'},
+
+      // ☰ 素材列表面板：固定 5 行窗口，浮在画面上，行高 44、内容距上下各 4
+      // 行内的那 5 条只是示意，实际行数随素材多少来，窗口本身不高矮变化
+      {id:'sheet',  name:'素材列表面板',kind:'box',  x:16,  y:95,  w:398, h:228},
+      {id:'sRow1',  name:'IMG_3027 ✓ 已切（红）',kind:'text', x:32, y:103, w:366, h:28},
+      {id:'sRow2',  name:'IMG_3028',  kind:'text',  x:32,  y:147, w:366, h:28},
+      {id:'sRow3',  name:'IMG_3029 已切（红）',kind:'text', x:32, y:191, w:366, h:28},
+      {id:'sRow4',  name:'IMG_3030',  kind:'text',  x:32,  y:235, w:366, h:28},
+      {id:'sRow5',  name:'IMG_3031 已切（红）',kind:'text', x:32, y:279, w:366, h:28}
+    ];
+  }
+
+  var items = defaults();
+  var sel = null;
+  var scale = 0.85;
+
+  function snap(v){ return document.getElementById('snap').checked ? Math.round(v/GRID)*GRID : Math.round(v); }
+
+  function render(){
+    phone.querySelectorAll('.item').forEach(function(n){ n.remove(); });
+    items.forEach(function(it){
+      var el = document.createElement('div');
+      el.className = 'item k-' + it.kind + (sel === it.id ? ' sel' : '');
+      el.style.left = it.x + 'px';
+      el.style.top = it.y + 'px';
+      el.style.width = it.w + 'px';
+      el.style.height = it.h + 'px';
+      el.dataset.id = it.id;
+      if (it.kind === 'btn' && ICONS[it.icon]) el.innerHTML = ICONS[it.icon];
+      else if (it.kind === 'text') el.textContent = it.name;
+      var tag = document.createElement('div');
+      tag.className = 'tag';
+      tag.textContent = it.name + ' ' + it.w + '×' + it.h;
+      el.appendChild(tag);
+      var grip = document.createElement('div');
+      grip.className = 'grip';
+      grip.dataset.grip = '1';
+      el.appendChild(grip);
+      phone.appendChild(el);
+    });
+    renderProps();
+  }
+
+  function find(id){ for (var i=0;i<items.length;i++){ if (items[i].id === id) return items[i]; } return null; }
+
+  // 只改选中态，不重建 DOM。
+  // 别在 pointerdown 里调 render()：那会把正在拖的那个元素整个换掉，
+  // 指针捕获随即失效，鼠标一出画布就拖不动了
+  function selectOnly(id){
+    phone.querySelectorAll('.item').forEach(function(n){
+      n.classList.toggle('sel', n.dataset.id === id);
+    });
+    renderProps();
+  }
+
+  function renderProps(){
+    var it = find(sel);
+    if (!it){ propsEl.innerHTML = '<p class="empty">点画布上任意一个元素选中它。<br>拖动移动，右下角小方块改大小。</p>'; return; }
+    propsEl.innerHTML =
+      '<div class="row"><label>名称</label><input type="text" id="pName" value="' + it.name + '"></div>' +
+      '<div class="row"><label>X</label><input type="number" id="pX" value="' + it.x + '">' +
+      '<label>Y</label><input type="number" id="pY" value="' + it.y + '"></div>' +
+      '<div class="row"><label>宽</label><input type="number" id="pW" value="' + it.w + '">' +
+      '<label>高</label><input type="number" id="pH" value="' + it.h + '"></div>';
+    function bind(id, key){
+      var el = document.getElementById(id);
+      el.addEventListener('input', function(){
+        var v = parseFloat(el.value);
+        if (!isNaN(v)) { it[key] = v; apply(it); }
+      });
+    }
+    document.getElementById('pName').addEventListener('input', function(){
+      it.name = this.value; apply(it);
+    });
+    bind('pX','x'); bind('pY','y'); bind('pW','w'); bind('pH','h');
+  }
+
+  function apply(it){
+    var el = phone.querySelector('[data-id="' + it.id + '"]');
+    if (!el) return;
+    el.style.left = it.x + 'px'; el.style.top = it.y + 'px';
+    el.style.width = it.w + 'px'; el.style.height = it.h + 'px';
+    var tag = el.querySelector('.tag');
+    if (tag) tag.textContent = it.name + ' ' + Math.round(it.w) + '×' + Math.round(it.h);
+  }
+
+  // ---- 拖动 / 缩放 ----
+  var drag = null;
+  phone.addEventListener('pointerdown', function(e){
+    var el = e.target.closest('.item');
+    if (!el) { sel = null; selectOnly(null); return; }
+    var it = find(el.dataset.id);
+    if (!it) return;
+    sel = it.id;
+    selectOnly(sel);
+    var resizing = e.target.dataset.grip === '1';
+    drag = { it: it, resizing: resizing, sx: e.clientX, sy: e.clientY, ox: it.x, oy: it.y, ow: it.w, oh: it.h };
+    el.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+
+  phone.addEventListener('pointermove', function(e){
+    if (!drag) return;
+    var dx = (e.clientX - drag.sx) / scale;
+    var dy = (e.clientY - drag.sy) / scale;
+    var it = drag.it;
+    if (drag.resizing){
+      it.w = Math.max(8, snap(drag.ow + dx));
+      it.h = Math.max(8, snap(drag.oh + dy));
+    } else {
+      it.x = snap(drag.ox + dx);
+      it.y = snap(drag.oy + dy);
+    }
+    apply(it);
+  });
+
+  function endDrag(){ if (drag){ drag = null; renderProps(); } }
+  phone.addEventListener('pointerup', endDrag);
+  phone.addEventListener('pointercancel', endDrag);
+
+  // ---- 键盘微调 ----
+  document.addEventListener('keydown', function(e){
+    if (!sel) return;
+    if (/input|textarea|select/i.test(e.target.tagName)) return;
+    var it = find(sel);
+    if (!it) return;
+    var step = e.shiftKey ? GRID : 1;
+    var handled = true;
+    if (e.key === 'ArrowLeft') it.x -= step;
+    else if (e.key === 'ArrowRight') it.x += step;
+    else if (e.key === 'ArrowUp') it.y -= step;
+    else if (e.key === 'ArrowDown') it.y += step;
+    else if (e.key === 'Delete' || e.key === 'Backspace'){ remove(); }
+    else handled = false;
+    if (handled){ apply(it); renderProps(); e.preventDefault(); }
+  });
+
+  function remove(){
+    if (!sel) return;
+    items = items.filter(function(i){ return i.id !== sel; });
+    sel = null;
+    render();
+  }
+
+  function addItem(kind){
+    var n = items.length + 1;
+    var it = { id: 'x' + Date.now(), name: '新' + (kind === 'btn' ? '按钮' : kind === 'text' ? '文字' : '区域'),
+               kind: kind, x: snap(150), y: snap(400), w: kind === 'btn' ? 44 : 120, h: kind === 'btn' ? 44 : 44 };
+    if (kind === 'btn') it.icon = 'play';
+    items.push(it);
+    sel = it.id;
+    render();
+  }
+
+  function moveLayer(dir){
+    if (!sel) return;
+    var i = items.findIndex(function(x){ return x.id === sel; });
+    if (i < 0) return;
+    var tmp = items[i];
+    items.splice(i, 1);
+    items.splice(dir > 0 ? items.length : 0, 0, tmp);
+    sel = tmp.id;
+    render();
+  }
+
+  // ---- 顶部按钮 ----
+  document.getElementById('addBtn').onclick = function(){ addItem('btn'); };
+  document.getElementById('addBox').onclick = function(){ addItem('box'); };
+  document.getElementById('addText').onclick = function(){ addItem('text'); };
+  document.getElementById('del').onclick = remove;
+  document.getElementById('up').onclick = function(){ moveLayer(1); };
+  document.getElementById('down').onclick = function(){ moveLayer(-1); };
+  document.getElementById('reset').onclick = function(){
+    if (!confirm('恢复成默认布局？你现在拖的位置会丢。')) return;
+    items = defaults(); sel = null; render();
+  };
+  document.getElementById('save').onclick = function(){
+    localStorage.setItem(KEY, JSON.stringify(items));
+    alert('已保存到这台电脑的浏览器里');
+  };
+  document.getElementById('load').onclick = function(){
+    var s = localStorage.getItem(KEY);
+    if (!s){ alert('还没有保存过'); return; }
+    items = JSON.parse(s); sel = null; render();
+  };
+  document.getElementById('zoom').onchange = function(){
+    scale = parseFloat(this.value);
+    phone.style.transform = 'scale(' + scale + ')';
+  };
+  document.getElementById('exp').onclick = function(){
+    var data = { canvas: { w: W, h: H }, items: items.map(function(i){
+      var o = { id: i.id, name: i.name, kind: i.kind, x: i.x, y: i.y, w: i.w, h: i.h };
+      if (i.icon) o.icon = i.icon;
+      return o;
+    })};
+    outEl.value = JSON.stringify(data, null, 2);
+  };
+  document.getElementById('copy').onclick = function(){
+    if (!outEl.value){ document.getElementById('exp').click(); }
+    outEl.select();
+    try {
+      navigator.clipboard.writeText(outEl.value);
+      alert('已复制，粘给巴蒂就行');
+    } catch (err) {
+      document.execCommand('copy');
+      alert('已复制（备用方式）');
+    }
+  };
+
+  // ---- 启动 ----
+  phone.style.transform = 'scale(' + scale + ')';
+  var saved = localStorage.getItem(KEY);
+  if (saved) { try { items = JSON.parse(saved); } catch (err) { items = defaults(); } }
+  render();
+})();
+</script>
+</body>
+</html>

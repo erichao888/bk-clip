@@ -30,9 +30,15 @@ struct BKHistory {
     private(set) var items: [BKProject] = []
     private(set) var index: Int = -1
 
-    /// 最多留多少格。工程快照里含 marks，一条 42 秒素材几十刀也就几百字节，
-    /// 60 格完全够用；再多是白占内存 —— 真要退 60 步以上，说明该重新检测了
-    static let limit = 60
+    /// 撤销容量。皓哥 2026-10-02 晚拍板**改掉了原来的 60**：
+    /// 工程快照里含 marks，一条 42 秒素材几十刀也就几百字节，15 格足够退回去。
+    /// 再深就是白占内存 —— 真要退 15 步以上，说明该重新检测了
+    static let limit = BKConfig.Draft.undoLimit
+
+    /// 重做容量**只有 1 步**。语义是：连着撤两步之后，先撤的那一步就救不回来了。
+    /// 这是皓哥明确要的效果 —— 撤销能退得深，但重做只保底下那一步，
+    /// 防止来来回回「撤了又做、做了又撤」把状态搅乱
+    static let redoLimit = BKConfig.Draft.redoLimit
 
     // MARK: - 查询
 
@@ -80,9 +86,19 @@ struct BKHistory {
         items[index] = project
     }
 
+    /// 撤销一次，并把「可以重做的项」裁到只剩 redoLimit 个。
+    ///
+    /// 为什么要在 **undo 里**裁而不是在 push 里裁：
+    /// 重做栈不是另一份数组，它就是 index 右边那些还没被砍掉的格子。
+    /// 撤销只把 index 往左挪，右边的格子还在那里 —— 不裁的话，
+    /// 撤 15 步之后右边的「重做分支」还有 15 格，跟「重做只留 1 步」的口径对不上。
+    /// 砍最右边 = 砍最早被撤下去的那个状态，留下最近撤掉的那一步给用户反悔。
     mutating func undo() -> BKProject? {
         guard canUndo else { return nil }
         index -= 1
+        while (items.count - 1 - index) > BKHistory.redoLimit {
+            items.removeLast()
+        }
         return items[index]
     }
 

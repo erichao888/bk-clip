@@ -127,9 +127,15 @@ struct BKExportRecord: Codable, Identifiable {
     }
 }
 
-// MARK: - 草稿工程
+// MARK: - 素材项（草稿的第二层）
+//
+// ⚠️ **一个草稿 = 一次导入的一整批，不是一条视频。**
+// 见下面的 BKDraftBatch —— 皓哥 2026-10-02 口述定稿：
+// 「我这次操作添加了 5 个视频……关闭之后草稿箱多了一个草稿，这个草稿包含刚才那 5 个视频。」
+// 所以 BKProject 在这里的角色是**批里的一个素材项**，不是顶层草稿。
+// 名字沿用了老的 Project 以免全文改名引入新 bug，但语义上是 item。
 
-/// 一个正在编辑的工程，也是自动保存的最小单位。
+/// 一次导入里的一条素材 + 它自己的刀口。自动保存的最小单位。
 struct BKProject: Codable, Identifiable {
 
     var id: UUID
@@ -137,6 +143,8 @@ struct BKProject: Codable, Identifiable {
     // 素材定位
     /// PHAsset.localIdentifier。下次启动靠它把素材捞回来
     var assetLocalID: String
+    /// 素材名（IMG_3027.MOV）。列表里要显示，存一份省得每次去查 PHAsset
+    var assetName: String
     /// 素材总时长（秒）
     var duration: Double
 
@@ -166,12 +174,39 @@ struct BKProject: Codable, Identifiable {
     /// 单独点掉切开的其中一半 —— 这才是「点切割能从指针处分开」的真意
     var splits: [Double]
 
+    /// 橙色指针停在哪儿。换素材 / 退出再进来都要回到这一帧，
+    /// 起始页的封面也是这一帧（定稿 3.1）
+    var playheadTime: Double
+
     // 时间
     var createdAt: Date
     var updatedAt: Date
 
     // 导出历史
     var exportHistory: [BKExportRecord]
+
+    // MARK: 派生
+
+    /// 这条素材导出过几次。**导出文件名的后缀序号靠它**（定稿 4.8）
+    /// 直接读历史条数，不另外记账 —— 多一份计数就多一处可能对不上的地方
+    var exportCount: Int { exportHistory.count }
+
+    /// 「动过刀没有」—— 三处共用的同一个判定（定稿 7.2）：
+    /// ① 编辑页素材列表名字变红  ② 批量导出的范围  ③ 草稿退不退出
+    /// ⚠️ 不能用「有没有草稿」代替 —— 进过编辑页一刀没切也会存草稿
+    var isEdited: Bool { !cutRanges.isEmpty || !splits.isEmpty }
+
+    /// 导出文件名（不含路径），定稿 4.8 的命名规则：
+    ///   第 1 次 → `BK_1.mov`   第 2 次 → `BK_1_1.mov`   第 3 次 → `BK_1_2.mov`
+    /// k = 已经导出的次数；k == 0 不加后缀，k >= 1 加 `_k`，往后顺推
+    var nextExportFileName: String {
+        let src = assetName.isEmpty ? "clip.mov" : assetName
+        let base = (src as NSString).deletingPathExtension
+        let ext = (src as NSString).pathExtension.isEmpty ? "mp4" : (src as NSString).pathExtension
+        let k = exportCount
+        if k <= 0 { return "BK_\(base).\(ext)" }
+        return "BK_\(base)_\(k).\(ext)"
+    }
 }
 
 // MARK: - 草稿解码兼容
@@ -182,15 +217,17 @@ extension BKProject {
     /// 合成的 init(from:) 遇到缺 key 会直接 throw —— 皓哥手机上已经存着一堆
     /// 没有 splits 字段的草稿，一 throw 就全没了。所以全部用 decodeIfPresent 兜底。
     enum CodingKeys: String, CodingKey {
-        case id, assetLocalID, duration, displayWidth, displayHeight
+        case id, assetLocalID, assetName, duration, displayWidth, displayHeight
         case sourceRotationDegrees, thresholdDb, autoThresholdDb
         case sourceApplicable, marks, createdAt, updatedAt, exportHistory, splits
+        case playheadTime
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
         assetLocalID = try c.decode(String.self, forKey: .assetLocalID)
+        assetName = (try? c.decodeIfPresent(String.self, forKey: .assetName)) ?? ""
         duration = try c.decode(Double.self, forKey: .duration)
         displayWidth = try c.decode(Double.self, forKey: .displayWidth)
         displayHeight = try c.decode(Double.self, forKey: .displayHeight)
@@ -203,6 +240,114 @@ extension BKProject {
         updatedAt = try c.decode(Date.self, forKey: .updatedAt)
         exportHistory = (try? c.decodeIfPresent([BKExportRecord].self, forKey: .exportHistory)) ?? []
         splits = (try? c.decodeIfPresent([Double].self, forKey: .splits)) ?? []
+        playheadTime = (try? c.decodeIfPresent(Double.self, forKey: .playheadTime)) ?? 0
+        // 老草稿没有名字，回退到相册里查一次，补上之后下次就不用再查了
+        if assetName.isEmpty {
+            assetName = BKVideoLibrary.assetName(localID: assetLocalID)
+        }
+    }
+}
+
+// MARK: - 草稿批（第一层）
+
+/// 一次导入 = 一个草稿批，里面装着这一次选中的所有素材。
+///
+/// 【为什么是两层而不是「一视频一草稿」】
+/// 皓哥 2026-10-02 口述：一次加的多条素材本来就是**同一场景的不同口播片段**。
+/// 打包成一批之后，导出到剪映发现问题，「回马枪」点一次就能回到那一整批现场，
+/// 不用在草稿箱里翻零散的 5 条。他听完我的复述说「就是这样」。
+///
+/// 【everEdited 的语义（定稿 3.1）】
+/// 判据是「**曾经**动过刀」，不是「退出时还有没有刀」。
+/// 曾经动过刀 → **永不自动删**，哪怕后来又把刀全删干净了。
+/// 理由：一旦入过库，用户心里就认为它已经存下了，再让它凭空消失会让人以为数据丢了。
+/// 它**只置不清** —— 撤销是把刀撤掉，不是把「我编辑过这件事」抹掉。
+struct BKDraftBatch: Codable, Identifiable {
+
+    var id: UUID
+    /// 显示在草稿卡片上的名字。默认「IMG_3027 等 5 条」，可重命名
+    var title: String
+    /// 这一批的素材项。☰ 素材列表里看到的就是它
+    var items: [BKProject]
+    /// 上次在改哪一条。封面取它的指针帧，重进也是进这一条
+    var lastAssetId: String?
+    var createdAt: Date
+    var lastEditedAt: Date
+    /// 曾经动过刀没有。只置不清，见上面的说明
+    var everEdited: Bool
+    /// nil = 在网格里；有值 = 已移进回收站，值是删除时间（30 天后自动清空）
+    var deletedAt: Date?
+
+    // MARK: 派生
+
+    /// 这一批的合计刀数。起始页角标显示的就是它
+    var totalCuts: Int {
+        items.reduce(0) { $0 + $1.cutCount }
+    }
+
+    /// 这一批里动过刀的素材项（批量导出的范围，定稿 4.8）
+    var editedItems: [BKProject] {
+        items.filter { $0.isEdited }
+    }
+
+    /// 网格上显示的名字。没命名过就用「第一条素材名 + 等 N 条」
+    var displayTitle: String {
+        if !title.isEmpty { return title }
+        guard let first = items.first else { return "草稿" }
+        let n = items.count
+        return n > 1 ? "\(first.assetName) 等 \(n) 条" : first.assetName
+    }
+
+    /// 封面取哪条素材。lastAssetId 失效（素材被删）时退回第一条
+    func coverAssetId() -> String? {
+        if let lid = lastAssetId, items.contains(where: { $0.assetLocalID == lid }) {
+            return lid
+        }
+        return items.first?.assetLocalID
+    }
+
+    /// 时长最长那条的索引。批量导出时全批按它的参数统一（定稿 4.9.1）
+    func longestItemIndex() -> Int? {
+        guard !items.isEmpty else { return nil }
+        var best = 0
+        for i in 1 ..< items.count where items[i].duration > items[best].duration {
+            best = i
+        }
+        return best
+    }
+
+    /// 是否被移进回收站
+    var isTrashed: Bool { deletedAt != nil }
+
+    /// 回收站里的剩余天数（已过期返回 0）
+    var trashDaysLeft: Int {
+        guard let d = deletedAt else { return BKConfig.Draft.trashKeepDays }
+        let passed = Date().timeIntervalSince(d) / 86400.0
+        return max(0, BKConfig.Draft.trashKeepDays - Int(passed.rounded(.down)))
+    }
+}
+
+// MARK: - 草稿批解码兼容
+
+extension BKDraftBatch {
+
+    enum BatchCodingKeys: String, CodingKey {
+        case id, title, items, lastAssetId, createdAt, lastEditedAt
+        case everEdited, deletedAt
+    }
+
+    /// 同样是为主兼容：老版本写出去的文件没有 deletedAt / everEdited，
+    /// 合成 init 遇到缺 key 会 throw，一 throw 用户的草稿就没了
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: BatchCodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? ""
+        items = (try? c.decodeIfPresent([BKProject].self, forKey: .items)) ?? []
+        lastAssetId = try? c.decodeIfPresent(String.self, forKey: .lastAssetId)
+        createdAt = (try? c.decodeIfPresent(Date.self, forKey: .createdAt)) ?? Date()
+        lastEditedAt = (try? c.decodeIfPresent(Date.self, forKey: .lastEditedAt)) ?? Date()
+        everEdited = (try? c.decodeIfPresent(Bool.self, forKey: .everEdited)) ?? false
+        deletedAt = try? c.decodeIfPresent(Date.self, forKey: .deletedAt)
     }
 }
 

@@ -76,4 +76,86 @@ enum BKIcons {
         UIGraphicsEndImageContext()
         return image.withRenderingMode(.alwaysTemplate)
     }
+
+    /// `|▶|` 联播键（定稿 4.4，皓哥从 5 个方案里挑的 **E**）
+    ///
+    /// 三角夹在两条竖线中间：竖线 = 被跳过的气口，左右各一道 = 段与段之间一路跳过去。
+    ///
+    /// ```
+    /// <line x1="5.5" y1="6" x2="5.5" y2="18"/>
+    /// <path d="M9 6l7 6-7 6z" fill="currentColor"/>
+    /// <line x1="18.5" y1="6" x2="18.5" y2="18"/>
+    /// ```
+    /// （viewBox 0 0 24 24，两条竖线 stroke 1.9 圆头，三角**实心**）
+    ///
+    /// ⚠️ 两条竖线用 stroke、三角用 fill，两套绘制方式别混：
+    /// 把三角也 stroke 了的话它只是个空框，一眼看过去跟别的图标完全不是一家人
+    static func skip(side: CGFloat = 24, weight: CGFloat = 1.9) -> UIImage {
+        // false = 透明背景。改成 true 这个图标就变成实心方块了
+        UIGraphicsBeginImageContextWithOptions(CGSize(width: side, height: side), false, 0)
+
+        if let ctx = UIGraphicsGetCurrentContext() {
+            let scale = side / 24.0
+            ctx.scaleBy(x: scale, y: scale)
+            ctx.setStrokeColor(UIColor.black.cgColor)
+            ctx.setFillColor(UIColor.black.cgColor)
+            ctx.setLineWidth(weight / scale)   // 先缩放了，线宽要还原回去
+            ctx.setLineCap(.round)
+            ctx.setLineJoin(.round)
+
+            // 左右两道竖线：被跳过的气口
+            ctx.move(to: CGPoint(x: 5.5, y: 6))
+            ctx.addLine(to: CGPoint(x: 5.5, y: 18))
+            ctx.strokePath()
+
+            ctx.move(to: CGPoint(x: 18.5, y: 6))
+            ctx.addLine(to: CGPoint(x: 18.5, y: 18))
+            ctx.strokePath()
+
+            // 中间的实心三角
+            let tri = CGMutablePath()
+            tri.move(to: CGPoint(x: 9, y: 6))
+            tri.addLine(to: CGPoint(x: 16, y: 12))
+            tri.addLine(to: CGPoint(x: 9, y: 18))
+            tri.closeSubpath()
+            ctx.addPath(tri)
+            ctx.fillPath()
+        }
+
+        let image = UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
+        UIGraphicsEndImageContext()
+        return image.withRenderingMode(.alwaysTemplate)
+    }
+
+    /// ↺ 阈值的「恢复自动」（定稿 4.7.1）
+    ///
+    /// 一段圆弧 + 一个箭头尖，像系统那个「撤销」但只有一条弧 ——
+    /// 语义是「回到自动算出来的那个值」，不是撤销一步操作。
+    static func backToAuto(side: CGFloat = 20, weight: CGFloat = 1.8) -> UIImage {
+        UIGraphicsBeginImageContextWithOptions(CGSize(width: side, height: side), false, 0)
+
+        if let ctx = UIGraphicsGetCurrentContext() {
+            let scale = side / 24.0
+            ctx.scaleBy(x: scale, y: scale)
+            ctx.setStrokeColor(UIColor.black.cgColor)
+            ctx.setLineWidth(weight / scale)
+            ctx.setLineCap(.round)
+            ctx.setLineJoin(.round)
+
+            // 一段优弧：从 60° 逆时针绕过顶部到 300°（UIKit y 轴朝下，角度递增为顺时针）
+            ctx.addArc(center: CGPoint(x: 12, y: 12), radius: 7,
+                       startAngle: .pi / 3, endAngle: -.pi / 3, clockwise: true)
+            ctx.strokePath()
+
+            // 箭头尖：在弧的起点 (15.5, 5.94)，尖朝左上
+            ctx.move(to: CGPoint(x: 18.5, y: 8.5))
+            ctx.addLine(to: CGPoint(x: 15.5, y: 5.5))
+            ctx.addLine(to: CGPoint(x: 15.5, y: 9.5))
+            ctx.strokePath()
+        }
+
+        let image = UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
+        UIGraphicsEndImageContext()
+        return image.withRenderingMode(.alwaysTemplate)
+    }
 }

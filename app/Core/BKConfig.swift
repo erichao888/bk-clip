@@ -31,25 +31,30 @@ enum BKConfig {
     // 这四个数是「防碎」四重保险，缺一不可。它们的来历和边界都在
     // docs/免费验证方案.md 里逐条验证过，别凭感觉改。
 
+    //
+    // ⚠️ 这五个数是 2026-10-02 晚按皓哥的手工刀口重定的，来源是
+    // docs/算法定稿.md 第 1 节的参数表，逐项对过 tools/preview_cut.py。
+    // 改任何一个数之前先看那份定稿的三条方向原则：
+    //   ① 片头片尾的安静段要切  ② 0.1~0.25s 的短换气要切  ③ 整体轻声区也切
+    // 总原则「宁多勿少」，误切靠 ⟳ 反选补回来，漏切要人一句一句找。
+    // 改完 Swift 必须同步改 preview_cut.py，再拿 samples/ 里的四条样片跑一遍。
+    //
     enum Detect {
 
-        /// 相邻两段气口之间至少保留这么长的有效内容。
-        /// 小于它的会被合并回去 —— 连续两刀中间夹 0.1 秒内容，切出来像卡碟。
-        /// 这一条决定「片段不会碎」
-        static let minGap: Double = 0.20
+        /// 最短气口。低于 0.1s 的低幅基本是音节内的瞬态，碰了会把字切碎
+        static let minGap: Double = 0.10
 
-        /// 单个保留片段的最短时长。低于它的片段会被并进邻居。
-        /// 这一条决定「不会有孤零零的碎片」
-        static let minSegment: Double = 0.60
+        /// 单个保留片段的最短时长。
+        /// 旧值 0.6 是 IMG_4582 / IMG_4583 一刀切不出来的元凶，降到 0.3
+        static let minSegment: Double = 0.30
 
-        /// 单次切除的最短时长。0.05 秒这种刀肉眼根本看不出来，
-        /// 却多一次接缝爆音风险 —— 收益接近零，风险实打实。
-        /// 这一条是最后加的第 4 个参数（原打算不做，被真实素材教做人）
-        static let minCut: Double = 0.10
+        /// 最短一刀。0.04s = 40ms，双 15ms 交叉淡入淡出还盖得住
+        static let minCut: Double = 0.04
 
-        /// 每个气口两端各保留这么长，不切干净。
-        /// 切到零点辅音会丢，听感上「字被剁掉一半」
-        static let pad: Double = 0.10
+        /// 气口两侧留白。**只收贴语音的那一侧** —— 片头段不往里收、片尾段不往里收，
+        /// 安静段就该从第 0 帧切起、切到最后一帧。
+        /// 中间气口（两头都是语音）才双侧各收 PAD
+        static let pad: Double = 0.03
 
         /// dB 阈值的安全夹逼区间。Otsu 算出的原始值落在这外面就拉回来。
         /// 上界 -25 是硬边界：再往上会把探店现场的环境声当静音切掉
@@ -61,9 +66,12 @@ enum BKConfig {
         /// 从原理上无法用静音检测去气口，判死刑并给用户明确提示
         static let minContrastDb: Double = 6.0
 
-        /// 6dB 局部对比度余量：气口必须比它两边 200ms 的语音低这么多才下刀。
-        /// 治「音量起伏大的素材被误杀整句」（与 preview_cut.py 的 CONTRAST_DB 一致）
-        static let localContrastDb: Double = 6.0
+        /// 局部对比度余量：气口必须比它两边 200ms 的语音低这么多才下刀。
+        /// **归零待命（与 preview_cut.py 的 CONTRAST_DB 一致）** ——
+        /// 皓哥拍板「整体轻声区也切」之后，这关卡就没有判别力了：
+        /// 真气口深度普遍 20dB+，而尾部轻声区只有 3~10dB 也照样要切。
+        /// 留着这个参数只是方便哪天想收紧时改一个数，现在它是 0
+        static let localContrastDb: Double = 0.0
 
         /// 局部对比度取样窗口（秒）（与 preview_cut.py 的 PAD_SAMPLE 一致）
         static let padSampleSec: Double = 0.20
@@ -122,6 +130,53 @@ enum BKConfig {
         static let faststart = true
     }
 
+    // MARK: - 导出可选项（定稿第 4.9 节：分辨率 / 帧率要有得选，默认同源）
+    //
+    // 选项刻意做少：分辨率砍掉 720P / 480P，帧率砍掉 24。
+    // 探店素材就 1080P 竖版这一种，多一个选项就多一份要维护的参数组合。
+    // 容器与编码（MP4 / H.264 / yuv420p / AAC-LC 192k / faststart）**不开选项** ——
+    // 那几个是剪映实测过的组合，动一根指头都可能导不进去。
+
+    /// 输出分辨率。作用于**显示尺寸**（已应用 preferredTransform 之后那个），
+    /// 不是 naturalSize —— 见定稿 4.9.2
+    enum Resolution: String, CaseIterable {
+        case same    = "同源文件"
+        case p1080   = "1080P"
+
+        /// 目标长边。nil = 不缩放，用源素材的显示尺寸
+        var targetShortSide: Int? {
+            switch self {
+            case .same:  return nil
+            case .p1080: return 1080
+            }
+        }
+    }
+
+    /// 输出帧率。nil = 跟随源素材
+    enum FrameRate: String, CaseIterable {
+        case same = "同源文件"
+        case fps60 = "60"
+        case fps30 = "30"
+
+        var value: Double? {
+            switch self {
+            case .same:  return nil
+            case .fps60: return 60
+            case .fps30: return 30
+            }
+        }
+    }
+
+    /// 一次导出的完整规格
+    struct ExportSpec {
+        var resolution: Resolution = .same
+        var frameRate: FrameRate = .same
+
+        var summary: String {
+            "\(resolution.rawValue) · \(frameRate.rawValue)"
+        }
+    }
+
     // MARK: - 接缝处理
 
     enum Seam {
@@ -140,6 +195,57 @@ enum BKConfig {
         static let debounceSec: Double = 2.0
         /// 单个工程保留多少个历史版本。多了占空间，少了不够用
         static let keepHistory = 5
+
+        /// 起始页最多留几批草稿。超了丢最久没动过的那批（定稿 3.1）
+        static let maxBatches = 10
+
+        /// 回收站保留天数。跟相册一个套路，不无限堆着（定稿 3.2）
+        static let trashKeepDays = 30
+
+        /// 撤销 / 重做容量（定稿 7.1，皓哥拍板改掉了原来的 60）
+        static let undoLimit = 15
+        static let redoLimit = 1
+    }
+
+    // MARK: - 编辑页几何（定稿 4.3 / 4.5.3）
+    //
+    // 预览区和主轨道是此消彼长的一对：画面矮了省出来的空间全部补给轨道，
+    // 这样屏幕上不会留一块难看的空白。改任何一个数都要重跑
+    // tools/render_layout_preview.py 验三种比例。
+
+    enum Layout {
+        /// 内容区宽（定稿里的 398 = 屏宽 430 − 左右各 16）
+        static let contentWidth: CGFloat = 398
+        /// 预览区高度下限：横版素材再扁也不许低于它
+        static let previewMinH: CGFloat = 200
+        /// 预览区高度上限：竖版素材再长也不许超过它 ——
+        /// 这就是皓哥说的「不许挤压下面的区域太多」
+        static let previewMaxH: CGFloat = 350
+        /// 主轨道基准高度：预览区正好 310 时轨道就是这个数
+        static let trackBaseH: CGFloat = 170
+        static let trackRefH: CGFloat = 310
+        static let trackMinH: CGFloat = 130
+        static let trackMaxH: CGFloat = 300
+
+        /// 预览区高度。比例必须来自 BKAssetProbe 的**显示尺寸**
+        static func previewHeight(displayW: Double, displayH: Double) -> CGFloat {
+            guard displayW > 0, displayH > 0 else { return previewMinH }
+            let raw = contentWidth / CGFloat(displayW / displayH)
+            return min(max(raw, previewMinH), previewMaxH)
+        }
+
+        /// 主轨道高度：预览区省出来的空间全给它
+        static func trackHeight(previewH: CGFloat) -> CGFloat {
+            let raw = trackBaseH + (trackRefH - previewH)
+            return min(max(raw, trackMinH), trackMaxH)
+        }
+
+        /// 轨道拖到头之后再拽多少 pt 才换素材（定稿 4.5.3）
+        static let siblingPullThreshold: CGFloat = 60
+
+        /// 画面左右滑换素材的门槛：横向够长、且几乎不上下飘才算（第 5 节）
+        static let swipeMinX: CGFloat = 40
+        static let swipeMaxY: CGFloat = 12
     }
 
     // MARK: - 性能红线

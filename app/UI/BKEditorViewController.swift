@@ -1,9 +1,9 @@
 //
 //  BKEditorViewController.swift
-//  bk剪辑 — 编辑页（第四批改：按 docs/界面定稿.md 重写）
+//  bk剪辑 — 编辑页
 //
-//  【这份代码的上级是定稿，不是聊天记录】
-//  改任何一处界面之前，先改 docs/界面定稿.md 再改这里。前面十几轮最大的教训是
+//  【这份代码的上级是 docs/界面定稿.md，不是聊天记录】
+//  改任何一处界面之前，先改定稿再改这里。前面十几轮最大的教训是
 //  「想到哪写到哪」，约定只落在聊天里，结果代码和皓哥脑子里的图对不上。
 //
 //  【本页承担什么】
@@ -14,8 +14,14 @@
 //        → BKTimeline.build 合成 marks → 轨道画出来
 //  手动拖边界 / 点片段 / 切口 → 改 marks → 走 commit() 入撤销栈 → 重画 + 落盘
 //
-//  【播放语义】AVPlayer 走原始时间轴：播放头扫过粉红区间时
-//  你听到的是「将被删掉的声音」，这正是调刀口时最需要听的东西。
+//  【一个草稿 = 一整批，这一页只编辑批里的其中一条】
+//  batch 是整批，itemIndex 指出正在编辑第几条。切换素材 = 换 itemIndex（换 VC 实例），
+//  批里其余素材的刀口原封不动地留在 batch 里。
+//
+//  【两个播放键】
+//  ▶ 原片播（红区绿区都播） ｜ `|▶|` 联播（按 keepRanges 拼起来播，跳过红区）
+//  两者起点都是橙指针那一帧，互斥：按当前那个 = 停，按另一个 = 切换过去。
+//  停止一律**停在原地**（定稿 4.5.2）。
 //
 //  【指针居中带来的一个连锁变化】
 //  指针不动、内容滚，所以「预览画面跟指针跳帧」变成了：
@@ -28,29 +34,53 @@ import Photos
 
 final class BKEditorViewController: UIViewController {
 
+    // MARK: - 播放模式
+
+    private enum PlayMode {
+        case idle
+        /// ▶ 原片播
+        case straight
+        /// `|▶|` 联播（拼起来的成品）
+        case joint
+    }
+
     // MARK: - 状态
 
     private let asset: AVAsset
-    private let localID: String
     private let probeInfo: BKAssetProbe.Info
-    private var project: BKProject?
+    private var batch: BKDraftBatch
+    private var itemIndex: Int
     private var envelope: BKEnvelope?
 
-    /// 撤销栈。所有编辑改动都从它进出，绝不允许有第二处直接改 project.marks
+    /// 撤销栈。所有编辑改动都从它进出，绝不允许有第二处直接改 batch.items[i].marks
     private var history = BKHistory()
     /// 是否正在拖边界。拖动过程中的连续改动只占撤销栈一格
     private var boundaryDragging = false
     /// 这一次拖动是否已经入过栈。false 时下一次提交走 push，之后走 amend
     private var boundaryCommitted = false
 
+    // MARK: - 播放器
+
+    /// 原片播放器。**常驻**，换素材只换 AVPlayerItem，绝不重建 AVPlayer ——
+    /// 重建一次几十到几百毫秒就没了，那是起播延迟的大头
     private var player: AVPlayer?
     private var playerLayer: AVPlayerLayer?
     private var timeObserver: Any?
 
+    /// 联播播放器。同样常驻，每次联播只换 item
+    private var jointPlayer: AVPlayer?
+    private var jointObserver: Any?
+    private var joint: BKJointBuilder.Joint?
+
+    private var playMode: PlayMode = .idle
+    private var prerollWork: DispatchWorkItem?
     private var sliderWork: DispatchWorkItem?
-    private var playing = false
+
     private var lastTime: Double = 0
     private var isExporting = false
+    /// 换素材的加载锁。**一次只准换一条** —— 不锁的话手指使劲一划能连跳三四条，
+    /// 每条都要重新提一次波形，直接卡死（定稿 4.5.3 三个坑里的第一个）
+    private var isSwitchingAsset = false
 
     // MARK: - 界面
 
@@ -63,42 +93,35 @@ final class BKEditorViewController: UIViewController {
     private let trackContainer = UIView()
     private let track = BKTrackView()
 
-    // 第一行：停止 / 播放 / 反选 / 切割 / 检测 + 时间码
-    private let stopButton = UIButton(type: .system)
+    // 工具栏第一排：撤销 / 重做 / 联播 / 播放 / 反选 / 切割 / 检测
+    private let undoButton = UIButton(type: .system)
+    private let redoButton = UIButton(type: .system)
+    private let jointButton = UIButton(type: .system)
     private let playButton = UIButton(type: .system)
     private let invertButton = UIButton(type: .system)
     private let cutButton = UIButton(type: .system)
     private let detectButton = UIButton(type: .system)
-    private let timeLabel = UILabel()
 
-    // 第二行：撤销 / 重做 + 缩放
-    private let undoButton = UIButton(type: .system)
-    private let redoButton = UIButton(type: .system)
+    // 工具栏第二排：− +（28pt 小圆，靠右）
     private let zoomOutButton = UIButton(type: .system)
     private let zoomInButton = UIButton(type: .system)
 
     private let exportButton = UIButton(type: .system)
     private let thresholdTitle = UILabel()
     private let thresholdSlider = UISlider()
+    private let thresholdAutoButton = UIButton(type: .system)
+    private let timeLabel = UILabel()
     private let infoLabel = UILabel()
     private let statusLabel = UILabel()
     private let spinner = UIActivityIndicatorView(style: .medium)
 
-    /// 素材库顺序。有它才能「上一条 / 下一条」；只从起始页单挑一条进来时是空的
-    private let videoIDs: [String]
-
     // MARK: - 初始化
 
-    init(asset: AVAsset,
-         localID: String,
-         probeInfo: BKAssetProbe.Info,
-         project: BKProject?,
-         videoIDs: [String] = []) {
+    init(batch: BKDraftBatch, index: Int, asset: AVAsset, probeInfo: BKAssetProbe.Info) {
+        self.batch = batch
+        self.itemIndex = index
         self.asset = asset
-        self.localID = localID
         self.probeInfo = probeInfo
-        self.project = project
-        self.videoIDs = videoIDs
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -107,16 +130,19 @@ final class BKEditorViewController: UIViewController {
     }
 
     deinit {
-        if let observer = timeObserver {
-            player?.removeTimeObserver(observer)
-        }
+        if let o = timeObserver { player?.removeTimeObserver(o) }
+        if let o = jointObserver { jointPlayer?.removeTimeObserver(o) }
     }
+
+    /// 当前正在编辑的素材项
+    private var item: BKProject { batch.items[itemIndex] }
 
     // MARK: - 生命周期
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = BKTheme.Color.page
+        prepareItem()
         setupNav()
         setupPlayer()
         setupUI()
@@ -135,10 +161,17 @@ final class BKEditorViewController: UIViewController {
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         navigationController?.interactivePopGestureRecognizer?.isEnabled = true
-        player?.pause()
-        playing = false
-        updatePlayButtonIcon()
-        BKDraftStore.shared.flushIfNeeded()
+        stopPlayback()
+
+        // ⚠️ 只有**真的返回起始页**才做结算。切换素材是用 setViewControllers 换栈顶，
+        // 那也会走到 viewWillDisappear，但 isMovingFromParent 是 false ——
+        // 不加这个判断，换素材的瞬间会把整批草稿当成「退出了」给丢掉
+        if isMovingFromParent {
+            finishSession()
+        } else {
+            savePlayhead()
+            BKDraftStore.shared.flushIfNeeded()
+        }
     }
 
     override func viewDidLayoutSubviews() {
@@ -146,17 +179,65 @@ final class BKEditorViewController: UIViewController {
         playerLayer?.frame = previewContainer.bounds
     }
 
+    /// 第一次拿到探针结果时，把素材的显示尺寸 / 时长补进素材项。
+    /// 老草稿和新建的批里这些字段可能是 0，导出和封面都要用
+    private func prepareItem() {
+        if probeInfo.duration > 0 { batch.items[itemIndex].duration = probeInfo.duration }
+        batch.items[itemIndex].displayWidth = probeInfo.displayWidth
+        batch.items[itemIndex].displayHeight = probeInfo.displayHeight
+        batch.items[itemIndex].sourceRotationDegrees = probeInfo.rotationDegrees
+        if batch.items[itemIndex].assetName.isEmpty {
+            batch.items[itemIndex].assetName = BKVideoLibrary.assetName(localID: item.assetLocalID)
+        }
+        batch.items[itemIndex].marks =
+            BKTimeline.normalize(item.marks, duration: batch.items[itemIndex].duration)
+        lastTime = min(max(item.playheadTime, 0), batch.items[itemIndex].duration)
+    }
+
+    /// 返回起始页时的结算：存草稿 + 生成封面 + 「整批没动过刀就丢掉」
+    private func finishSession() {
+        savePlayhead()
+        batch.lastEditedAt = Date()
+
+        // 定稿 3.1：整批从头到尾一刀没切 → 不留。
+        // 判据是 everEdited（**曾经**动过刀），只置不清 ——
+        // 切过刀后来又把刀删干净的，照样留着
+        if !batch.everEdited {
+            // 先撤掉待写的那一次，否则它两秒后照写，把刚删的文件又变回来
+            BKDraftStore.shared.cancelPending()
+            BKDraftStore.shared.permanentlyDelete(batch)
+            BKLog.shared.i("整批未编辑，草稿已丢弃 \(batch.id.uuidString.prefix(8))")
+            return
+        }
+        BKDraftStore.shared.scheduleSave(batch)
+        BKDraftStore.shared.flushIfNeeded()
+
+        // 封面 = 最后编辑那条素材、上次停住的那一帧（定稿 3.1）
+        let bid = batch.id
+        let aid = item.assetLocalID
+        let t = lastTime
+        BKCovers.generate(asset: asset, at: t) { img in
+            guard let img = img else { return }
+            BKCovers.save(img, batchId: bid, assetId: aid)
+        }
+    }
+
+    private func savePlayhead() {
+        batch.items[itemIndex].playheadTime = lastTime
+        batch.lastAssetId = item.assetLocalID
+    }
+
     // MARK: - 导航栏
 
     private func setupNav() {
-        navigationItem.title = BKVideoLibrary.assetName(localID: localID)
+        navigationItem.title = item.assetName
 
-        // 左：☰ 素材列表。用系统图标而不是字面「☰」，字重线宽才和工具栏对得上
         let listItem = UIBarButtonItem(image: UIImage(systemName: "line.3.horizontal"),
                                        style: .plain,
                                        target: self,
                                        action: #selector(toggleListTapped))
-        listItem.isEnabled = videoIDs.count > 1
+        // 定稿 4.2：素材 ≤1 条时 ☰ 置灰
+        listItem.isEnabled = batch.items.count > 1
         navigationItem.leftBarButtonItem = listItem
 
         // 右：导出。定稿里唯一「图标 + 文字」的按钮 ——
@@ -178,10 +259,12 @@ final class BKEditorViewController: UIViewController {
         // 一拨静音视频就没声 —— 视频类 App 一律用 .playback 类别忽略它
         configureAudioSession()
 
-        let item = AVPlayerItem(asset: asset)
-        let p = AVPlayer(playerItem: item)
+        let p = AVPlayer(playerItem: AVPlayerItem(asset: asset))
         p.volume = 1.0
         p.isMuted = false
+        // 默认是 true，系统会为了不卡顿而**故意多缓冲一会儿才起播** ——
+        // 这就是「按下 ▶ 到出画面」延迟的大头
+        p.automaticallyWaitsToMinimizeStalling = false
         player = p
         logAudioDiagnostics()
 
@@ -195,17 +278,31 @@ final class BKEditorViewController: UIViewController {
         // 0.033 ≈ 30fps。滚动是连续画面，20fps 会明显一格一格地跳
         let interval = CMTime(seconds: 0.033, preferredTimescale: 600)
         timeObserver = p.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
-            guard let self = self else { return }
+            guard let self = self, self.playMode == .straight else { return }
             self.syncPlayhead(to: CMTimeGetSeconds(time))
         }
-
         NotificationCenter.default.addObserver(self,
                                                selector: #selector(playerFinished),
                                                name: .AVPlayerItemDidPlayToEndTime,
-                                               object: item)
+                                               object: p.currentItem)
+
+        // 联播播放器常驻：每次联播只换 item，不重建 player
+        let jp = AVPlayer()
+        jp.automaticallyWaitsToMinimizeStalling = false
+        jointPlayer = jp
+        jointObserver = jp.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+            guard let self = self, self.playMode == .joint, let j = self.joint else { return }
+            let out = CMTimeGetSeconds(time)
+            if out >= j.total - 0.02 {
+                self.stopPlayback()
+                return
+            }
+            // 成品时间 → 反查落在哪个 keep 段 → 加该段原片起点 → 原片时间。
+            // 视觉上指针一路往前走，遇红区「跨」过去一小段，画面连贯又跟轨道不脱节
+            self.syncPlayhead(to: j.sourceTime(at: out))
+        }
     }
 
-    /// 音频会话：显式声明这是个要出声的视频播放器
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
@@ -218,9 +315,7 @@ final class BKEditorViewController: UIViewController {
         }
     }
 
-    /// 没有 Xcode 时，排障全靠这一行：真机上如果还是没声，
-    /// 用「文件 App → bk剪辑」把 bk.log 拖出来，一眼看出是
-    /// 素材没音轨、路由不对，还是类别没设上
+    /// 没有 Xcode 时，排障全靠这一行
     private func logAudioDiagnostics() {
         let session = AVAudioSession.sharedInstance()
         let trackCount = asset.tracks(withMediaType: .audio).count
@@ -235,19 +330,16 @@ final class BKEditorViewController: UIViewController {
     }
 
     @objc private func playerFinished() {
-        playing = false
-        updatePlayButtonIcon()
-        player?.seek(to: CMTime(seconds: 0, preferredTimescale: 600))
-        syncPlayhead(to: 0)
+        stopPlayback()
     }
 
     /// 播放回调 / 手动 seek 之后统一走这里：
     /// 时间码、指针、概览条视窗框三处必须同时跟上，漏一处就会看到「画面和框对不上」
     private func syncPlayhead(to t: Double) {
-        guard let p = project else { return }
-        let clamped = min(max(t, 0), p.duration)
+        let d = item.duration
+        let clamped = min(max(t, 0), d)
         lastTime = clamped
-        timeLabel.text = "\(formatClock(clamped)) / \(formatClock(p.duration))"
+        timeLabel.text = "\(formatClock(clamped)) / \(formatClock(d))"
         track.setPointerTime(clamped)
         overview.setViewport(track.viewport)
     }
@@ -255,34 +347,31 @@ final class BKEditorViewController: UIViewController {
     // MARK: - 布局
 
     private func setupUI() {
-        // ---- 预览画面 ----
+        // ---- 预览画面：高度按素材横竖自适应（定稿 4.3）----
+        let previewH = BKConfig.Layout.previewHeight(displayW: probeInfo.displayWidth,
+                                                     displayH: probeInfo.displayHeight)
+        let trackH = BKConfig.Layout.trackHeight(previewH: previewH)
+
         previewContainer.backgroundColor = BKTheme.Color.preview
         previewContainer.layer.cornerRadius = BKTheme.Radius.card
         previewContainer.clipsToBounds = true
 
-        // 画面上左右滑动 = 换上一条 / 下一条。
-        // 只在有素材列表时挂 —— 单条素材挂上去，滑一下没反应反而像坏了
-        if videoIDs.count >= 2 {
-            let swipeLeft = UISwipeGestureRecognizer(target: self, action: #selector(nextVideoTapped))
-            swipeLeft.direction = .left
-            let swipeRight = UISwipeGestureRecognizer(target: self, action: #selector(prevVideoTapped))
-            swipeRight.direction = .right
-            previewContainer.addGestureRecognizer(swipeLeft)
-            previewContainer.addGestureRecognizer(swipeRight)
+        // 画面上左右滑 = 换上一条 / 下一条。**必须加 40pt 门槛**：
+        // 画面区又大又居中，剪辑到片头想停在那的时候手一蹭就可能翻篇
+        if batch.items.count >= 2 {
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(onPreviewPan(_:)))
+            previewContainer.addGestureRecognizer(pan)
             previewContainer.isUserInteractionEnabled = true
         }
 
-        // ---- 概览条 ----
         overview.delegate = self
 
-        // ---- 主轨道 ----
         trackContainer.backgroundColor = BKTheme.Color.page
         trackContainer.layer.cornerRadius = BKTheme.Radius.card
         trackContainer.clipsToBounds = true
-
         track.delegate = self
-        track.translatesAutoresizingMaskIntoConstraints = false
         trackContainer.addSubview(track)
+        track.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             track.leadingAnchor.constraint(equalTo: trackContainer.leadingAnchor),
             track.trailingAnchor.constraint(equalTo: trackContainer.trailingAnchor),
@@ -290,62 +379,10 @@ final class BKEditorViewController: UIViewController {
             track.bottomAnchor.constraint(equalTo: trackContainer.bottomAnchor)
         ])
 
-        // ---- 工具栏第一排：停止 / 播放 / 反选 / 切割 / 检测 ----
-        // 时间码不在这排（皓哥定稿：所有数字放画面预览区下面），两侧各一个弹性空位把它居中
-        configureTool(stopButton, systemName: "stop.fill", action: #selector(stopTapped))
-        configureTool(playButton, systemName: "play.fill", action: #selector(playTapped))
-        updatePlayButtonIcon()
+        setupListPanel()
+        let toolbar = makeToolbar()
 
-        // ⟳ 反选是自定义图（皓哥从 5 个方案里选的 B），自己设图，只套按钮皮
-        invertButton.setImage(BKIcons.loopArrow(), for: .normal)
-        applyToolStyle(invertButton, action: #selector(invertTapped))
-
-        configureTool(cutButton, systemName: "scissors", action: #selector(cutTapped))
-        // 皓哥指定：自动检测用**吸管**，不是滴管 —— 就是剪映那个取样的东西
-        configureTool(detectButton, systemName: "eyedropper", action: #selector(detectTapped))
-
-        let row1Lead = UIView()
-        let row1Tail = UIView()
-        let row1 = UIStackView(arrangedSubviews: [
-            row1Lead, stopButton, playButton, invertButton, cutButton, detectButton, row1Tail
-        ])
-        row1.axis = .horizontal
-        row1.spacing = BKTheme.Space.sm
-        row1.alignment = .center
-
-        // ---- 工具栏第二排：撤销 / 重做 + 缩放 ----
-        configureTool(undoButton, systemName: "arrow.uturn.backward", action: #selector(undoTapped))
-        configureTool(redoButton, systemName: "arrow.uturn.forward", action: #selector(redoTapped))
-
-        // 缩放滑杆已撤（皓哥 2026-10-02：主轨道能双指捏合就行，杆子占地方）。
-        // ± 留着当保底 —— 捏合一旦在某个系统版本上不灵，至少还有个能点的入口
-        zoomOutButton.setImage(UIImage(systemName: "minus"), for: .normal)
-        styleZoomStep(zoomOutButton, action: #selector(zoomOutTapped))
-        zoomInButton.setImage(UIImage(systemName: "plus"), for: .normal)
-        styleZoomStep(zoomInButton, action: #selector(zoomInTapped))
-
-        let spacer2 = UIView()
-        let row2 = UIStackView(arrangedSubviews: [
-            undoButton, redoButton, spacer2, zoomOutButton, zoomInButton
-        ])
-        row2.axis = .horizontal
-        row2.spacing = BKTheme.Space.sm
-        row2.alignment = .center
-
-        // 两排工具栏共用一条底：把工具栏从页面上分出来（定稿：#F1F1EE）
-        let toolbar = UIStackView(arrangedSubviews: [row1, row2])
-        toolbar.axis = .vertical
-        toolbar.spacing = BKTheme.Space.xs
-        toolbar.alignment = .fill
-        toolbar.backgroundColor = BKTheme.Color.bar
-        toolbar.layer.cornerRadius = BKTheme.Radius.card
-        toolbar.isLayoutMarginsRelativeArrangement = true
-        toolbar.layoutMargins = UIEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
-
-        // ---- 数字行：紧贴画面预览区下面（皓哥 2026-10-02 定稿）----
-        // 左边是「当前 / 总长」，右边是「原时长 · 剪后 · 刀数 · 删了多少」。
-        // 之前时间码塞在工具栏、统计塞在最底下，皓哥指出 iPhone 屏窄，
-        // 工具栏已有 5 个图标 + 缩放滑杆，再塞数字会挤成一团，统一收拢到画面正下方
+        // ---- 数字行：紧贴画面下面（定稿 4.7）----
         timeLabel.font = BKTheme.Font.monoBig
         timeLabel.textColor = BKTheme.Color.text
         timeLabel.text = "00:00 / 00:00"
@@ -364,25 +401,29 @@ final class BKEditorViewController: UIViewController {
         statsRow.spacing = BKTheme.Space.md
         statsRow.alignment = .center
 
-        // ---- 底部：阈值 + 状态 ----
+        // ---- 阈值行 + 恢复自动按钮（定稿 4.7.1）----
         thresholdTitle.font = BKTheme.Font.mono
         thresholdTitle.textColor = BKTheme.Color.text
-        thresholdTitle.text = "阈值 -37.5 dB"
         thresholdTitle.setContentHuggingPriority(.required, for: .horizontal)
 
         thresholdSlider.minimumValue = Float(BKConfig.Detect.clampLow)
         thresholdSlider.maximumValue = Float(BKConfig.Detect.clampHigh)
-        thresholdSlider.value = Float((BKConfig.Detect.clampLow + BKConfig.Detect.clampHigh) / 2)
-        if let p = project {
-            thresholdSlider.value = Float(p.thresholdDb)
-            thresholdTitle.text = String(format: "阈值 %.1f dB", p.thresholdDb)
-        }
+        thresholdSlider.value = Float(item.thresholdDb)
+        thresholdTitle.text = String(format: "阈值 %.1f dB", item.thresholdDb)
         thresholdSlider.minimumTrackTintColor = BKTheme.Color.warning
         thresholdSlider.addTarget(self, action: #selector(thresholdChanged), for: .valueChanged)
 
-        let thresholdRow = UIStackView(arrangedSubviews: [thresholdTitle, thresholdSlider])
+        thresholdAutoButton.setImage(BKIcons.backToAuto(side: 20), for: .normal)
+        thresholdAutoButton.tintColor = BKTheme.Color.text
+        thresholdAutoButton.addTarget(self, action: #selector(thresholdAutoTapped), for: .touchUpInside)
+        NSLayoutConstraint.activate([
+            thresholdAutoButton.widthAnchor.constraint(equalToConstant: 24),
+            thresholdAutoButton.heightAnchor.constraint(equalToConstant: 24)
+        ])
+
+        let thresholdRow = UIStackView(arrangedSubviews: [thresholdTitle, thresholdSlider, thresholdAutoButton])
         thresholdRow.axis = .horizontal
-        thresholdRow.spacing = BKTheme.Space.md
+        thresholdRow.spacing = BKTheme.Space.sm
         thresholdRow.alignment = .center
 
         statusLabel.font = BKTheme.Font.caption
@@ -397,44 +438,101 @@ final class BKEditorViewController: UIViewController {
         statusRow.spacing = BKTheme.Space.sm
         statusRow.alignment = .center
 
-        setupListPanel()
-
-        // 顺序照定稿第 4 节：工具栏 → 预览 → 数字行 → 主轨道 → 概览条 → 阈值/状态
+        // 顺序照定稿第 4 节：列表 → 画面 → 数字行 → 主轨道 → 概览 → 阈值 → 状态
+        let filler = UIView()
         let stack = UIStackView(arrangedSubviews: [
-            toolbar, listPanel, previewContainer, statsRow, trackContainer, overview,
-            thresholdRow, statusRow
+            listPanel, previewContainer, statsRow, trackContainer,
+            overview, thresholdRow, statusRow, filler
         ])
         stack.axis = .vertical
-        stack.spacing = BKTheme.Space.sm
+        stack.spacing = BKTheme.Space.lg
         stack.alignment = .fill
-        stack.setCustomSpacing(BKTheme.Space.xs, after: toolbar)
-        stack.setCustomSpacing(BKTheme.Space.xs, after: previewContainer)
-        stack.setCustomSpacing(BKTheme.Space.md, after: listPanel)
 
         view.addSubview(stack)
+        view.addSubview(toolbar)
         stack.translatesAutoresizingMaskIntoConstraints = false
+        toolbar.translatesAutoresizingMaskIntoConstraints = false
 
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: BKTheme.Space.md),
-            stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -BKTheme.Space.md),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: BKTheme.Space.lg),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -BKTheme.Space.lg),
             stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: BKTheme.Space.sm),
+            stack.bottomAnchor.constraint(equalTo: toolbar.topAnchor, constant: -BKTheme.Space.md),
 
-            previewContainer.heightAnchor.constraint(equalToConstant: 240),
-            trackContainer.heightAnchor.constraint(equalToConstant: 130),
-            overview.heightAnchor.constraint(equalToConstant: 30)
+            previewContainer.heightAnchor.constraint(equalToConstant: previewH),
+            trackContainer.heightAnchor.constraint(equalToConstant: trackH),
+            overview.heightAnchor.constraint(equalToConstant: 30),
+
+            toolbar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: BKTheme.Space.lg),
+            toolbar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -BKTheme.Space.lg),
+            toolbar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            toolbar.heightAnchor.constraint(equalToConstant: 100)
         ])
 
+        updateThresholdAutoButton()
         updateUndoButtons()
+        updateInfo()
+        timeLabel.text = "\(formatClock(lastTime)) / \(formatClock(item.duration))"
     }
 
-    /// 设图 + 套皮 + 挂 action。工具栏按钮一律走这里，样式才会一致
+    /// 工具栏两排（定稿 4.4）：
+    /// 第一排 7 个 44pt：`↩ ↪ | ■ ▶ | ⟳ ✂ 💉`，组内间距 8、组间 16，左右各留 13
+    /// 第二排 `− +` 两个 28pt 小圆靠右 —— 主力是双指捏合，这两个是捏合失灵时的保底
+    private func makeToolbar() -> UIStackView {
+        configureTool(undoButton, systemName: "arrow.uturn.backward", action: #selector(undoTapped))
+        configureTool(redoButton, systemName: "arrow.uturn.forward", action: #selector(redoTapped))
+
+        // 联播键 `|▶|`（皓哥从 5 个方案里挑的 E）
+        jointButton.setImage(BKIcons.skip(), for: .normal)
+        applyToolStyle(jointButton, action: #selector(jointTapped))
+        // 播放 / 停止是同一个键
+        configureTool(playButton, systemName: "play.fill", action: #selector(playTapped))
+
+        invertButton.setImage(BKIcons.loopArrow(), for: .normal)
+        applyToolStyle(invertButton, action: #selector(invertTapped))
+        configureTool(cutButton, systemName: "scissors", action: #selector(cutTapped))
+        configureTool(detectButton, systemName: "eyedropper", action: #selector(detectTapped))
+
+        let row1 = UIStackView(arrangedSubviews: [
+            undoButton, redoButton, jointButton, playButton, invertButton, cutButton, detectButton
+        ])
+        row1.axis = .horizontal
+        row1.spacing = BKTheme.Space.sm
+        row1.alignment = .center
+        // 组间 16 = 默认 8 再补 8
+        row1.setCustomSpacing(BKTheme.Space.lg, after: redoButton)
+        row1.setCustomSpacing(BKTheme.Space.lg, after: playButton)
+
+        zoomOutButton.setImage(UIImage(systemName: "minus"), for: .normal)
+        styleZoomStep(zoomOutButton, action: #selector(zoomOutTapped))
+        zoomInButton.setImage(UIImage(systemName: "plus"), for: .normal)
+        styleZoomStep(zoomInButton, action: #selector(zoomInTapped))
+
+        let spacer2 = UIView()
+        let row2 = UIStackView(arrangedSubviews: [spacer2, zoomOutButton, zoomInButton])
+        row2.axis = .horizontal
+        row2.spacing = BKTheme.Space.sm
+        row2.alignment = .center
+
+        let toolbar = UIStackView(arrangedSubviews: [row1, row2])
+        toolbar.axis = .vertical
+        toolbar.spacing = BKTheme.Space.sm
+        toolbar.alignment = .fill
+        toolbar.backgroundColor = BKTheme.Color.bar
+        toolbar.layer.cornerRadius = BKTheme.Radius.card
+        toolbar.isLayoutMarginsRelativeArrangement = true
+        // 上 10 / 下 10 / 左右 13 → 10 + 44 + 8 + 28 + 10 = 100，正好是定稿里的高度
+        toolbar.layoutMargins = UIEdgeInsets(top: 10, left: 13, bottom: 10, right: 13)
+        return toolbar
+    }
+
     private func configureTool(_ button: UIButton, systemName: String, action: Selector) {
         let cfg = UIImage.SymbolConfiguration(pointSize: BKTheme.Button.iconPoint, weight: .regular)
         button.setImage(UIImage(systemName: systemName, withConfiguration: cfg), for: .normal)
         applyToolStyle(button, action: action)
     }
 
-    /// 只套皮 + 挂 action，不动图。自定义图标（⟳）用这个入口
+    /// 只套皮 + 挂 action，不动图。自定义图标（联播 `|▶|`、反选 ⟳）用这个入口
     private func applyToolStyle(_ button: UIButton, action: Selector) {
         button.tintColor = BKTheme.Color.text
         button.backgroundColor = BKTheme.Color.panel
@@ -463,12 +561,14 @@ final class BKEditorViewController: UIViewController {
         ])
     }
 
-    /// 播放 / 暂停图标互换。收集到一个地方，免得三处调用改了形状忘了另一处
-    private func updatePlayButtonIcon() {
+    /// 播放键图标 + 联播键高亮，两处一起收在这里，免得改了形状忘了另一处
+    private func updatePlayIcons() {
         let cfg = UIImage.SymbolConfiguration(pointSize: BKTheme.Button.iconPoint, weight: .regular)
-        playButton.setImage(UIImage(systemName: playing ? "pause.fill" : "play.fill",
-                                    withConfiguration: cfg),
-                            for: .normal)
+        playButton.setImage(UIImage(systemName: playMode == .straight ? "stop.fill" : "play.fill",
+                                    withConfiguration: cfg), for: .normal)
+        jointButton.backgroundColor = (playMode == .joint)
+            ? BKTheme.Color.gold.withAlphaComponent(0.30)
+            : BKTheme.Color.panel
     }
 
     // MARK: - 素材列表面板
@@ -491,7 +591,7 @@ final class BKEditorViewController: UIViewController {
         listTable.rowHeight = 44
         listTable.dataSource = self
         listTable.delegate = self
-        listTable.register(BKVideoNameCell.self, forCellReuseIdentifier: "BKVideoNameCell")
+        listTable.register(BKAssetRowCell.self, forCellReuseIdentifier: "BKAssetRowCell")
         listPanel.addSubview(listTable)
 
         NSLayoutConstraint.activate([
@@ -508,65 +608,81 @@ final class BKEditorViewController: UIViewController {
         listPanel.isHidden = !listVisible
         if listVisible {
             listTable.reloadData()
-            // 打开时把当前这条滚到可见处，省得用户自己找
-            if let i = currentIndex {
-                listTable.scrollToRow(at: IndexPath(row: i, section: 0),
-                                      at: .middle,
-                                      animated: false)
-            }
-            BKLog.shared.d("打开素材列表，共 \(videoIDs.count) 条")
+            listTable.scrollToRow(at: IndexPath(row: itemIndex, section: 0),
+                                  at: .middle, animated: false)
+            BKLog.shared.d("打开素材列表，共 \(batch.items.count) 条")
         }
     }
 
-    // MARK: - 素材切换
+    // MARK: - 素材切换（两条路并存，定稿第 5 节）
 
-    private var currentIndex: Int? {
-        BKVideoLibrary.index(of: localID, in: videoIDs)
+    /// 路①：左右滑画面（随时能用，快速翻找）—— **横向 ≥40pt 且纵向 <12pt 才算数**
+    private var swipeFired = false
+
+    @objc private func onPreviewPan(_ g: UIPanGestureRecognizer) {
+        switch g.state {
+        case .began:
+            swipeFired = false
+        case .changed:
+            guard !swipeFired else { return }
+            let t = g.translation(in: previewContainer)
+            if abs(t.x) >= BKConfig.Layout.swipeMinX && abs(t.y) < BKConfig.Layout.swipeMaxY {
+                swipeFired = true
+                g.isEnabled = false       // 触发一次就锁住，避免一划连跳好几条
+                if t.x < 0 { openItem(at: itemIndex + 1) } else { openItem(at: itemIndex - 1) }
+            }
+        case .ended, .cancelled, .failed:
+            g.isEnabled = true
+            swipeFired = false
+        default:
+            break
+        }
     }
 
-    @objc private func prevVideoTapped() {
-        guard let i = currentIndex, i > 0 else { return }
-        openSibling(localID: videoIDs[i - 1])
-    }
-
-    @objc private func nextVideoTapped() {
-        guard let i = currentIndex, i < videoIDs.count - 1 else { return }
-        openSibling(localID: videoIDs[i + 1])
-    }
-
-    /// 换素材 = 换一个编辑页实例，而不是原地复用。
-    /// 原地复用要手动清掉播放器、包络、工程、草稿写入状态，漏一个就是脏状态；
-    /// 直接替换导航栈里最顶上的那个，干净且不会把栈越堆越深
-    private func openSibling(localID targetID: String) {
-        guard let nav = navigationController else { return }
-        player?.pause()
-        playing = false
-        updatePlayButtonIcon()
+    /// 路②：轨道拖到片头/片尾再狠拽 >60pt。两条路底层调的是同一个函数
+    private func openItem(at index: Int) {
+        guard index >= 0, index < batch.items.count else { return }
+        guard !isSwitchingAsset else {
+            // 加载锁：上一次还没回来，直接短路返回，不排队
+            BKLog.shared.d("换素材被锁：上一次还没加载完")
+            return
+        }
+        isSwitchingAsset = true
+        stopPlayback()
+        savePlayhead()
         BKDraftStore.shared.flushIfNeeded()
 
-        BKVideoLibrary.loadAVAsset(localID: targetID) { [weak self, weak nav] asset in
-            guard let self = self, let nav = nav, let asset = asset else {
+        let targetID = batch.items[index].assetLocalID
+        BKVideoLibrary.loadAVAsset(localID: targetID) { [weak self] asset in
+            guard let self = self else { return }
+            self.isSwitchingAsset = false
+            guard let asset = asset, let nav = self.navigationController else {
                 BKLog.shared.e("切换素材失败：\(targetID)")
                 return
             }
             let probe = BKAssetProbe.probe(asset)
             BKLog.shared.i(probe.logLine)
-            let project = BKDraftStore.shared.draft(forLocalID: targetID)
-            let vc = BKEditorViewController(asset: asset,
-                                            localID: targetID,
-                                            probeInfo: probe,
-                                            project: project,
-                                            videoIDs: self.videoIDs)
+
+            var b = self.batch
+            if probe.duration > 0 { b.items[index].duration = probe.duration }
+            b.items[index].displayWidth = probe.displayWidth
+            b.items[index].displayHeight = probe.displayHeight
+            b.items[index].sourceRotationDegrees = probe.rotationDegrees
+            // 定稿 4.5.3：**指针一律停在新素材片头**，不分从上一条进来还是下一条进来
+            b.items[index].playheadTime = 0
+            b.lastAssetId = targetID
+            b.lastEditedAt = Date()
+
+            let vc = BKEditorViewController(batch: b, index: index, asset: asset, probeInfo: probe)
             var stack = nav.viewControllers
             if stack.last === self { stack.removeLast() }
             stack.append(vc)
             nav.setViewControllers(stack, animated: true)
+            BKLog.shared.i("切换到第 \(index + 1)/\(b.items.count) 条：\(b.items[index].assetName)")
         }
     }
 
     // MARK: - 提交与撤销
-    //
-    // 所有改动统一走 commit。历史栈是唯一入口，别图一时方便直接改 project.marks。
 
     private func commit(_ updated: BKProject, coalesce: Bool = false) {
         if coalesce && boundaryDragging {
@@ -581,31 +697,39 @@ final class BKEditorViewController: UIViewController {
         } else {
             history.push(updated)
         }
-        project = updated
+        applyItem(updated)
+    }
+
+    private func applyItem(_ updated: BKProject) {
+        batch.items[itemIndex] = updated
+        // everEdited **只置不清**：撤销是把刀撤掉，不是把「我编辑过这件事」抹掉
+        if updated.isEdited { batch.everEdited = true }
+        batch.lastAssetId = updated.assetLocalID
+        batch.lastEditedAt = Date()
         refreshTrack()
         updateInfo()
         updateUndoButtons()
-        BKDraftStore.shared.scheduleSave(updated)
+        BKDraftStore.shared.scheduleSave(batch)
     }
 
     @objc private func undoTapped() {
         guard let restored = history.undo() else { return }
-        project = restored
+        batch.items[itemIndex] = restored
         refreshTrack()
         updateInfo()
         updateUndoButtons()
-        BKDraftStore.shared.scheduleSave(restored)
+        BKDraftStore.shared.scheduleSave(batch)
         statusLabel.text = "已撤销"
         BKLog.shared.i("撤销 → 栈内第 \(history.depth) 格")
     }
 
     @objc private func redoTapped() {
         guard let restored = history.redo() else { return }
-        project = restored
+        batch.items[itemIndex] = restored
         refreshTrack()
         updateInfo()
         updateUndoButtons()
-        BKDraftStore.shared.scheduleSave(restored)
+        BKDraftStore.shared.scheduleSave(batch)
         statusLabel.text = "已重做"
         BKLog.shared.i("重做 → 栈内第 \(history.depth) 格")
     }
@@ -621,9 +745,8 @@ final class BKEditorViewController: UIViewController {
 
     // MARK: - 编辑操作
 
-    /// 重建 marams 并提交。拖动边界传 coalesce: true
     private func applyMarks(_ marks: [BKMark], coalesce: Bool = false) {
-        guard var p = project else { return }
+        var p = item
         p.marks = BKTimeline.normalize(marks, duration: p.duration)
         p.updatedAt = Date()
         commit(p, coalesce: coalesce)
@@ -632,19 +755,15 @@ final class BKEditorViewController: UIViewController {
     /// 按一下，就从**橙色指针现在指的地方**把轨道切开。
     ///
     /// 【切开 ≠ 删除】切口不进 cutRanges，所以导出时长纹丝不动。
-    /// 它的作用是把一段划成两段，好让你单独处理其中一半 ——
-    /// 下一步点哪一半，哪一半就变红被删掉。顺序是「先看切开什么样，再决定删哪边」，
-    /// 比一按下去就删掉一截要安全得多
+    /// 它的作用是把一段划成两段，好让你单独处理其中一半
     @objc private func cutTapped() {
-        guard var p = project else { return }
+        var p = item
         let t = min(max(lastTime, 0), p.duration)
 
-        // 离两头太近不切：切出来的是一截 0.1 秒的碎片，没有任何收拾的价值
-        guard t > 0.1, t < p.duration - 0.1 else {
+        guard t > 0.05, t < p.duration - 0.05 else {
             statusLabel.text = "指针太靠两头了，这里切不出东西"
             return
         }
-        // 同一个地方不重复下刀
         guard !p.splits.contains(where: { abs($0 - t) < 0.05 }) else {
             statusLabel.text = "这里已经有一道切口了"
             return
@@ -658,18 +777,14 @@ final class BKEditorViewController: UIViewController {
         BKLog.shared.i(String(format: "手动切口 %.2fs（现有 %d 道）", t, p.splits.count))
     }
 
-    /// ⟳ 反选：把指针所在的这一段在「留 / 删」之间倒一下。
-    /// 和直接点轨道上那一段是同一件事，区别只是不用拿手指去点窄窄的一段
+    /// ⟳ 反选：把指针所在的这一段在「留 / 删」之间倒一下
     @objc private func invertTapped() {
         togglePiece(at: lastTime)
     }
 
-    /// 点一下 / 反选一段：粉红的把它恢复，绿的把它删掉
     private func togglePiece(at time: Double) {
-        guard let p = project else { return }
-        let shown = BKTimeline.pieces(duration: p.duration,
-                                      cuts: p.cutRanges,
-                                      splits: p.splits)
+        let p = item
+        let shown = BKTimeline.pieces(duration: p.duration, cuts: p.cutRanges, splits: p.splits)
         for pc in shown where time >= pc.start && time <= pc.end {
             var cuts = p.cutRanges
 
@@ -687,7 +802,6 @@ final class BKEditorViewController: UIViewController {
                 statusLabel.text = String(format: "删掉 %.2f~%.2fs", pc.start, pc.end)
                 BKLog.shared.i(String(format: "删掉 %.2f~%.2fs", pc.start, pc.end))
             }
-            // 手动增删和自动刀走同一条重建路径，保住「相邻严丝合缝」这条不变量
             applyMarks(BKTimeline.build(duration: p.duration, cuts: cuts))
             return
         }
@@ -711,69 +825,47 @@ final class BKEditorViewController: UIViewController {
             case .success(let env):
                 self.envelope = env
                 self.statusLabel.text = ""
-                if self.project == nil {
-                    self.createProject()
+                if self.item.autoThresholdDb == nil, self.item.exportHistory.isEmpty,
+                   !self.item.isEdited {
+                    // 全新的素材：跑一次自动检测
+                    self.history.reset(self.item)
                     self.runDetection(override: nil)
                 } else {
                     // 恢复编辑：不重跑检测，尊重上次保存的刀口
-                    if let p = self.project {
-                        BKDraftStore.shared.markOpened(p.id)
-                        self.history.reset(p)
-                    }
+                    self.history.reset(self.item)
                     self.refreshTrack()
                     self.updateInfo()
+                    self.track.setPointerTime(self.lastTime)
                     self.statusLabel.text = "已恢复上次的编辑进度"
                 }
+                BKDraftStore.shared.markOpened(self.batch.id)
                 self.updateUndoButtons()
+                self.updateThresholdAutoButton()
+                self.schedulePreroll()
             }
         }
     }
 
-    private func createProject() {
-        guard let env = envelope else { return }
-        // 时间轴以视频时长为准（音轨可能比画面长或短几毫秒）
-        let duration = probeInfo.duration > 0 ? probeInfo.duration : env.duration
-        let p = BKProject(
-            id: UUID(),
-            assetLocalID: localID,
-            duration: duration,
-            displayWidth: probeInfo.displayWidth,
-            displayHeight: probeInfo.displayHeight,
-            sourceRotationDegrees: probeInfo.rotationDegrees,
-            thresholdDb: (BKConfig.Detect.clampLow + BKConfig.Detect.clampHigh) / 2,
-            autoThresholdDb: nil,
-            sourceApplicable: true,
-            marks: [BKMark(start: 0, end: duration, kind: .keep)],
-            splits: [],
-            createdAt: Date(),
-            updatedAt: Date(),
-            exportHistory: []
-        )
-        project = p
-        history.reset(p)
-        BKDraftStore.shared.markOpened(p.id)
-        BKDraftStore.shared.scheduleSave(p)
-        updateUndoButtons()
-        BKLog.shared.i(String(format: "新建工程 %.0f×%.0f %.1fs",
-                              p.displayWidth, p.displayHeight, p.duration))
-    }
-
     private func runDetection(override: Double?) {
-        guard let env = envelope, let p = project else { return }
+        guard let env = envelope else { return }
         statusLabel.text = "正在检测气口…"
         spinner.startAnimating()
 
+        let p = item
+        let dur = p.duration
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let outcome = BKDetector.detect(envelope: env,
-                                            totalDuration: p.duration,
+                                            totalDuration: dur,
                                             overrideThreshold: override)
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.spinner.stopAnimating()
-                var proj = p
+                var proj = self.item
                 proj.thresholdDb = outcome.info.thresholdDb
                 if override == nil {
-                    proj.autoThresholdDb = outcome.info.rawThresholdDb
+                    // 记下这次自动算出来的**实际使用值**（夹逼之后的）——
+                    // 「恢复自动」要回到的就是它，不是未夹逼的原始 Otsu
+                    proj.autoThresholdDb = outcome.info.thresholdDb
                 }
                 proj.sourceApplicable = outcome.info.applicable
                 proj.marks = BKTimeline.build(duration: proj.duration, cuts: outcome.cuts)
@@ -797,18 +889,17 @@ final class BKEditorViewController: UIViewController {
                 self.detectButton.isEnabled = outcome.info.applicable
                 self.detectButton.alpha = outcome.info.applicable ? 1.0 : 0.35
                 self.commit(proj)
+                self.updateThresholdAutoButton()
             }
         }
     }
 
     /// 轨道 + 概览条一起刷新。分开刷迟早会出现「轨道已经切了，概览条还画着旧的」
     private func refreshTrack() {
-        guard let p = project else { return }
+        let p = item
         // 显示序列 = 删除区间 + 手动切口 一起算出来的片段。
         // 导出永远只认 keepRanges，切口不参与 —— 切一刀不会让成品少一帧
-        let shown = BKTimeline.pieces(duration: p.duration,
-                                      cuts: p.cutRanges,
-                                      splits: p.splits)
+        let shown = BKTimeline.pieces(duration: p.duration, cuts: p.cutRanges, splits: p.splits)
         track.setContent(envelope: envelope,
                          pieces: shown,
                          splits: p.splits,
@@ -821,7 +912,7 @@ final class BKEditorViewController: UIViewController {
     }
 
     private func updateInfo() {
-        guard let p = project else { return }
+        let p = item
         if p.cutCount == 0 {
             infoLabel.text = String(format: "原 %@ · 剪后 %@ · 还没有刀口",
                                     formatClock(p.duration), formatClock(p.outputDuration))
@@ -832,35 +923,9 @@ final class BKEditorViewController: UIViewController {
         }
     }
 
-    // MARK: - 交互
-
-    @objc private func playTapped() {
-        guard let p = player else { return }
-        if playing {
-            p.pause()
-            playing = false
-            updatePlayButtonIcon()
-        } else {
-            // 从橙色指针所在的位置播起 —— 指针在正中不动，画面会持续向左滚过去
-            p.seek(to: CMTime(seconds: lastTime, preferredTimescale: 600))
-            p.play()
-            playing = true
-            updatePlayButtonIcon()
-        }
-    }
-
-    /// ■ 停止：暂停 + 指针回到 0 秒。
-    /// 和暂停的区别是它认「归零」—— 听一句口播要反复从头对，省一次拖拽
-    @objc private func stopTapped() {
-        player?.pause()
-        playing = false
-        updatePlayButtonIcon()
-        player?.seek(to: CMTime(seconds: 0, preferredTimescale: 600))
-        syncPlayhead(to: 0)
-    }
-
+    /// 💉 自动检测：按当前阈值重算气口
     @objc private func detectTapped() {
-        runDetection(override: nil)
+        runDetection(override: Double(thresholdSlider.value))
     }
 
     /// ± 每次走 2 屏。1 屏一档太慢，从 6 屏拉到 20 屏要按 14 下
@@ -873,112 +938,90 @@ final class BKEditorViewController: UIViewController {
         overview.setViewport(track.viewport)
     }
 
-    @objc private func exportTapped() {
-        guard let p = project, !isExporting else { return }
-        isExporting = true
-        setControlsEnabled(false)
-        statusLabel.text = "正在导出…"
-        spinner.startAnimating()
-        let startedAt = Date()
+    // MARK: - 播放
 
-        BKExporter.export(project: p, asset: asset) { [weak self] done, total, fraction in
-            guard let self = self else { return }
-            let pct = Int(fraction * 100)
-            self.statusLabel.text = "正在导出… \(pct)%（第 \(done)/\(total) 段）"
-        } completion: { [weak self] result in
-            guard let self = self else { return }
-            self.isExporting = false
-            self.setControlsEnabled(true)
-            self.spinner.stopAnimating()
-
-            switch result {
-            case .failure(let err):
-                self.statusLabel.text = "导出失败：\(err.localizedDescription)"
-                BKLog.shared.e("导出失败：\(err.localizedDescription)")
-            case .success(let url):
-                let elapsed = Date().timeIntervalSince(startedAt)
-                self.saveToPhotos(url, elapsed: elapsed)
-            }
-        }
+    /// ▶ 原片播：从橙指针处起播，红区绿区都播
+    @objc private func playTapped() {
+        if playMode == .straight { stopPlayback(); return }
+        stopPlayback()
+        guard let p = player else { return }
+        // 起播路径保持极短：只做 play()。seek 和 preroll 早在指针停下时就做完了
+        playerLayer?.player = p
+        p.play()
+        playMode = .straight
+        updatePlayIcons()
     }
 
-    private func saveToPhotos(_ url: URL, elapsed: Double) {
-        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+    /// `|▶|` 联播：按 keepRanges 临时拼一条来播，等于预演成品（定稿 4.5.4）
+    @objc private func jointTapped() {
+        if playMode == .joint { stopPlayback(); return }
+        stopPlayback()
 
-        func request(_ work: @escaping () -> Void) {
-            PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in
-                DispatchQueue.main.async { work() }
-            }
+        let keeps = item.keepRanges
+        guard let built = BKJointBuilder.build(asset: asset, keeps: keeps) else {
+            statusLabel.text = "没有可播放的绿区"
+            return
+        }
+        // 起点落在红区里 → 往下跳到第一个绿区再开始（定稿 4.5.5）
+        guard let startOut = BKJointBuilder.startKeptTime(for: lastTime, keeps: keeps) else {
+            statusLabel.text = "指针后面没有绿区了"
+            return
         }
 
-        func performSave() {
-            PHPhotoLibrary.shared().performChanges({
-                PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
-            }) { [weak self] ok, err in
-                DispatchQueue.main.async {
-                    guard let self = self else { return }
-                    if ok {
-                        // 记进导出历史：排障时「哪个文件、多大、耗时多久」全靠它
-                        if var p = self.project {
-                            let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
-                            let size = (attr?[.size] as? Int64) ?? 0
-                            let record = BKExportRecord(id: UUID(),
-                                                        date: Date(),
-                                                        fileSize: size,
-                                                        duration: p.outputDuration,
-                                                        fileName: url.lastPathComponent,
-                                                        elapsedSec: elapsed)
-                            p.exportHistory.append(record)
-                            p.updatedAt = Date()
-                            self.project = p
-                            BKDraftStore.shared.scheduleSave(p)
-                            BKLog.shared.i("成品已存相册 \(record.fileName) · \(record.sizeText) · \(String(format: "%.1f", elapsed))s")
-                        }
-                        self.statusLabel.text = ""
-                        let alert = UIAlertController(
-                            title: "已保存到相册",
-                            message: "成品已存入系统相册，可以直接进剪映。",
-                            preferredStyle: .alert)
-                        alert.addAction(UIAlertAction(title: "好", style: .cancel))
-                        self.present(alert, animated: true)
-                    } else {
-                        let msg = err?.localizedDescription ?? "未知原因"
-                        self.statusLabel.text = "存相册失败：\(msg)"
-                        BKLog.shared.e("存相册失败：\(msg)")
-                    }
-                }
-            }
-        }
+        guard let jp = jointPlayer else { return }
+        joint = built
+        jp.replaceCurrentItem(with: built.item)
+        jp.seek(to: CMTime(seconds: startOut, preferredTimescale: 600),
+                toleranceBefore: .zero, toleranceAfter: .zero)
+        // 指针跟着挪到对应位置，跳转是瞬间的
+        syncPlayhead(to: built.sourceTime(at: startOut))
 
-        switch status {
-        case .authorized, .limited:
-            performSave()
-        case .notDetermined:
-            request(performSave)
-        default:
-            statusLabel.text = "没有相册写入权限，去系统设置里开"
-        }
+        playerLayer?.player = jp
+        jp.play()
+        playMode = .joint
+        updatePlayIcons()
+        BKLog.shared.i(String(format: "联播 %d 段 · 成品 %.1fs（原片 %.1fs）",
+                              built.segments.count, built.total, item.duration))
     }
 
-    /// 状态机统一入口：提波形 / 导出期间把整个工具栏灰掉，
-    /// 免得在半成品状态上再叠一层编辑
-    private func setControlsEnabled(_ enabled: Bool) {
-        let buttons = [stopButton, playButton, invertButton, cutButton, detectButton,
-                       undoButton, redoButton, zoomOutButton, zoomInButton]
-        for b in buttons {
-            b.isEnabled = enabled
-            b.alpha = enabled ? 1.0 : 0.4
+    /// 停止。**指针停原地**（定稿 4.5.2）—— 旧版「停止 = 暂停 + 回 0 秒」已作废
+    private func stopPlayback() {
+        player?.pause()
+        jointPlayer?.pause()
+        playMode = .idle
+        // 画面切回原片播放器，并把主 player 挪到当前指针 ——
+        // 这样退出联播之后画面接得上，不会跳回上一次原片播到的地方
+        playerLayer?.player = player
+        if let p = player {
+            p.seek(to: CMTime(seconds: lastTime, preferredTimescale: 600),
+                   toleranceBefore: .zero, toleranceAfter: .zero)
         }
-        exportButton.isEnabled = enabled
-        exportButton.alpha = enabled ? 1.0 : 0.4
-        thresholdSlider.isEnabled = enabled
-        // 撤销 / 重做还得再看一眼栈里有没有东西，不能一刀切全亮
-        if enabled { updateUndoButtons() }
+        joint = nil
+        updatePlayIcons()
+        schedulePreroll()
     }
+
+    /// 指针一停下就后台预解码。等按下 ▶ 时只剩 play() 一步 ——
+    /// 降延迟靠的是「提前把活干完」，不是优化按下那一刻
+    private func schedulePreroll() {
+        prerollWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.playMode == .idle else { return }
+            let t = CMTime(seconds: self.lastTime, preferredTimescale: 600)
+            self.player?.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                self?.player?.preroll(atRate: 1, completionHandler: nil)
+            }
+        }
+        prerollWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    // MARK: - 阈值
 
     @objc private func thresholdChanged() {
         let v = Double(thresholdSlider.value)
         thresholdTitle.text = String(format: "阈值 %.1f dB", v)
+        updateThresholdAutoButton()
         // 滑杆是连续动作，停下 0.4 秒才真正重算 —— 手感优先
         sliderWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -986,6 +1029,194 @@ final class BKEditorViewController: UIViewController {
         }
         sliderWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    /// 「恢复自动」：当前就是自动值时置灰，手动拖过就亮，按一下回到 Otsu 的值并重算
+    @objc private func thresholdAutoTapped() {
+        guard let auto = item.autoThresholdDb else {
+            statusLabel.text = "还没有自动值，先按一次吸管检测"
+            return
+        }
+        thresholdSlider.value = Float(auto)
+        thresholdTitle.text = String(format: "阈值 %.1f dB", auto)
+        runDetection(override: auto)
+        statusLabel.text = String(format: "已回到自动值 %.1f dB", auto)
+    }
+
+    /// 阈值是不是还停在自动算出来的那个值上
+    private func updateThresholdAutoButton() {
+        guard let auto = item.autoThresholdDb else {
+            thresholdAutoButton.isEnabled = false
+            thresholdAutoButton.alpha = 0.30
+            return
+        }
+        let isAuto = abs(item.thresholdDb - auto) < 0.01
+        thresholdAutoButton.isEnabled = !isAuto
+        thresholdAutoButton.alpha = isAuto ? 0.30 : 1.0
+    }
+
+    // MARK: - 导出
+
+    @objc private func exportTapped() {
+        guard !isExporting else { return }
+        stopPlayback()
+        savePlayhead()
+        BKDraftStore.shared.flushIfNeeded()
+
+        let panel = BKExportPanelViewController(batch: batch, currentIndex: itemIndex)
+        panel.onStart = { [weak self] scope, spec in
+            self?.runExport(scope: scope, spec: spec)
+        }
+        present(panel, animated: true)
+    }
+
+    private func runExport(scope: BKExportScope, spec: BKConfig.ExportSpec) {
+        let targets: [Int]
+        switch scope {
+        case .current:
+            targets = [itemIndex]
+        case .allEdited:
+            // 「改过的」= cuts 或 splits 非空 —— 跟列表红字、草稿留存**同一个判定**
+            targets = batch.items.indices.filter { batch.items[$0].isEdited }
+        }
+        guard !targets.isEmpty else {
+            statusLabel.text = "这一批还没有动过刀的素材"
+            return
+        }
+
+        isExporting = true
+        setControlsEnabled(false)
+        spinner.startAnimating()
+
+        // 批量 + 选了「同源文件」→ 按**时长最长那条**的参数全批统一（定稿 4.9.1）。
+        // 帧率只有从 AVAsset 上才读得到，所以先加载一次那条素材
+        if scope == .allEdited, let li = batch.longestItemIndex() {
+            let refItem = batch.items[li]
+            BKVideoLibrary.loadAVAsset(localID: refItem.assetLocalID) { [weak self] asset in
+                guard let self = self else { return }
+                var ref: BKExporter.ExportReference?
+                if let a = asset, let t = a.tracks(withMediaType: .video).first {
+                    ref = BKExporter.ExportReference(
+                        displayWidth: refItem.displayWidth > 0 ? refItem.displayWidth : a.naturalSize.width,
+                        displayHeight: refItem.displayHeight > 0 ? refItem.displayHeight : a.naturalSize.height,
+                        fps: t.nominalFrameRate > 0 ? Double(t.nominalFrameRate) : 30)
+                    if let r = ref {
+                        BKLog.shared.i(String(format: "批量导出统一按最长那条：%@ %.0f×%.0f %.0ffps",
+                                              refItem.assetName, r.displayWidth, r.displayHeight, r.fps))
+                    }
+                }
+                self.exportLoop(targets, spec: spec, reference: ref,
+                                done: 0, ok: 0, failed: [])
+            }
+        } else {
+            exportLoop(targets, spec: spec, reference: nil, done: 0, ok: 0, failed: [])
+        }
+    }
+
+    /// 逐条排队。单条失败记下来继续跑完剩下的，最后统一报一句 ——
+    /// 中途弹窗把整批打断比让它跑完难受得多（定稿 4.8）
+    private func exportLoop(_ targets: [Int],
+                            spec: BKConfig.ExportSpec,
+                            reference: BKExporter.ExportReference?,
+                            done: Int,
+                            ok: Int,
+                            failed: [String]) {
+        if done >= targets.count {
+            finishExport(ok: ok, failed: failed)
+            return
+        }
+        let idx = targets[done]
+        let it = batch.items[idx]
+        statusLabel.text = "正在导出 \(done + 1)/\(targets.count) · \(it.assetName)"
+
+        BKVideoLibrary.loadAVAsset(localID: it.assetLocalID) { [weak self] asset in
+            guard let self = self else { return }
+            guard let asset = asset else {
+                self.exportLoop(targets, spec: spec, reference: reference, done: done + 1,
+                                ok: ok, failed: failed + [it.assetName])
+                return
+            }
+            let name = it.nextExportFileName
+            BKExporter.export(project: it, asset: asset, spec: spec, reference: reference,
+                              progress: { [weak self] _, _, f in
+                                  self?.statusLabel.text = String(
+                                      format: "正在导出 %d/%d · %d%%", done + 1, targets.count, Int(f * 100))
+                              },
+                              completion: { [weak self] result in
+                guard let self = self else { return }
+                switch result {
+                case .failure(let err):
+                    BKLog.shared.e("导出失败 \(it.assetName)：\(err.localizedDescription)")
+                    self.exportLoop(targets, spec: spec, reference: reference, done: done + 1,
+                                    ok: ok, failed: failed + [it.assetName])
+                case .success(let url):
+                    BKRootViewController.saveToPhotos(url: url, fileName: name) { success in
+                        guard let self = self else { return }
+                        if success {
+                            // 记进导出历史：文件名后缀序号（exportCount）就靠它递增
+                            let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
+                            let rec = BKExportRecord(id: UUID(), date: Date(),
+                                                     fileSize: (attr?[.size] as? Int64) ?? 0,
+                                                     duration: it.outputDuration,
+                                                     fileName: name,
+                                                     elapsedSec: 0)
+                            self.batch.items[idx].exportHistory.append(rec)
+                            self.batch.lastEditedAt = Date()
+                            BKDraftStore.shared.scheduleSave(self.batch)
+                            self.updateInfo()
+                            self.exportLoop(targets, spec: spec, reference: reference,
+                                            done: done + 1, ok: ok + 1, failed: failed)
+                        } else {
+                            self.exportLoop(targets, spec: spec, reference: reference, done: done + 1,
+                                            ok: ok, failed: failed + [it.assetName])
+                        }
+                    }
+                }
+            })
+        }
+    }
+
+    private func finishExport(ok: Int, failed: [String]) {
+        isExporting = false
+        setControlsEnabled(true)
+        spinner.stopAnimating()
+        BKDraftStore.shared.flushIfNeeded()
+
+        if failed.isEmpty {
+            statusLabel.text = "已导出 \(ok) 条，存入相册"
+            let alert = UIAlertController(title: "已保存到相册",
+                                          message: "\(ok) 条成品已存入系统相册，可以直接进剪映。",
+                                          preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "好", style: .cancel))
+            present(alert, animated: true)
+        } else {
+            statusLabel.text = "\(ok) 条成功，\(failed.count) 条失败"
+            let alert = UIAlertController(title: "\(ok) 条成功，\(failed.count) 条失败",
+                                          message: "失败的：\n" + failed.joined(separator: "\n"),
+                                          preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "好", style: .cancel))
+            present(alert, animated: true)
+        }
+    }
+
+    /// 状态机统一入口：提波形 / 导出期间把整个工具栏灰掉，
+    /// 免得在半成品状态上再叠一层编辑
+    private func setControlsEnabled(_ enabled: Bool) {
+        let buttons = [undoButton, redoButton, jointButton, playButton, invertButton,
+                       cutButton, detectButton, zoomOutButton, zoomInButton]
+        for b in buttons {
+            b.isEnabled = enabled
+            b.alpha = enabled ? 1.0 : 0.4
+        }
+        exportButton.isEnabled = enabled
+        exportButton.alpha = enabled ? 1.0 : 0.4
+        thresholdSlider.isEnabled = enabled
+        // 撤销 / 重做 / 恢复自动 三个按钮的可用性各有各的判据，不能一刀切全亮。
+        // 少了这一句，恢复之后「恢复自动」会在还是自动值的时候亮着
+        if enabled {
+            updateUndoButtons()
+            updateThresholdAutoButton()
+        }
     }
 
     // MARK: - 工具
@@ -999,51 +1230,68 @@ final class BKEditorViewController: UIViewController {
     }
 }
 
-// MARK: - 素材列表数据源
+// MARK: - 素材列表（定稿 4.2）
 
-/// 带副标题的 cell。系统默认样式没有 detailTextLabel，
-/// register(UITableViewCell.self) 拿到的那种，副标题会静默消失
-private final class BKVideoNameCell: UITableViewCell {
+/// 左边一条金色竖条，用来标「正在编辑这一条」。
+/// 用自定义 cell 而不是 selectedBackgroundView：后者按下就变色，会跟红色名字打架
+private final class BKAssetRowCell: UITableViewCell {
+
+    let bar = UIView()
+
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: .subtitle, reuseIdentifier: reuseIdentifier)
+        bar.backgroundColor = BKTheme.Color.gold
+        bar.isHidden = true
+        contentView.addSubview(bar)
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            bar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            bar.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6),
+            bar.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
+            bar.widthAnchor.constraint(equalToConstant: 3)
+        ])
     }
 
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-    }
+    required init?(coder: NSCoder) { super.init(coder: coder) }
 }
 
 extension BKEditorViewController: UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        videoIDs.count
+        batch.items.count
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "BKVideoNameCell", for: indexPath)
-        let id = videoIDs[indexPath.row]
-        let isCurrent = (id == localID)
+        guard let cell = tableView.dequeueReusableCell(
+            withIdentifier: "BKAssetRowCell", for: indexPath) as? BKAssetRowCell else {
+            return UITableViewCell()
+        }
+        let it = batch.items[indexPath.row]
+        let isCurrent = (indexPath.row == itemIndex)
 
         cell.backgroundColor = .clear
-        cell.textLabel?.text = BKVideoLibrary.assetName(localID: id)
-        cell.textLabel?.textColor = isCurrent ? BKTheme.Color.gold : BKTheme.Color.text
-        cell.detailTextLabel?.text = BKVideoLibrary.formatDuration(BKVideoLibrary.duration(localID: id))
+        cell.textLabel?.text = it.assetName
+        // 定稿 4.2：已切割 → **红色 #C0392B**；没动过 → 默认色。
+        // 判定用「cuts 或 splits 非空」，不能用「有没有草稿」
+        cell.textLabel?.textColor = it.isEdited ? UIColor(hex: 0xC0392B) : BKTheme.Color.text
+        cell.detailTextLabel?.text = it.isEdited
+            ? "\(it.cutCount) 刀 · \(BKVideoLibrary.formatDuration(it.duration))"
+            : BKVideoLibrary.formatDuration(it.duration)
         cell.detailTextLabel?.textColor = BKTheme.Color.text2
         cell.accessoryType = isCurrent ? .checkmark : .none
         cell.tintColor = BKTheme.Color.gold
         cell.selectionStyle = .default
+        cell.bar.isHidden = !isCurrent
         return cell
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        let id = videoIDs[indexPath.row]
-        guard id != localID else {
-            // 点的是当前这条 —— 收起列表就好，不用重新加载
-            toggleListTapped()
+        guard indexPath.row != itemIndex else {
+            toggleListTapped()      // 点的是当前这条 —— 收起列表就好
             return
         }
-        openSibling(localID: id)
+        openItem(at: indexPath.row)
     }
 }
 
@@ -1052,20 +1300,21 @@ extension BKEditorViewController: UITableViewDataSource, UITableViewDelegate {
 extension BKEditorViewController: BKTrackViewDelegate {
 
     func track(_ view: BKTrackView, didScrollTo time: Double) {
-        guard let p = project else { return }
-        let t = min(max(time, 0), p.duration)
-        // 手动一滚就先停播放。否则「用户拖 contentOffset」和
-        // 「播放回调推 contentOffset」两边同时发力，画面会来回抽
-        if playing {
-            player?.pause()
-            playing = false
-            updatePlayButtonIcon()
-        }
-        // 预览画面跟指针跳帧：指针是滚动位置换算出来的，这里直接 seek 即可
-        player?.seek(to: CMTime(seconds: t, preferredTimescale: 600))
+        let t = min(max(time, 0), item.duration)
+        // 手动找位置一律静音：seek 走 rate==0 的路径，天然不出声。
+        // **绝不能用播放中的 player 去 seek 来模拟 scrub** —— 那样拖动就是有声的
+        if playMode != .idle { stopPlayback() }
+        player?.seek(to: CMTime(seconds: t, preferredTimescale: 600),
+                     toleranceBefore: .zero, toleranceAfter: .zero)
         lastTime = t
-        timeLabel.text = "\(formatClock(t)) / \(formatClock(p.duration))"
+        timeLabel.text = "\(formatClock(t)) / \(formatClock(item.duration))"
         overview.setViewport(track.viewport)
+        schedulePreroll()
+    }
+
+    /// 手指一碰轨道就停（定稿 4.5.1）。播放中一拖就暂停，不存在松手续播
+    func trackDidTouchDown(_ view: BKTrackView) {
+        if playMode != .idle { stopPlayback() }
     }
 
     func track(_ view: BKTrackView, didTogglePieceAt time: Double) {
@@ -1078,9 +1327,8 @@ extension BKEditorViewController: BKTrackViewDelegate {
     }
 
     func track(_ view: BKTrackView, didDragBoundaryNear near: Double, to newTime: Double) {
-        guard let p = project else { return }
         // 拖到非法位置（越过邻居）时返回 nil，界面保持原样
-        if let next = BKTimeline.moveBoundary(in: p.marks, near: near, to: newTime) {
+        if let next = BKTimeline.moveBoundary(in: item.marks, near: near, to: newTime) {
             applyMarks(next, coalesce: true)
         }
     }
@@ -1094,23 +1342,46 @@ extension BKEditorViewController: BKTrackViewDelegate {
         overview.setViewport(track.viewport)
         BKLog.shared.d(String(format: "轨道缩放 %.1f 屏", screens))
     }
+
+    /// 路②：已经在片头，松手时还被往右拽过 60pt → 换上一条
+    func trackDidPullBeyondHead(_ view: BKTrackView) {
+        // 加载期间把开关关掉，回来之前不再响应第二次（三个坑里的第一个）
+        view.allowsSiblingSwitch = false
+        if itemIndex > 0 {
+            openItem(at: itemIndex - 1)
+        } else {
+            // 已经是第一条 / 只有一条素材 → 只回弹，弹到片头那一帧
+            view.setPointerTime(0)
+            lastTime = 0
+            schedulePreroll()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { view.allowsSiblingSwitch = true }
+    }
+
+    func trackDidPullBeyondTail(_ view: BKTrackView) {
+        view.allowsSiblingSwitch = false
+        if itemIndex < batch.items.count - 1 {
+            openItem(at: itemIndex + 1)
+        } else {
+            view.setPointerTime(item.duration)
+            lastTime = item.duration
+            schedulePreroll()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { view.allowsSiblingSwitch = true }
+    }
 }
 
 // MARK: - 概览条回调
 
 extension BKEditorViewController: BKOverviewBarDelegate {
 
-    /// 点 / 拖概览条 = 直接跳到那个位置。
-    /// 放大之后想从 5 秒跳到 38 秒，靠拖主轨道得划好几下
+    /// 点 / 拖概览条 = 直接跳到那个位置，**然后就停在那**（静音）
     func overview(_ bar: BKOverviewBar, didSeekTo time: Double) {
-        guard let p = project else { return }
-        let t = min(max(time, 0), p.duration)
-        if playing {
-            player?.pause()
-            playing = false
-            updatePlayButtonIcon()
-        }
-        player?.seek(to: CMTime(seconds: t, preferredTimescale: 600))
+        let t = min(max(time, 0), item.duration)
+        if playMode != .idle { stopPlayback() }
+        player?.seek(to: CMTime(seconds: t, preferredTimescale: 600),
+                     toleranceBefore: .zero, toleranceAfter: .zero)
         syncPlayhead(to: t)
+        schedulePreroll()
     }
 }

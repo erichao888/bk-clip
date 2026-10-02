@@ -1,21 +1,24 @@
 //
 //  BKExporter.swift
-//  bk剪辑 — 导出（第三批）
+//  bk剪辑 — 导出
 //
 //  【策略：重编码导出（H.264 + AAC-LC）】
 //  第一版写的是「直通转封装」（reader/writer 的 outputSettings 全给 nil，
 //  原样搬运源素材的 H.264/AAC 压缩数据）—— 方案很美：画质零损、速度快。
 //  但真机上一试就死在这：`writer.canAdd(videoInput)` 直接返回 false。
 //  **MP4 容器不接受原始比特流直通**，必须给出明确的编码参数。
-//  所以改回标准做法：reader 出原始帧 → writer 压缩，参数照
-//  tools/preview_cut.py 里已通过剪映实测的那套规格来设。
+//  所以改回标准做法：reader 出原始帧 → writer 压缩。
 //
-//  【已知取舍】接缝暂不做 15ms 淡入淡出（Python 版 preview_cut.py 有）。
-//  先验这版接缝在剪映里有没有爆音，有再补 —— 别为了理论完美拖延上线。
+//  【容器与编码是焊死的，别动】
+//  MP4 / H.264 / yuv420p / AAC-LC 192k / faststart 这一套已经在真·剪映上
+//  实测导入通过（2026-10-02 皓哥验证）。可选项**只有分辨率和帧率**两项
+//  （定稿 4.9）。改任何一个编码参数之前先问：改了还能进剪映吗？
 //
 //  【三条方向铁律在这里的落点】
 //  ② writerInput.transform = track.preferredTransform 必须显式赋值，漏了成品必躺下
 //  ③ 导出日志永久记录显示尺寸
+//  ⚠️ 改分辨率时最容易忘第 ② 条：分辨率变了，写入的宽高要跟着变，
+//     但 transform **永远是源素材那个 preferredTransform**（定稿 4.9.2）
 //
 //  【时间轴重排】每一段的采样时间戳统一平移到它在成品里的新位置：
 //  新 PTS = 原 PTS - 段起点 + 已拼接时长。视频的 DTS（B 帧存在时早于 PTS）
@@ -27,16 +30,53 @@ import AVFoundation
 
 enum BKExporter {
 
+    /// 实际采用的导出规格。分辨率 / 帧率可能被源素材夹回来，
+    /// 状态行显示的必须是**实际值**，不是用户选的值 ——
+    /// 定稿 4.9.1 明确要求：别让人以为文件变大了是出错了
+    struct Plan {
+        /// 写入 AVAssetWriter 的宽高（**未旋转**的存储方向）
+        let writeSize: CGSize
+        /// 对应的显示尺寸（已应用 preferredTransform）
+        let displaySize: CGSize
+        /// 实际输出帧率
+        let fps: Double
+        /// 源素材帧率，用来判断要不要丢帧
+        let sourceFps: Double
+        /// 丢帧时的最小 PTS 间隔（秒）。nil = 不丢帧
+        var minFrameInterval: Double? {
+            guard fps > 0, sourceFps > fps + 0.01 else { return nil }
+            return 1.0 / fps
+        }
+        var summary: String {
+            String(format: "%d×%d · %.0ffps",
+                   Int(displaySize.width), Int(displaySize.height), fps)
+        }
+    }
+
+    /// 批量导出时的「参考规格」—— 定稿 4.9.1：
+    /// 用户选「同源文件」但一批里各条参数不一样时，全批按**时长最长那条**统一。
+    /// 传了它，长宽和帧率就照它来，不再各用各的；手动选了具体值则听手动的
+    struct ExportReference {
+        var displayWidth: Double
+        var displayHeight: Double
+        var fps: Double
+    }
+
     /// progress 回调 (已完成段数, 总段数, 完成度 0~1)。
     /// 给完成度是因为「第几段」的观感很差：一上来第 1/12 段，
     /// 用户根本不知道要等多久 —— 百分比才是人能感知的进度
+    ///
+    /// - parameter reference: 批量导出的统一基准。单条导出传 nil（各用各的源参数）
     static func export(project: BKProject,
                        asset: AVAsset,
+                       spec: BKConfig.ExportSpec,
+                       reference: ExportReference? = nil,
                        progress: @escaping (Int, Int, Double) -> Void,
                        completion: @escaping (Result<URL, Error>) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let url = try exportSync(project: project, asset: asset, progress: progress)
+                let url = try exportSync(project: project, asset: asset,
+                                         spec: spec, reference: reference, progress: progress)
                 DispatchQueue.main.async { completion(.success(url)) }
             } catch {
                 DispatchQueue.main.async { completion(.failure(error)) }
@@ -44,10 +84,76 @@ enum BKExporter {
         }
     }
 
+    // MARK: - 输出规格换算
+
+    /// 算出真正要写进 writer 的宽高、帧率。
+    ///
+    /// 【分辨率作用在显示尺寸上】定稿 4.9.2：
+    ///   目标显示尺寸：竖版 1080P = 1080×1920（短边是 1080）
+    ///   写入宽高    ：把显示尺寸按 transform **反方向转回去**
+    /// 用 `transform.inverted()` 而不是「如果是 90 度就交换宽高」——
+    /// 后者遇到镜像（自拍，a 或 d 为负）就直接给错答案。
+    static func makePlan(videoTrack: AVAssetTrack,
+                         project: BKProject,
+                         spec: BKConfig.ExportSpec,
+                         reference: ExportReference? = nil) -> Plan {
+        let transform = videoTrack.preferredTransform
+        let natural = videoTrack.naturalSize
+        // 源素材的显示尺寸。批量导出的「同源文件」模式直接采用参考条的尺寸
+        var dispW: CGFloat
+        var dispH: CGFloat
+        if let r = reference, r.displayWidth > 0, r.displayHeight > 0 {
+            dispW = CGFloat(r.displayWidth)
+            dispH = CGFloat(r.displayHeight)
+        } else if project.displayWidth > 0, project.displayHeight > 0 {
+            dispW = CGFloat(project.displayWidth)
+            dispH = CGFloat(project.displayHeight)
+        } else {
+            dispW = abs(natural.applying(transform).width)
+            dispH = abs(natural.applying(transform).height)
+        }
+        if dispW <= 0 || dispH <= 0 {
+            dispW = abs(natural.width); dispH = abs(natural.height)
+        }
+
+        // 分辨率：短边缩放到目标值（1080P = 短边 1080）
+        if let short = spec.resolution.targetShortSide {
+            let minSide = min(dispW, dispH)
+            if minSide > 0, abs(minSide - CGFloat(short)) > 1 {
+                let k = CGFloat(short) / minSide
+                dispW *= k
+                dispH *= k
+            }
+        }
+
+        // 显示尺寸 → 存储尺寸：把变换矩阵逆过去
+        let inv = transform.inverted()
+        let back = CGSize(width: dispW, height: dispH).applying(inv)
+        // H.264 要求宽高都是偶数，奇数会直接初始化失败
+        let writeW = max(2, Int((abs(back.width) / 2).rounded()) * 2)
+        let writeH = max(2, Int((abs(back.height) / 2).rounded()) * 2)
+
+        // 帧率：只做「降」不做「升」。源素材 30fps 拉到 60 只能靠复制帧，
+        // 体积翻倍画质不变，没意义 —— 如实按源帧率输出，状态行会写清楚
+        var srcFps = videoTrack.nominalFrameRate > 0 ? Double(videoTrack.nominalFrameRate) : 30.0
+        if let r = reference, r.fps > 0 { srcFps = r.fps }
+        var outFps = srcFps
+        if let target = spec.frameRate.value, target < srcFps - 0.01 {
+            outFps = target
+        }
+
+        return Plan(writeSize: CGSize(width: writeW, height: writeH),
+                    displaySize: CGSize(width: dispW, height: dispH),
+                    fps: outFps,
+                    sourceFps: srcFps)
+    }
+
     // MARK: - 同步实现（后台线程调用）
 
     private static func exportSync(project: BKProject,
                                    asset: AVAsset,
+                                   spec: BKConfig.ExportSpec,
+                                   reference: ExportReference?,
                                    progress: @escaping (Int, Int, Double) -> Void) throws -> URL {
         let keeps = project.keepRanges
         guard !keeps.isEmpty else { throw BKExportError.nothingToExport }
@@ -55,7 +161,10 @@ enum BKExporter {
         let outDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Exports", isDirectory: true)
         try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
-        let url = outDir.appendingPathComponent("bk_\(Int(Date().timeIntervalSince1970)).mp4")
+
+        // 定稿 4.8 的命名：BK_ 前缀 + 重复导出的 _k 后缀
+        let fileName = project.nextExportFileName
+        let url = outDir.appendingPathComponent(fileName)
         // 同名残留文件会让 writer 初始化失败，先清掉
         try? FileManager.default.removeItem(at: url)
 
@@ -64,32 +173,36 @@ enum BKExporter {
         }
         let audioTrack = asset.tracks(withMediaType: .audio).first
 
-        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
-
-        let natural = videoTrack.naturalSize
-        let fps = videoTrack.nominalFrameRate > 0 ? videoTrack.nominalFrameRate : 30.0
+        let plan = makePlan(videoTrack: videoTrack, project: project,
+                            spec: spec, reference: reference)
         let bitrate = BKExporter.videoBitrate(for: videoTrack)
 
-        BKLog.shared.i(String(format: "导出参数 %.0f×%.0f %.0ffps %.1fMbps %d段",
-                              natural.width, natural.height, fps,
-                              Double(bitrate) / 1_000_000, keeps.count))
+        BKLog.shared.i(String(format: "导出参数 写入 %d×%d 显示 %d×%d %.0ffps（源 %.0f） %.1fMbps %d段 | %@",
+                              Int(plan.writeSize.width), Int(plan.writeSize.height),
+                              Int(plan.displaySize.width), Int(plan.displaySize.height),
+                              plan.fps, plan.sourceFps,
+                              Double(bitrate) / 1_000_000, keeps.count, spec.summary))
+
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
 
         // 视频必须重编码：MP4 容器不接受原始比特流直通（nil 会被 canAdd 拒掉）
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
-            // 铁律尺寸：写入的是「未旋转」的自然尺寸，朝向交给下面的 transform
-            AVVideoWidthKey: Int(natural.width),
-            AVVideoHeightKey: Int(natural.height),
+            // 铁律尺寸：写入的是「未旋转」的存储尺寸，朝向交给下面的 transform
+            AVVideoWidthKey: Int(plan.writeSize.width),
+            AVVideoHeightKey: Int(plan.writeSize.height),
             AVVideoCompressionPropertiesKey: [
                 AVVideoAverageBitRateKey: bitrate,
-                AVVideoMaxKeyFrameIntervalKey: max(1, Int(round(fps))),
+                AVVideoMaxKeyFrameIntervalKey: max(1, Int(round(plan.fps))),
+                AVVideoExpectedSourceFrameRateKey: plan.fps,
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
                 AVVideoAllowFrameReorderingKey: true
             ] as [String: Any]
         ]
 
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-        // 铁律②：transform 必须显式赋值，漏了成品必躺下
+        // 铁律②：transform 必须显式赋值，漏了成品必躺下。
+        // 分辨率怎么改，transform 都是源素材这一个 —— 定稿 4.9.2
         videoInput.transform = videoTrack.preferredTransform
         guard writer.canAdd(videoInput) else {
             throw BKExportError.writerSetupFailed("视频轨无法加入导出器")
@@ -176,7 +289,8 @@ enum BKExporter {
                              audio: audioOut,
                              audioInput: audioInput,
                              offset: offset,
-                             writer: writer)
+                             writer: writer,
+                             minFrameInterval: plan.minFrameInterval)
 
             outputCursor = outputCursor + segRange.duration
             written += segRange.duration.seconds
@@ -197,8 +311,10 @@ enum BKExporter {
         }
 
         // 铁律③：导出记录永久带上显示尺寸
-        BKLog.shared.i(String(format: "导出完成 %@ | %d 段 | 显示 %@ | 源 %.1fs → 成品 %.1fs",
-                              url.lastPathComponent, keeps.count, project.sizeText,
+        BKLog.shared.i(String(format: "导出完成 %@ | %d 段 | 写入 %d×%d 显示 %d×%d %.0ffps | 源 %.1fs → 成品 %.1fs",
+                              fileName, keeps.count,
+                              Int(plan.writeSize.width), Int(plan.writeSize.height),
+                              Int(plan.displaySize.width), Int(plan.displaySize.height), plan.fps,
                               project.duration, project.outputDuration))
         return url
     }
@@ -264,25 +380,45 @@ enum BKExporter {
     /// 顺带一提，10 秒上限的语义也变了：不是「某一条通道久不就绪」就算卡死，
     /// 而是「一整轮里两条通道谁都没喂进去」持续 10 秒才算真卡死 ——
     /// 背压等待本身是完全正常的，不该被判死刑。
+    ///
+    /// - parameter minFrameInterval: 降帧率用的最小 PTS 间隔。
+    ///   源 60fps 选 30fps 时，间隔不足 1/30 秒的帧直接丢掉（不写入），
+    ///   这样出来的才是真的 30fps，而不是「标着 30 但帧数没变」
     private static func drainSegment(video: AVAssetReaderTrackOutput,
                                      videoInput: AVAssetWriterInput,
                                      audio: AVAssetReaderTrackOutput?,
                                      audioInput: AVAssetWriterInput?,
                                      offset: CMTime,
-                                     writer: AVAssetWriter) throws {
+                                     writer: AVAssetWriter,
+                                     minFrameInterval: Double?) throws {
         // 没有音轨（或音频没能加进 writer）时退化成单通道搬运，逻辑同一份
         var videoDone = false
         var audioDone = (audio == nil || audioInput == nil)
         var idleRounds = 0
+        /// 上一帧写进成品的 PTS，用来判「间隔够不够」
+        var lastVideoPTS: Double?
+        var droppedFrames = 0
 
         while !(videoDone && audioDone) {
             var fedAnything = false
 
             if !videoDone, videoInput.isReadyForMoreMediaData {
                 if let sb = video.copyNextSampleBuffer() {
-                    let buffer = try retimedBuffer(sb, offset: offset)
-                    guard videoInput.append(buffer) else {
-                        throw BKExportError.writeFailed(writer.error?.localizedDescription ?? "视频写入失败")
+                    let pts = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sb))
+                    var keep = true
+                    if let gap = minFrameInterval, let last = lastVideoPTS, (pts - last) < gap - 1e-6 {
+                        keep = false
+                        droppedFrames += 1
+                    }
+                    if keep {
+                        let buffer = try retimedBuffer(sb, offset: offset)
+                        guard videoInput.append(buffer) else {
+                            throw BKExportError.writeFailed(writer.error?.localizedDescription ?? "视频写入失败")
+                        }
+                        lastVideoPTS = pts
+                    } else {
+                        // 丢掉的帧也要 Invalidate，否则 CMSampleBuffer 的缓存会一直堆着
+                        CMSampleBufferInvalidate(sb)
                     }
                 } else {
                     videoDone = true   // 这一段视频搬完了
@@ -313,6 +449,10 @@ enum BKExporter {
                     throw BKExportError.writeFailed("视频/音频通道同时超过 10 秒不就绪")
                 }
             }
+        }
+
+        if droppedFrames > 0 {
+            BKLog.shared.d("本段降帧：丢掉 \(droppedFrames) 帧")
         }
     }
 }

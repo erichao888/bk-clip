@@ -22,7 +22,8 @@
 
 import random
 
-LIMIT = 60
+LIMIT = 15        # 撤销最多 15 步（皓哥 2026-10-02 拍板，原 60）
+REDO_LIMIT = 1    # 重做最多 1 步 —— 连着撤两步，先撤的那步就救不回来了
 
 
 class History:
@@ -73,6 +74,10 @@ class History:
         if not self.can_undo:
             return None
         self.index -= 1
+        # 重做只留 1 步：撤销之后 index 右边（可重做的部分）超过 1 项就砍最右。
+        # 最右 = 最早被撤下去的那个状态，留着它就等于还能一路重做回最新。
+        while len(self.items) - 1 - self.index > REDO_LIMIT:
+            del self.items[-1]
         return self.items[self.index]
 
     def redo(self):
@@ -87,6 +92,9 @@ def invariants(h, tag):
     assert 0 <= h.index < len(h.items), f"{tag}: index 越界 {h.index}/{len(h.items)}"
     assert h.current == h.items[h.index], f"{tag}: current 与 index 不一致"
     assert len(h.items) <= LIMIT, f"{tag}: 超过容量上限 {len(h.items)}"
+    # I9：重做只留 1 步 —— 任何时刻可重做的项数都不能超过 REDO_LIMIT
+    redoable = len(h.items) - 1 - h.index
+    assert redoable <= REDO_LIMIT, f"{tag}: 可重做 {redoable} 步，超过上限 {REDO_LIMIT}"
 
 
 def check_basic():
@@ -145,11 +153,17 @@ def check_random(rounds=4000, seed=20261002):
                 expect = expect[:pos + 1]
                 expect.append(f"n{r}")
                 pos = len(expect) - 1
+                if len(expect) > LIMIT:        # 参考模型同步超容量丢弃
+                    del expect[:len(expect) - LIMIT]
+                    pos = len(expect) - 1
                 h.push(expect[pos])
             elif op < 0.75:                    # 拖动合并：先 push 再连续 amend
                 expect = expect[:pos + 1]
                 expect.append(f"d{r}")
                 pos = len(expect) - 1
+                if len(expect) > LIMIT:
+                    del expect[:len(expect) - LIMIT]
+                    pos = len(expect) - 1
                 h.push(expect[pos])
                 for _ in range(rnd.randint(1, 6)):
                     v = f"d{r}-{rnd.random():.6f}"
@@ -160,6 +174,9 @@ def check_random(rounds=4000, seed=20261002):
                 if pos > 0:
                     assert h.can_undo, f"round{r}: 模型认为能退，栈说不能"
                     pos -= 1
+                    # 参考模型同步「重做只留 1 步」的裁剪
+                    while len(expect) - 1 - pos > REDO_LIMIT:
+                        del expect[-1]
                     got = h.undo()
                     if got != expect[pos]:
                         fails += 1
@@ -191,10 +208,11 @@ def check_random(rounds=4000, seed=20261002):
         while h.can_redo:
             h.redo()
         assert h.current == expect[-1], f"round{r}: redo 到底未回到最新状态"
-        # 一路 undo 到底，必须回到 s0
+        # 一路 undo 到底，必须回到 expect 里最老的那条
+        # （超容量之后 s0 可能已经被挤掉了，所以比对 expect[0] 而不是写死 "s0"）
         while h.can_undo:
             h.undo()
-        assert h.current == "s0", f"round{r}: undo 到底未回到初始状态"
+        assert h.current == expect[0], f"round{r}: undo 到底未回到最老状态"
 
     assert fails == 0, f"随机用例失败 {fails} 次"
     print(f"  ✓ 随机用例 {rounds} 组全部通过")
@@ -217,9 +235,55 @@ def check_capacity():
     print(f"  ✓ 容量上限 {LIMIT} 生效，超量后仍可撤销 {depth} 步")
 
 
+def check_redo_limit():
+    """重做只留 1 步：连撤 3 步之后，只能往回走 1 步，再按没反应"""
+    h = History()
+    h.reset("s0")
+    for n in ("a", "b", "c"):
+        h.push(n)
+    assert h.current == "c"
+
+    h.undo()                       # -> b，可重做 1 步
+    assert h.current == "b" and h.can_redo
+    h.undo()                       # -> a，重做栈里只剩回 b 的那一步
+    assert h.current == "a"
+    h.undo()                       # -> s0
+    assert h.current == "s0"
+
+    # 只能往回走 1 步：s0 -> a，之后就动不了了（c 已经回不去了）
+    assert h.redo() == "a", "连撤三步后第一次重做应回到 a"
+    assert not h.can_redo, "重做只能有 1 步，第二次必须没反应"
+    assert h.redo() is None
+    print(f"  ✓ 重做上限 {REDO_LIMIT} 步生效：连撤 3 步后只能回 1 步")
+
+    # 新操作一来，重做栈清空
+    h.undo()
+    assert h.current == "s0"
+    h.push("z")
+    assert not h.can_redo, "新提交之后不该还能重做"
+    assert h.current == "z"
+    print("  ✓ 新提交清空重做分支")
+
+
+def check_undo_depth():
+    """撤销深度 = 15：连撤到底正好 14 步（含 reset 进去的初始态）"""
+    h = History()
+    h.reset("s0")
+    for i in range(14):
+        h.push(f"p{i}")
+    depth = 0
+    while h.can_undo:
+        h.undo()
+        depth += 1
+    assert depth == LIMIT - 1, f"撤销深度异常：{depth}，期望 {LIMIT - 1}"
+    print(f"  ✓ 撤销深度 {depth} 步（上限 {LIMIT}）")
+
+
 if __name__ == "__main__":
     print("BKHistory 逻辑验证")
     check_basic()
     check_random()
     check_capacity()
+    check_redo_limit()
+    check_undo_depth()
     print("全部通过 ✓")

@@ -34,16 +34,22 @@ import numpy as np
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-# ============ 防碎三参数（与 App 定稿一致，改这里就等于改 App） ============
-MIN_GAP = 0.20      # 最短气口：比这还短的一律不删，否则句子会碎
-MIN_SEG = 0.60      # 最短片段：删完之后剩下的片段不能短于这个
-MIN_CUT = 0.10      # 最短一刀：切出来连 0.1 秒都不到的，不值得冒一次接缝爆音的风险
-PAD     = 0.10      # 头尾留白：气口两端各保留这么多，防止吞掉字头和字尾
+# ============ 防碎参数（与 App 定稿一致，改这里就等于改 App） ============
+# 2026-10-02 晚按皓哥手工刀口重定 —— 原则是「宁多勿少，误切用手动补」：
+#   · 片头片尾的安静段要切（原版直接跳过头尾，方向反了）
+#   · 0.1~0.25s 的短换气要切（原版 PAD0.1x2 + MIN_CUT0.1 实际要求 ≥0.3s，全漏）
+#   · 整体轻声区也要切（原版 6dB 对比度把关把 4582/4583 卡成 0 刀）
+MIN_GAP = 0.10      # 最短气口：低于 0.1s 的低幅基本是音节内瞬态，碰了会把字切碎
+MIN_SEG = 0.30      # 最短片段：切完剩下的不能短于这个（原 0.6 是短素材归零的元凶）
+MIN_CUT = 0.04      # 最短一刀：0.04s = 40ms，双 15ms 交叉淡入淡出还能覆盖住
+PAD     = 0.03      # 气口两侧留白（只收「贴语音」的那一侧，片头片尾不收）
 
 CLAMP_LOW  = -50.0  # 阈值经验区间下界
 CLAMP_HIGH = -25.0  # 阈值经验区间上界
 
-CONTRAST_DB = 6.0   # 局部对比度余量：气口必须比相邻语音低 6dB 以上才算数
+CONTRAST_DB = 0.0   # 局部对比度余量：2026-10-02 皓哥拍板「轻声区也切」，此关卡归零待命。
+                    # 真气口深度普遍 20dB+，轻声区只有 3~10dB 也照切 —— 这道关卡已无判别力，
+                    # 留着参数只是方便哪天想收紧时改这一个数。
 PAD_SAMPLE  = 0.20  # 局部对比度取样窗口（秒）
 
 FRAME_MS = 20.0     # RMS 窗长
@@ -138,25 +144,32 @@ def find_runs(mask: np.ndarray):
 
 
 def detect_gaps(db: np.ndarray, hop_sec: float, thr: float, total_sec: float):
-    """低于阈值 → 候选气口，再过滤。返回 [(start_sec, end_sec, dur_sec), ...]"""
+    """低于阈值 → 候选气口，再过滤。返回 [(start_sec, end_sec, dur_sec), ...]
+
+    2026-10-02 改：片头片尾的安静段**不再跳过** —— 皓哥手工刀口里头尾都是整段红的。
+    """
     raw = find_runs(db < thr)
     gaps = []
     for a, b in raw:
         t0, t1 = a * hop_sec, b * hop_sec
-        # 去掉首尾（视频开头/结尾的静音不算气口）
-        if t0 <= 0.02 or t1 >= total_sec - 0.02:
-            continue
         if (t1 - t0) < MIN_GAP:
             continue
         gaps.append((t0, t1, t1 - t0))
     return gaps
 
 
-def apply_pad(gaps):
-    """删除区间 = 气口去掉两端留白。留白吃光了、或者剩下来不够 MIN_CUT，就不切。"""
+def apply_pad(gaps, total_sec):
+    """删除区间 = 气口去掉贴语音那一侧的留白。
+
+    片头段（t0≈0）不再往里收——安静段就该从第 0 帧切起；
+    片尾段（t1≈末尾）同理。只有「两头都是语音」的中间气口才双侧收 PAD。
+    """
     cuts = []
     for t0, t1, _ in gaps:
-        s, e = t0 + PAD, t1 - PAD
+        head = t0 <= PAD + 0.01
+        tail = t1 >= total_sec - PAD - 0.01
+        s = t0 if head else t0 + PAD
+        e = t1 if tail else t1 - PAD
         if (e - s) >= MIN_CUT:
             cuts.append([s, e])
     return cuts
@@ -171,28 +184,48 @@ def kept_segments(cuts, total_sec):
     return [(a, b) for a, b in segs if b > a + 1e-6]
 
 
+def _segs_aligned(dels, total_sec):
+    """与 dels 严格按索引对齐的保留片段（**不过滤**零宽段）。
+
+    ⚠ 不能用 kept_segments 来做这件事 —— 它会把重叠/零宽段滤掉，
+    段序号和刀序号就错位了，合并逻辑会拿着错位的索引去并刀，越并越乱。
+    这个 bug 是 4582 的真实数据钓出来的：8 把刀只对出 8 个段（应 9 个），
+    残留了 0.01~0.26s 的碎片段没人收拾。
+    """
+    segs, cur = [], 0.0
+    for s, e in dels:
+        segs.append((cur, s))
+        cur = e
+    segs.append((cur, total_sec))
+    return segs
+
+
 def enforce_min_segment(cuts, total_sec):
-    """任何保留片段短于 MIN_SEG，就把造成它的那两刀撤掉，反复合并直到没有碎片。"""
+    """任何保留片段短于 MIN_SEG（皓哥口径：宁多勿少——
+    · 中间的过短片段：把夹着它的相邻两刀**合并成一刀**，中间那一小截语音也删掉
+      （原版是「两刀都撤」——那等于放着两个气口不切，4582/4583 就是这么归零的）
+    · 开头的过短片段：首刀起点扩到 0（开头那一小截杂音一并切掉）
+    · 结尾同理，扩到片尾
+    迭代直到稳定。"""
     dels = [list(c) for c in cuts]
-    for _ in range(200):
-        segs = kept_segments(dels, total_sec)
-        if len(segs) <= 1:
-            break
-        bad = -1
-        for i, (a, b) in enumerate(segs):
-            if (b - a) < MIN_SEG:
-                bad = i
-                break
+    for _ in range(300):
+        segs = _segs_aligned(dels, total_sec)
+        # 只挑「实质保留段」：零宽段（b-a≈0）本来就会被 kept_segments 过滤掉，
+        # 不能当成「太短」去处理 —— 否则 dels[0][0]=0 之后再怎么改它都还是 0，死循环
+        bad = next((i for i, (a, b) in enumerate(segs) if 1e-6 < (b - a) < MIN_SEG), -1)
         if bad < 0:
             break
         if bad == 0:
-            dels.pop(0)
+            dels[0][0] = 0.0
         elif bad == len(segs) - 1:
-            dels.pop()
+            dels[-1][1] = total_sec
         else:
-            for k in sorted({bad - 1, bad}, reverse=True):
-                if 0 <= k < len(dels):
-                    dels.pop(k)
+            dels[bad - 1][1] = max(dels[bad - 1][1], dels[bad][1])
+            dels.pop(bad)
+        dels = [d for d in dels if d[1] - d[0] > 1e-6]
+        dels.sort()
+        if not dels:
+            break
     return [tuple(c) for c in dels]
 
 
@@ -457,7 +490,7 @@ def main():
     thr_used = clamp_db(args.threshold if args.threshold is not None else thr_auto)
 
     gaps = detect_gaps(db, hop_sec, thr_used, total)
-    cuts = enforce_min_segment(apply_pad(gaps), total)
+    cuts = enforce_min_segment(apply_pad(gaps, total), total)
     before = len(cuts)
     cuts = local_contrast_pass(cuts, db, hop_sec, total)
     dropped = before - len(cuts)
