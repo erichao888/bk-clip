@@ -1155,7 +1155,7 @@ final class BKEditorViewController: UIViewController {
                     self.exportLoop(targets, spec: spec, reference: reference, done: done + 1,
                                     ok: ok, failed: failed + [it.assetName])
                 case .success(let url):
-                    BKRootViewController.saveToPhotos(url: url, fileName: name) { success in
+                    BKRootViewController.saveToPhotos(url: url, fileName: name) { [weak self] success in
                         guard let self = self else { return }
                         if success {
                             // 记进导出历史：文件名后缀序号（exportCount）就靠它递增
