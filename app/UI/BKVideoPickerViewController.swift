@@ -282,11 +282,28 @@ extension BKVideoPickerViewController: UICollectionViewDataSource, UICollectionV
         // 不用退出去再进来。半屏卡可以往上拖成全屏（iOS 原生手势）。
         vc.modalPresentationStyle = .pageSheet
         if let sheet = vc.sheetPresentationController {
-            sheet.detents = [.medium(), .large()]     // 半屏 / 全屏，iOS 15.0+ 就有
-            sheet.selectedDetentIdentifier = .medium   // 默认半屏
+            // 【70% 屏高】皓哥定：半屏（50%）太小，画面看着憋屈。
+            // 系统只给 .medium / .large 两档，70% 得自己算 —— 用 Detent.custom。
+            //
+            // ⚠️ **Detent.custom 是 iOS 16.0+ API**，本 App 部署目标 15.0，
+            // 直接写上去编译就红（"only available in iOS 16.0 or newer"）。
+            // 所以必须用 #available 包一层，15 上回落到 .medium。
+            if #available(iOS 16.0, *) {
+                let id = UISheetPresentationController.Detent.Identifier("bkPreview70")
+                let seventy = UISheetPresentationController.Detent.custom(identifier: id) { ctx in
+                    // maximumDetentValue 是整屏高度（不含状态栏/安全区的那部分），
+                    // 乘 0.7 就是「七成屏」这个视觉效果
+                    ctx.maximumDetentValue * 0.7
+                }
+                sheet.detents = [seventy, .large()]   // 70% 和全屏，可上拖
+                sheet.selectedDetentIdentifier = id   // 默认就停在 70%
+            } else {
+                // iOS 15 只有 medium / large 两档，用 medium 顶一下
+                sheet.detents = [.medium(), .large()]
+                sheet.selectedDetentIdentifier = .medium
+            }
             // ⚠️ 别用 `largestUndimmedDetentIdentifier`（背景不压暗）——
-            // 那是 **iOS 16.0+** 才有的 API，本 App 部署目标 15.0，写上去直接编译失败。
-            // 想要「背景不压暗」的效果只能等以后把最低版本提到 16 再加。
+            // 那也是 **iOS 16.0+** 的 API，本 App 部署目标 15.0，写上去直接编译失败。
             sheet.prefersGrabberVisible = true
             sheet.preferredCornerRadius = BKTheme.Radius.sheet
         }
