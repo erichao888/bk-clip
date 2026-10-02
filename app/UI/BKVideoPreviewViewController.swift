@@ -31,12 +31,21 @@ final class BKVideoPreviewViewController: UIViewController, BKPreviewStopping {
     private let backButton = UIButton(type: .system)
     private let timeLabel = UILabel()
     private let slider = UISlider()
+    /// 右上角「选中这个小圆圈」。参考图：空心圈=未选，填红+序号=已选
+    private let pickButton = UIButton(type: .system)
+    private let pickLabel = UILabel()
+
+    /// 点小圆圈：把「这条视频现在该不该被选」告诉勾选页
+    var onTogglePick: ((String) -> Void)?
+    /// 当前是否已被选中（进来时由勾选页告知）
+    private(set) var isPicked = false
 
     /// 时间拖动时先暂停，松开再继续 —— 不然跟播放器抢着走，进度条会跳
     private var wasPlayingBeforeScrub = false
 
-    init(localID: String) {
+    init(localID: String, isPicked: Bool = false) {
         self.localID = localID
+        self.isPicked = isPicked
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -96,16 +105,21 @@ final class BKVideoPreviewViewController: UIViewController, BKPreviewStopping {
         playerLayer.player = player
         view.layer.addSublayer(playerLayer)
 
-        // 中央播放/暂停键：只有暂停时显示，播放中不挡画面（参考图就是这样）
+        // 点画面 = 暂停/播放。**装在 view 上而不是 playIcon 上** ——
+        // 参考图是点整幅画面任意位置都能暂停，不只是点中间那个圆。
+        // 放在最后 add，保证它盖在 playIcon / 按钮之上、优先收到点击；
+        // 按钮那些小控件会在下面单独处理，不会被它抢走。
+        let tapScreen = UITapGestureRecognizer(target: self, action: #selector(centerTapped))
+        view.addGestureRecognizer(tapScreen)
+
+        // 中央播放/暂停键：半透明圆形，暂停时浮现、播放时隐掉
         playIcon.image = UIImage(systemName: "play.fill")
-        playIcon.tintColor = UIColor(hex: 0xFFFFFF, alpha: 0.85)
+        playIcon.tintColor = UIColor(hex: 0xFFFFFF, alpha: 0.9)
         playIcon.contentMode = .center
         playIcon.backgroundColor = UIColor(hex: 0x000000, alpha: 0.35)
         playIcon.layer.cornerRadius = 28
         playIcon.isHidden = true
-        let tapPlay = UITapGestureRecognizer(target: self, action: #selector(centerTapped))
-        playIcon.addGestureRecognizer(tapPlay)
-        playIcon.isUserInteractionEnabled = true
+        playIcon.isUserInteractionEnabled = false   // 点击交给上面的整屏手势
         view.addSubview(playIcon)
 
         // 左上角返回。参考图是纯白线条，不带底色
@@ -115,6 +129,18 @@ final class BKVideoPreviewViewController: UIViewController, BKPreviewStopping {
         backButton.layer.cornerRadius = 17
         backButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
         view.addSubview(backButton)
+
+        // 右上角小圆圈：点它直接选中/取消这条视频，不用退回列表
+        pickButton.layer.cornerRadius = 14
+        pickButton.layer.borderWidth = 1.6
+        pickButton.addTarget(self, action: #selector(pickTapped), for: .touchUpInside)
+        view.addSubview(pickButton)
+        pickLabel.font = .systemFont(ofSize: 13, weight: .bold)
+        pickLabel.textColor = .white
+        pickLabel.textAlignment = .center
+        pickLabel.isUserInteractionEnabled = false
+        view.addSubview(pickLabel)
+        applyPickState()
 
         // 底部进度：时间码 + 拖动条
         timeLabel.font = BKTheme.Font.monoSmall
@@ -129,7 +155,7 @@ final class BKVideoPreviewViewController: UIViewController, BKPreviewStopping {
         slider.addTarget(self, action: #selector(scrubEnd), for: [.touchUpInside, .touchUpOutside, .touchCancel])
         view.addSubview(slider)
 
-        for v in [playIcon, backButton, timeLabel, slider] {
+        for v in [playIcon, backButton, pickButton, pickLabel, timeLabel, slider] {
             v.translatesAutoresizingMaskIntoConstraints = false
         }
         NSLayoutConstraint.activate([
@@ -143,6 +169,14 @@ final class BKVideoPreviewViewController: UIViewController, BKPreviewStopping {
             backButton.widthAnchor.constraint(equalToConstant: 34),
             backButton.heightAnchor.constraint(equalToConstant: 34),
 
+            pickButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            pickButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            pickButton.widthAnchor.constraint(equalToConstant: 28),
+            pickButton.heightAnchor.constraint(equalToConstant: 28),
+
+            pickLabel.centerXAnchor.constraint(equalTo: pickButton.centerXAnchor),
+            pickLabel.centerYAnchor.constraint(equalTo: pickButton.centerYAnchor),
+
             slider.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             slider.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             slider.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
@@ -154,6 +188,23 @@ final class BKVideoPreviewViewController: UIViewController, BKPreviewStopping {
         NotificationCenter.default.addObserver(
             self, selector: #selector(playbackEnded),
             name: .AVPlayerItemDidPlayToEndTime, object: nil)
+    }
+
+    /// 右上角小圆圈两态：未选=半透明空心圈，已选=填红
+    private func applyPickState() {
+        if isPicked {
+            pickButton.backgroundColor = BKTheme.Color.danger
+            pickButton.layer.borderColor = BKTheme.Color.danger.cgColor
+        } else {
+            pickButton.backgroundColor = UIColor(hex: 0x000000, alpha: 0.28)
+            pickButton.layer.borderColor = UIColor(hex: 0xFFFFFF, alpha: 0.9).cgColor
+        }
+    }
+
+    @objc private func pickTapped() {
+        isPicked.toggle()
+        applyPickState()
+        onTogglePick?(localID)
     }
 
     override func viewDidLayoutSubviews() {

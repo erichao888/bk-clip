@@ -276,12 +276,25 @@ extension BKVideoPickerViewController: UICollectionViewDataSource, UICollectionV
 
     private func preview(_ id: String) {
         BKVideoLibrary.stopPreview()
-        let vc = BKVideoPreviewViewController(localID: id)
-        // 预览是 present 出来的（盖住整屏，含导航栏），所以关闭是 dismiss 不是 pop。
-        // 参考图里播放页是纯黑底 + 左上角返回，导航栏整条都藏掉。
-        vc.modalPresentationStyle = .fullScreen
+        let vc = BKVideoPreviewViewController(localID: id, isPicked: pickedSet.contains(id))
+        // 【不要全屏】皓哥定：预览要比全屏小一些，用 .pageSheet 呈半屏卡，
+        // 底下勾选页还露着 —— 挑这条的时候还能看到列表和别的素材，
+        // 不用退出去再进来。半屏卡可以往上拖成全屏（iOS 原生手势）。
+        vc.modalPresentationStyle = .pageSheet
+        if let sheet = vc.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]     // 半屏 / 全屏，iOS 15.0+ 就有
+            sheet.selectedDetentIdentifier = .medium   // 默认半屏
+            // ⚠️ 别用 `largestUndimmedDetentIdentifier`（背景不压暗）——
+            // 那是 **iOS 16.0+** 才有的 API，本 App 部署目标 15.0，写上去直接编译失败。
+            // 想要「背景不压暗」的效果只能等以后把最低版本提到 16 再加。
+            sheet.prefersGrabberVisible = true
+            sheet.preferredCornerRadius = BKTheme.Radius.sheet
+        }
+        // 预览页里点右上角小圆圈 = 选中/取消这条，直接同步回列表
+        vc.onTogglePick = { [weak self] toggledID in
+            self?.togglePick(toggledID)
+        }
         vc.onClose = { [weak self] in
-            // 清静态引用，避免关掉后还挂着整个播放器
             BKVideoLibrary.stopPreview()
             self?.dismiss(animated: true)
         }
