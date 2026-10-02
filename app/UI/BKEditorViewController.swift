@@ -40,6 +40,9 @@ final class BKEditorViewController: UIViewController {
     private var playing = false
     private var lastTime: Double = 0
     private var isExporting = false
+    /// true = 试听成品模式：播放到刀口直接跳过去，等于听一遍剪完的样子。
+    /// 关掉时是正常播放（含刀口）—— 调刀口时恰恰要听「被删掉的是什么」
+    private var previewMode = false
 
     // MARK: - 界面
 
@@ -54,18 +57,40 @@ final class BKEditorViewController: UIViewController {
     private let statusLabel = UILabel()
     private let spinner = UIActivityIndicatorView(style: .medium)
     private let playButton = UIButton(type: .system)
+    private let previewButton = UIButton(type: .system)
+    private let cutButton = UIButton(type: .system)
     private let detectButton = UIButton(type: .system)
     private let exportButton = UIButton(type: .system)
+
+    private let navPrevButton = UIButton(type: .system)
+    private let navNextButton = UIButton(type: .system)
+    private let navPositionLabel = UILabel()
+
+    // 素材列表面板：默认隐藏，点导航栏 ☰ 打开
+    private let listPanel = UIView()
+    private let listTable = UITableView(frame: .zero, style: .plain)
+    private var listVisible = false
 
     private var playheadLeading: NSLayoutConstraint!
 
     // MARK: - 初始化
 
-    init(asset: AVAsset, localID: String, probeInfo: BKAssetProbe.Info, project: BKProject?) {
+    /// 素材库顺序。有它才能「上一条 / 下一条」；只从起始页单挑一条进来时是空的
+    private let videoIDs: [String]
+
+    /// 手动切割的起点。nil = 还没按下第一次
+    private var manualCutStart: Double?
+
+    init(asset: AVAsset,
+         localID: String,
+         probeInfo: BKAssetProbe.Info,
+         project: BKProject?,
+         videoIDs: [String] = []) {
         self.asset = asset
         self.localID = localID
         self.probeInfo = probeInfo
         self.project = project
+        self.videoIDs = videoIDs
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -93,10 +118,16 @@ final class BKEditorViewController: UIViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         navigationController?.setNavigationBarHidden(false, animated: animated)
+        // 边缘右滑返回和「拖分割线 / 扫播放头」是死敌：
+        // 手指从屏幕左缘起手往右拖，系统会当成返回手势，整个编辑页跟着滑走
+        // （真机实测：拖到一半页面退回了起始页）。剪辑页一律用左上角按钮返回
+        navigationController?.interactivePopGestureRecognizer?.isEnabled = false
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // 回起始页前把手势还回去，虽然起始页没有东西可 pop，保持干净
+        navigationController?.interactivePopGestureRecognizer?.isEnabled = true
         player?.pause()
         playing = false
         playButton.setTitle("播放", for: .normal)
@@ -133,7 +164,7 @@ final class BKEditorViewController: UIViewController {
         let interval = CMTime(seconds: 0.05, preferredTimescale: 600)
         timeObserver = p.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self = self else { return }
-            self.syncPlayhead(to: CMTimeGetSeconds(time))
+            self.handlePlaybackTime(to: CMTimeGetSeconds(time))
         }
 
         NotificationCenter.default.addObserver(self,
@@ -171,6 +202,21 @@ final class BKEditorViewController: UIViewController {
             trackCount))
     }
 
+    /// 播放时的时间回调。试听模式下一旦发现播放头进到刀口里，
+    /// 就直接把它挪到这一刀的末尾 —— 听感上等于这一刀从来没存在过
+    private func handlePlaybackTime(to t: Double) {
+        guard previewMode, playing, let p = project else {
+            syncPlayhead(to: t)
+            return
+        }
+        for (s, e) in p.cutRanges where t >= s && t < e {
+            player?.seek(to: CMTime(seconds: e, preferredTimescale: 600))
+            syncPlayhead(to: e)
+            return
+        }
+        syncPlayhead(to: t)
+    }
+
     @objc private func playerFinished() {
         playing = false
         playButton.setTitle("播放", for: .normal)
@@ -193,6 +239,18 @@ final class BKEditorViewController: UIViewController {
         previewContainer.backgroundColor = BKTheme.Color.preview
         previewContainer.layer.cornerRadius = BKTheme.Radius.card
         previewContainer.clipsToBounds = true
+
+        // 画面上左右滑动 = 换上一条 / 下一条。
+        // 只在有素材列表时挂 —— 单条素材挂上去，滑一下没反应反而像坏了
+        if videoIDs.count >= 2 {
+            let swipeLeft = UISwipeGestureRecognizer(target: self, action: #selector(nextVideoTapped))
+            swipeLeft.direction = .left
+            let swipeRight = UISwipeGestureRecognizer(target: self, action: #selector(prevVideoTapped))
+            swipeRight.direction = .right
+            previewContainer.addGestureRecognizer(swipeLeft)
+            previewContainer.addGestureRecognizer(swipeRight)
+            previewContainer.isUserInteractionEnabled = true
+        }
 
         timeLabel.font = BKTheme.Font.mono
         timeLabel.textColor = BKTheme.Color.text2
@@ -251,21 +309,37 @@ final class BKEditorViewController: UIViewController {
         spinner.hidesWhenStopped = true
         spinner.color = BKTheme.Color.gold
 
+        previewButton.setTitle("成品试听", for: .normal)
+        previewButton.setTitleColor(BKTheme.Color.accent, for: .normal)
+        previewButton.titleLabel?.font = BKTheme.Font.caption
+        previewButton.layer.borderWidth = 1
+        previewButton.layer.borderColor = BKTheme.Color.line.cgColor
+        previewButton.layer.cornerRadius = 10
+        previewButton.addTarget(self, action: #selector(previewTapped), for: .touchUpInside)
+
+        cutButton.setTitle("切割", for: .normal)
+        cutButton.setTitleColor(BKTheme.Color.danger, for: .normal)
+        cutButton.titleLabel?.font = BKTheme.Font.caption
+        cutButton.layer.borderWidth = 1
+        cutButton.layer.borderColor = BKTheme.Color.danger.cgColor
+        cutButton.layer.cornerRadius = 10
+        cutButton.addTarget(self, action: #selector(cutTapped), for: .touchUpInside)
+
         detectButton.setTitle("自动检测", for: .normal)
         detectButton.setTitleColor(BKTheme.Color.accent, for: .normal)
-        detectButton.titleLabel?.font = BKTheme.Font.button
+        detectButton.titleLabel?.font = BKTheme.Font.caption
         detectButton.addTarget(self, action: #selector(detectTapped), for: .touchUpInside)
 
         playButton.setTitle("播放", for: .normal)
         playButton.setTitleColor(.white, for: .normal)
-        playButton.titleLabel?.font = BKTheme.Font.button
+        playButton.titleLabel?.font = BKTheme.Font.caption
         playButton.backgroundColor = BKTheme.Color.gold
         playButton.layer.cornerRadius = 10
         playButton.addTarget(self, action: #selector(playTapped), for: .touchUpInside)
 
         exportButton.setTitle("导出", for: .normal)
         exportButton.setTitleColor(BKTheme.Color.accent, for: .normal)
-        exportButton.titleLabel?.font = BKTheme.Font.button
+        exportButton.titleLabel?.font = BKTheme.Font.caption
         exportButton.addTarget(self, action: #selector(exportTapped), for: .touchUpInside)
 
         let thresholdRow = UIStackView(arrangedSubviews: [thresholdTitle, thresholdSlider])
@@ -278,15 +352,56 @@ final class BKEditorViewController: UIViewController {
         statusRow.spacing = BKTheme.Space.sm
         statusRow.alignment = .center
 
-        let buttonRow = UIStackView(arrangedSubviews: [detectButton, playButton, exportButton])
+        // ☰ 素材列表：放在导航栏右侧，和编辑按钮彻底分开，
+        // 免得调刀口的时候误触把素材换掉
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "☰",
+            style: .plain,
+            target: self,
+            action: #selector(toggleListTapped))
+        navigationItem.rightBarButtonItem?.isEnabled = videoIDs.count > 1
+
+        setupListPanel()
+
+        // 上一条 / 下一条：和编辑按钮分开放，避免误触跳素材
+        navPrevButton.setTitle("‹ 上一条", for: .normal)
+        navPrevButton.titleLabel?.font = BKTheme.Font.caption
+        navPrevButton.setTitleColor(BKTheme.Color.accent, for: .normal)
+        navPrevButton.addTarget(self, action: #selector(prevVideoTapped), for: .touchUpInside)
+
+        navNextButton.setTitle("下一条 ›", for: .normal)
+        navNextButton.titleLabel?.font = BKTheme.Font.caption
+        navNextButton.setTitleColor(BKTheme.Color.accent, for: .normal)
+        navNextButton.addTarget(self, action: #selector(nextVideoTapped), for: .touchUpInside)
+
+        navPositionLabel.font = BKTheme.Font.monoSmall
+        navPositionLabel.textColor = BKTheme.Color.text2
+        navPositionLabel.textAlignment = .center
+        navPositionLabel.text = ""
+
+        let navRow = UIStackView(arrangedSubviews: [navPrevButton, navPositionLabel, navNextButton])
+        navRow.axis = .horizontal
+        navRow.spacing = BKTheme.Space.sm
+        navRow.alignment = .center
+        navRow.distribution = .fillEqually
+        navRow.isHidden = videoIDs.count < 2
+        updateNavButtons()
+
+        // 主操作一行四个：播放 / 试听 / 切割 / 导出
+        let buttonRow = UIStackView(arrangedSubviews: [playButton, previewButton, cutButton, exportButton])
         buttonRow.axis = .horizontal
-        buttonRow.spacing = BKTheme.Space.md
+        buttonRow.spacing = BKTheme.Space.sm
         buttonRow.alignment = .fill
         buttonRow.distribution = .fillEqually
 
+        // 自动检测单独一行：它不属于高频操作，塞进主操作行只会让按钮变窄
+        let secondRow = UIStackView(arrangedSubviews: [detectButton])
+        secondRow.axis = .horizontal
+        secondRow.alignment = .fill
+
         let stack = UIStackView(arrangedSubviews: [
-            previewContainer, timeLabel, waveContainer, thresholdRow,
-            infoLabel, statusRow, buttonRow
+            navRow, listPanel, previewContainer, timeLabel, waveContainer, thresholdRow,
+            infoLabel, statusRow, buttonRow, secondRow
         ])
         stack.axis = .vertical
         stack.spacing = BKTheme.Space.md
@@ -307,6 +422,147 @@ final class BKEditorViewController: UIViewController {
             waveContainer.heightAnchor.constraint(equalToConstant: 150),
             playButton.heightAnchor.constraint(equalToConstant: BKTheme.Space.minTap)
         ])
+    }
+
+    // MARK: - 素材列表面板
+
+    /// 面板高度 = 5 行。多于 5 条就在这 5 行的窗口里上下滚动，
+    /// 不撑开页面 —— 撑开的话波形和按钮会被挤出屏幕，比藏起来还难用
+    private let listVisibleRows = 5
+
+    private func setupListPanel() {
+        listPanel.backgroundColor = BKTheme.Color.panel
+        listPanel.layer.cornerRadius = BKTheme.Radius.card
+        listPanel.layer.borderWidth = 1
+        listPanel.layer.borderColor = BKTheme.Color.line.cgColor
+        listPanel.clipsToBounds = true
+        listPanel.isHidden = true          // 默认隐藏，UIStackView 会把它折叠掉
+
+        listTable.translatesAutoresizingMaskIntoConstraints = false
+        listTable.backgroundColor = .clear
+        listTable.separatorColor = BKTheme.Color.line
+        listTable.rowHeight = 44
+        listTable.dataSource = self
+        listTable.delegate = self
+        listTable.register(BKVideoNameCell.self, forCellReuseIdentifier: "BKVideoNameCell")
+        listPanel.addSubview(listTable)
+
+        NSLayoutConstraint.activate([
+            listPanel.heightAnchor.constraint(equalToConstant: CGFloat(listVisibleRows) * 44 + 8),
+            listTable.leadingAnchor.constraint(equalTo: listPanel.leadingAnchor),
+            listTable.trailingAnchor.constraint(equalTo: listPanel.trailingAnchor),
+            listTable.topAnchor.constraint(equalTo: listPanel.topAnchor, constant: 4),
+            listTable.bottomAnchor.constraint(equalTo: listPanel.bottomAnchor, constant: -4)
+        ])
+    }
+
+    @objc private func toggleListTapped() {
+        listVisible.toggle()
+        listPanel.isHidden = !listVisible
+        if listVisible {
+            listTable.reloadData()
+            // 打开时把当前这条滚到可见处，省得用户自己找
+            if let i = currentIndex {
+                listTable.scrollToRow(at: IndexPath(row: i, section: 0),
+                                      at: .middle,
+                                      animated: false)
+            }
+            BKLog.shared.d("打开素材列表，共 \(videoIDs.count) 条")
+        }
+    }
+
+    // MARK: - 素材切换
+
+    private var currentIndex: Int? {
+        BKVideoLibrary.index(of: localID, in: videoIDs)
+    }
+
+    private func updateNavButtons() {
+        guard let i = currentIndex else {
+            navPositionLabel.text = ""
+            navPrevButton.isEnabled = false
+            navNextButton.isEnabled = false
+            return
+        }
+        navPositionLabel.text = "第 \(i + 1)/\(videoIDs.count) 条"
+        navPrevButton.isEnabled = i > 0
+        navNextButton.isEnabled = i < videoIDs.count - 1
+        navPrevButton.alpha = navPrevButton.isEnabled ? 1.0 : 0.35
+        navNextButton.alpha = navNextButton.isEnabled ? 1.0 : 0.35
+    }
+
+    @objc private func prevVideoTapped() {
+        guard let i = currentIndex, i > 0 else { return }
+        openSibling(localID: videoIDs[i - 1])
+    }
+
+    @objc private func nextVideoTapped() {
+        guard let i = currentIndex, i < videoIDs.count - 1 else { return }
+        openSibling(localID: videoIDs[i + 1])
+    }
+
+    /// 换素材 = 换一个编辑页实例，而不是原地复用。
+    /// 原地复用要手动清掉播放器、包络、工程、草稿写入状态，漏一个就是脏状态；
+    /// 直接替换导航栈里最顶上的那个，干净且不会把栈越堆越深
+    private func openSibling(localID targetID: String) {
+        guard let nav = navigationController else { return }
+        player?.pause()
+        playing = false
+        BKDraftStore.shared.flushIfNeeded()
+
+        BKVideoLibrary.loadAVAsset(localID: targetID) { [weak self, weak nav] asset in
+            guard let self = self, let nav = nav, let asset = asset else {
+                BKLog.shared.e("切换素材失败：\(targetID)")
+                return
+            }
+            let probe = BKAssetProbe.probe(asset)
+            BKLog.shared.i(probe.logLine)
+            let project = BKDraftStore.shared.draft(forLocalID: targetID)
+            let vc = BKEditorViewController(asset: asset,
+                                            localID: targetID,
+                                            probeInfo: probe,
+                                            project: project,
+                                            videoIDs: self.videoIDs)
+            var stack = nav.viewControllers
+            if stack.last === self { stack.removeLast() }
+            stack.append(vc)
+            nav.setViewControllers(stack, animated: true)
+        }
+    }
+
+    // MARK: - 手动切割
+
+    /// 两步式：第一次点记起点，第二次点记终点，把这一段标为删除。
+    /// 为什么不「点一下就切掉当前整段」：整段往往几秒长，一切就把大段说话也删了。
+    /// 让用户自己划范围，代价只是多一点一次点按
+    @objc private func cutTapped() {
+        guard let p = project else { return }
+
+        if let start = manualCutStart {
+            let a = min(start, lastTime)
+            let b = max(start, lastTime)
+            manualCutStart = nil
+            cutButton.setTitle("切割", for: .normal)
+            cutButton.backgroundColor = .clear
+
+            guard (b - a) >= BKConfig.Detect.minCut else {
+                statusLabel.text = String(format: "这段只有 %.2fs，短于最短一刀 %.2fs，不切",
+                                          b - a, BKConfig.Detect.minCut)
+                return
+            }
+
+            // 手动刀和自动刀走同一条重建路径，保证「相邻严丝合缝」这个不变量不被破坏
+            var cuts = p.cutRanges
+            cuts.append((a, b))
+            applyMarks(BKTimeline.build(duration: p.duration, cuts: cuts))
+            statusLabel.text = ""
+            BKLog.shared.i(String(format: "手动切掉 %.2f~%.2fs（%.2fs）", a, b, b - a))
+        } else {
+            manualCutStart = lastTime
+            cutButton.setTitle("确认终点", for: .normal)
+            cutButton.backgroundColor = BKTheme.Color.danger.withAlphaComponent(0.15)
+            statusLabel.text = String(format: "起点 %.1fs —— 播放或拖到终点，再点一次完成切割", lastTime)
+        }
     }
 
     // MARK: - 分析与检测
@@ -454,6 +710,21 @@ final class BKEditorViewController: UIViewController {
         }
     }
 
+    @objc private func previewTapped() {
+        previewMode.toggle()
+        previewButton.setTitle(previewMode ? "试听中" : "成品试听", for: .normal)
+        if previewMode {
+            previewButton.backgroundColor = BKTheme.Color.accent
+            previewButton.setTitleColor(.white, for: .normal)
+            statusLabel.text = "试听模式：播放会自动跳过所有刀口（导出前先听一遍）"
+        } else {
+            previewButton.backgroundColor = .clear
+            previewButton.setTitleColor(BKTheme.Color.accent, for: .normal)
+            statusLabel.text = ""
+        }
+        BKLog.shared.i("试听模式 \(previewMode ? "开" : "关")")
+    }
+
     @objc private func detectTapped() {
         runDetection(override: nil)
     }
@@ -466,9 +737,10 @@ final class BKEditorViewController: UIViewController {
         spinner.startAnimating()
         let startedAt = Date()
 
-        BKExporter.export(project: p, asset: asset) { [weak self] done, total in
+        BKExporter.export(project: p, asset: asset) { [weak self] done, total, fraction in
             guard let self = self else { return }
-            self.statusLabel.text = "正在导出… 第 \(done)/\(total) 段"
+            let pct = Int(fraction * 100)
+            self.statusLabel.text = "正在导出… \(pct)%（第 \(done)/\(total) 段）"
         } completion: { [weak self] result in
             guard let self = self else { return }
             self.isExporting = false
@@ -547,10 +819,14 @@ final class BKEditorViewController: UIViewController {
     private func setButtonsEnabled(_ enabled: Bool) {
         playButton.isEnabled = enabled
         detectButton.isEnabled = enabled
+        previewButton.isEnabled = enabled
+        cutButton.isEnabled = enabled
         exportButton.isEnabled = enabled
         thresholdSlider.isEnabled = enabled
         playButton.alpha = enabled ? 1.0 : 0.5
         detectButton.alpha = enabled ? 1.0 : 0.5
+        previewButton.alpha = enabled ? 1.0 : 0.5
+        cutButton.alpha = enabled ? 1.0 : 0.5
         exportButton.alpha = enabled ? 1.0 : 0.5
     }
 
@@ -573,6 +849,54 @@ final class BKEditorViewController: UIViewController {
         let m = Int(s) / 60
         let sec = s - Double(m * 60)
         return String(format: "%02d:%04.1f", m, sec)
+    }
+}
+
+// MARK: - 素材列表数据源
+
+/// 带副标题的 cell。系统默认样式没有 detailTextLabel，
+/// register(UITableViewCell.self) 拿到的那种，副标题会静默消失
+private final class BKVideoNameCell: UITableViewCell {
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: .subtitle, reuseIdentifier: reuseIdentifier)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+}
+
+extension BKEditorViewController: UITableViewDataSource, UITableViewDelegate {
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        videoIDs.count
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "BKVideoNameCell", for: indexPath)
+        let id = videoIDs[indexPath.row]
+        let isCurrent = (id == localID)
+
+        cell.backgroundColor = .clear
+        cell.textLabel?.text = BKVideoLibrary.assetName(localID: id)
+        cell.textLabel?.textColor = isCurrent ? BKTheme.Color.gold : BKTheme.Color.text
+        cell.detailTextLabel?.text = BKVideoLibrary.formatDuration(BKVideoLibrary.duration(localID: id))
+        cell.detailTextLabel?.textColor = BKTheme.Color.text2
+        cell.accessoryType = isCurrent ? .checkmark : .none
+        cell.tintColor = BKTheme.Color.gold
+        cell.selectionStyle = .default
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        let id = videoIDs[indexPath.row]
+        guard id != localID else {
+            // 点的是当前这条 —— 收起列表就好，不用重新加载
+            toggleListTapped()
+            return
+        }
+        openSibling(localID: id)
     }
 }
 

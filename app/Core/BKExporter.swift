@@ -2,18 +2,16 @@
 //  BKExporter.swift
 //  bk剪辑 — 导出（第三批）
 //
-//  【策略：直通转封装，不重编码】
-//  读出源素材原始的 H.264 / AAC 压缩数据，按保留段拼接后原样写进新 MP4。
-//  好处有三：
-//  1. 画质零损失（重编码的 CRF20 再高也是有损）
-//  2. 导出速度快一个量级（不碰像素，只搬字节）
-//  3. 剪映兼容性 = 源素材本身的兼容性 —— 源是 iPhone 拍的，剪映必然吃得下
-//  代价：GOP 继承源素材（没法控制关键帧间隔），接缝落在最近的帧边界上
-//  （60fps 素材最多偏 16ms，肉眼不可见）。
+//  【策略：重编码导出（H.264 + AAC-LC）】
+//  第一版写的是「直通转封装」（reader/writer 的 outputSettings 全给 nil，
+//  原样搬运源素材的 H.264/AAC 压缩数据）—— 方案很美：画质零损、速度快。
+//  但真机上一试就死在这：`writer.canAdd(videoInput)` 直接返回 false。
+//  **MP4 容器不接受原始比特流直通**，必须给出明确的编码参数。
+//  所以改回标准做法：reader 出原始帧 → writer 压缩，参数照
+//  tools/preview_cut.py 里已通过剪映实测的那套规格来设。
 //
-//  【已知取舍 v1】接缝不做 15ms 淡入淡出（Python 版 preview_cut.py 有）。
-//  做淡入淡出必须把音频解码成 PCM 再重新编码，盲写风险高；先把直通版
-//  在剪映里验一遍接缝，真有爆音再补 —— 别为了理论完美把能跑的版本押上去。
+//  【已知取舍】接缝暂不做 15ms 淡入淡出（Python 版 preview_cut.py 有）。
+//  先验这版接缝在剪映里有没有爆音，有再补 —— 别为了理论完美拖延上线。
 //
 //  【三条方向铁律在这里的落点】
 //  ② writerInput.transform = track.preferredTransform 必须显式赋值，漏了成品必躺下
@@ -29,9 +27,12 @@ import AVFoundation
 
 enum BKExporter {
 
+    /// progress 回调 (已完成段数, 总段数, 完成度 0~1)。
+    /// 给完成度是因为「第几段」的观感很差：一上来第 1/12 段，
+    /// 用户根本不知道要等多久 —— 百分比才是人能感知的进度
     static func export(project: BKProject,
                        asset: AVAsset,
-                       progress: @escaping (Int, Int) -> Void,
+                       progress: @escaping (Int, Int, Double) -> Void,
                        completion: @escaping (Result<URL, Error>) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -47,7 +48,7 @@ enum BKExporter {
 
     private static func exportSync(project: BKProject,
                                    asset: AVAsset,
-                                   progress: @escaping (Int, Int) -> Void) throws -> URL {
+                                   progress: @escaping (Int, Int, Double) -> Void) throws -> URL {
         let keeps = project.keepRanges
         guard !keeps.isEmpty else { throw BKExportError.nothingToExport }
 
@@ -65,17 +66,51 @@ enum BKExporter {
 
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
 
-        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: nil)
+        let natural = videoTrack.naturalSize
+        let fps = videoTrack.nominalFrameRate > 0 ? videoTrack.nominalFrameRate : 30.0
+        let bitrate = BKExporter.videoBitrate(for: videoTrack)
+
+        BKLog.shared.i(String(format: "导出参数 %.0f×%.0f %.0ffps %.1fMbps %d段",
+                              natural.width, natural.height, fps,
+                              Double(bitrate) / 1_000_000, keeps.count))
+
+        // 视频必须重编码：MP4 容器不接受原始比特流直通（nil 会被 canAdd 拒掉）
+        let videoSettings: [String: Any] = [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            // 铁律尺寸：写入的是「未旋转」的自然尺寸，朝向交给下面的 transform
+            AVVideoWidthKey: Int(natural.width),
+            AVVideoHeightKey: Int(natural.height),
+            AVVideoCompressionPropertiesKey: [
+                AVVideoAverageBitRateKey: bitrate,
+                AVVideoMaxKeyFrameIntervalKey: max(1, Int(round(fps))),
+                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                AVVideoAllowFrameReorderingKey: true
+            ] as [String: Any]
+        ]
+
+        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+        // 铁律②：transform 必须显式赋值，漏了成品必躺下
         videoInput.transform = videoTrack.preferredTransform
-        guard writer.canAdd(videoInput) else { throw BKExportError.writerSetupFailed }
+        guard writer.canAdd(videoInput) else {
+            throw BKExportError.writerSetupFailed("视频轨无法加入导出器")
+        }
         writer.add(videoInput)
 
         var audioInput: AVAssetWriterInput?
         if audioTrack != nil {
-            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
+            // AAC-LC 192k 是兼容性最好的组合，HE-AAC 有设备不认
+            let audioWriterSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 48000,
+                AVNumberOfChannelsKey: 2,
+                AVEncoderBitRateKey: 192000
+            ]
+            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: audioWriterSettings)
             if writer.canAdd(input) {
                 writer.add(input)
                 audioInput = input
+            } else {
+                BKLog.shared.w("音频轨无法加入导出器，成品将无声")
             }
         }
 
@@ -85,6 +120,10 @@ enum BKExporter {
         writer.startSession(atSourceTime: .zero)
 
         var outputCursor = CMTime.zero
+        // 完成度按「已写出的成品时长」算，而不是按段数 ——
+        // 各段长度不一样，按段数报出来的进度会一顿一顿的
+        var written: Double = 0
+        let planned = keeps.reduce(0.0) { $0 + ($1.1 - $1.0) }
 
         for (i, seg) in keeps.enumerated() {
             let segStart = CMTime(seconds: seg.0, preferredTimescale: 600)
@@ -96,13 +135,29 @@ enum BKExporter {
             let reader = try AVAssetReader(asset: asset)
             reader.timeRange = segRange
 
-            let videoOut = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: nil)
+            // reader 出「原始帧」交给 writer 压缩：
+            // 视频给 yuv420p 像素缓冲（对应已验证过的 yuv420p 规格），
+            // 音频给交错立体声 PCM（AAC 编码器要的是 PCM 输入）
+            let videoReaderSettings: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8Planar
+            ]
+            let audioReaderSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: 48000,
+                AVNumberOfChannelsKey: 2,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsNonInterleaved: false
+            ]
+
+            let videoOut = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: videoReaderSettings)
             guard reader.canAdd(videoOut) else { throw BKExportError.readerSetupFailed }
             reader.add(videoOut)
 
             var audioOut: AVAssetReaderTrackOutput?
             if let track = audioTrack, audioInput != nil {
-                let out = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+                let out = AVAssetReaderTrackOutput(track: track, outputSettings: audioReaderSettings)
                 if reader.canAdd(out) {
                     reader.add(out)
                     audioOut = out
@@ -119,7 +174,9 @@ enum BKExporter {
             }
 
             outputCursor = outputCursor + segRange.duration
-            DispatchQueue.main.async { progress(i + 1, keeps.count) }
+            written += segRange.duration.seconds
+            let fraction = planned > 0 ? min(max(written / planned, 0), 1) : 1.0
+            DispatchQueue.main.async { progress(i + 1, keeps.count, fraction) }
         }
 
         videoInput.markAsFinished()
@@ -139,6 +196,17 @@ enum BKExporter {
                               url.lastPathComponent, keeps.count, project.sizeText,
                               project.duration, project.outputDuration))
         return url
+    }
+
+    /// 输出码率：跟随源素材（重编码不额外丢画质），但夹到合理区间 ——
+    /// 有些 4K/高码率素材的 estimatedDataRate 会让成品体积失控
+    private static func videoBitrate(for track: AVAssetTrack) -> Int {
+        let raw = Int(track.estimatedDataRate)
+        switch raw {
+        case 0 ..< 4_000_000:    return 8_000_000    // 估不出来就给 1080p 的常用值
+        case 4_000_000 ..< 30_000_000: return raw
+        default:                 return 30_000_000
+        }
     }
 
     // MARK: - 搬运一段的所有采样
@@ -198,7 +266,7 @@ enum BKExporter {
 enum BKExportError: LocalizedError {
     case nothingToExport
     case noVideoTrack
-    case writerSetupFailed
+    case writerSetupFailed(String)
     case readerSetupFailed
     case readFailed(String)
     case writeFailed(String)
@@ -208,7 +276,7 @@ enum BKExportError: LocalizedError {
         switch self {
         case .nothingToExport:     return "没有保留片段可导出"
         case .noVideoTrack:        return "素材没有视频轨"
-        case .writerSetupFailed:   return "导出器初始化失败"
+        case .writerSetupFailed(let m):return "导出器初始化失败：\(m)"
         case .readerSetupFailed:   return "读取器初始化失败"
         case .readFailed(let m):   return "读取失败：\(m)"
         case .writeFailed(let m):  return "写入失败：\(m)"

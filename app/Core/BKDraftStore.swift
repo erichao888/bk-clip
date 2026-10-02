@@ -155,6 +155,12 @@ final class BKDraftStore {
         BKLog.shared.e("工程 \(id.uuidString.prefix(8)) 所有备份均无法解析")
     }
 
+    /// 按素材 ID 找草稿。切换素材时要先看看这条素材有没有编过 ——
+    /// 没有才新建工程，否则用户之前的刀口会凭空消失
+    func draft(forLocalID id: String) -> BKProject? {
+        allDrafts.first { $0.assetLocalID == id }
+    }
+
     /// 全部草稿，按更新时间倒序
     var allDrafts: [BKProject] {
         let fm = FileManager.default

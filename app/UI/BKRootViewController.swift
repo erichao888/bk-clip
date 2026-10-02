@@ -30,6 +30,8 @@ final class BKRootViewController: UIViewController {
     /// 当前选中的素材。拿到之后暂时只做探测，第二批接波形提取
     private var currentAVAsset: AVAsset?
     private var currentLocalID: String?
+    /// 本次一次导入的全部素材（多选结果）。编辑页的列表就用这一份
+    private var importedIDs: [String] = []
 
     // MARK: - 生命周期
 
@@ -58,12 +60,12 @@ final class BKRootViewController: UIViewController {
         titleLabel.font = .systemFont(ofSize: 34, weight: .bold)
         titleLabel.textColor = BKTheme.Color.text
 
-        subtitleLabel.text = "导入一段视频，自动找出气口并剪掉"
+        subtitleLabel.text = "可一次选多条视频，选好后自动找出气口并剪掉"
         subtitleLabel.font = BKTheme.Font.body
         subtitleLabel.textColor = BKTheme.Color.text2
         subtitleLabel.numberOfLines = 0
 
-        pickButton.setTitle("选择视频", for: .normal)
+        pickButton.setTitle("选择视频（可多选）", for: .normal)
         pickButton.titleLabel?.font = BKTheme.Font.button
         pickButton.backgroundColor = BKTheme.Color.gold
         pickButton.tintColor = .white
@@ -152,7 +154,8 @@ final class BKRootViewController: UIViewController {
         var config = PHPickerConfiguration(photoLibrary: .shared())
         // 只要视频。这个过滤是在系统层做的，App 拿到的结果一定是视频
         config.filter = .videos
-        config.selectionLimit = 1
+        // 0 = 不限数量。一次选多条，进编辑页之后就是这堆素材的顺序
+        config.selectionLimit = 0
         config.preferredAssetRepresentationMode = .automatic
 
         let picker = PHPickerViewController(configuration: config)
@@ -195,9 +198,17 @@ final class BKRootViewController: UIViewController {
     }
 
     private func openEditor(asset: AVAsset, localID: String, project: BKProject?, probeInfo: BKAssetProbe.Info) {
-        let editor = BKEditorViewController(asset: asset, localID: localID, probeInfo: probeInfo, project: project)
+        // 列表用「本次导入的那几条」，不是整个相册 ——
+        // 用户选了 3 条就是 3 条，不该把相册里几百条都塞进列表
+        let ids = importedIDs.isEmpty ? [localID] : importedIDs
+        let editor = BKEditorViewController(asset: asset,
+                                            localID: localID,
+                                            probeInfo: probeInfo,
+                                            project: project,
+                                            videoIDs: ids)
         navigationController?.pushViewController(editor, animated: true)
     }
+
 
     @objc private func versionTapped() {
         // Ad Hoc 是 Release 包，#if DEBUG 不生效，面板开关走运行时判断
@@ -225,24 +236,24 @@ extension BKRootViewController: PHPickerViewControllerDelegate {
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated: true)
 
-        guard let result = results.first else {
-            BKLog.shared.d("相册选择已取消")
-            return
-        }
         // 拿 localIdentifier 而不是直接取数据：
         // 一是它稳定，下次启动还能凭它找回同一条素材；
         // 二是直接取 NSItemProvider 在大文件上会先把整个视频读进内存
-        guard let localID = result.assetIdentifier else {
-            BKLog.shared.w("拿不到 assetIdentifier，无法定位素材")
+        let ids = results.compactMap { $0.assetIdentifier }
+        guard !ids.isEmpty else {
+            BKLog.shared.d("相册选择已取消")
             return
         }
-        currentLocalID = localID
-        loadAsset(localID: localID)
+        BKLog.shared.i("本次导入 \(ids.count) 条素材")
+        currentLocalID = ids[0]
+        loadAsset(ids: ids)
     }
 
-    private func loadAsset(localID: String) {
+    /// ids 是本次选中的所有素材，第一条先打开，其余留在编辑页的列表里
+    private func loadAsset(ids: [String]) {
         spinner.startAnimating()
-        statusLabel.text = "正在读取素材…"
+        statusLabel.text = ids.count > 1 ? "正在读取 \(ids.count) 条素材…" : "正在读取素材…"
+        let localID = ids[0]
 
         let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [localID], options: nil)
         guard let phAsset = fetch.firstObject else {
@@ -265,13 +276,14 @@ extension BKRootViewController: PHPickerViewControllerDelegate {
                     BKLog.shared.e("AVAsset 请求失败：\(err?.localizedDescription ?? "未知原因")")
                     return
                 }
-                self?.handleLoaded(asset: asset, localID: localID)
+                self?.handleLoaded(asset: asset, localID: localID, allIDs: ids)
             }
         }
     }
 
-    private func handleLoaded(asset: AVAsset, localID: String) {
+    private func handleLoaded(asset: AVAsset, localID: String, allIDs: [String]) {
         currentAVAsset = asset
+        importedIDs = allIDs
 
         // 规范第 1 条：必打点。这行日志之后所有关于方向的判断都以此为准
         let info = BKLog.measure("素材探测") { BKAssetProbe.probe(asset) }
