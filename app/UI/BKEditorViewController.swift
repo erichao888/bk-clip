@@ -78,6 +78,8 @@ final class BKEditorViewController: UIViewController {
 
     private var lastTime: Double = 0
     private var isExporting = false
+    /// 整批被 ✕ 删空后短路 finishSession，避免把一个空草稿又存回磁盘
+    private var didDiscard = false
     /// 换素材的加载锁。**一次只准换一条** —— 不锁的话手指使劲一划能连跳三四条，
     /// 每条都要重新提一次波形，直接卡死（定稿 4.5.3 三个坑里的第一个）
     private var isSwitchingAsset = false
@@ -103,6 +105,8 @@ final class BKEditorViewController: UIViewController {
     private let detectButton = UIButton(type: .system)
 
     // 工具栏第二排：− +（28pt 小圆，靠右）
+    // 工具栏第二排：✕（移除当前条，红色圆）在 − + 左边（定稿 4.4 扩展）
+    private let removeButton = UIButton(type: .system)
     private let zoomOutButton = UIButton(type: .system)
     private let zoomInButton = UIButton(type: .system)
 
@@ -196,6 +200,7 @@ final class BKEditorViewController: UIViewController {
 
     /// 返回起始页时的结算：存草稿 + 生成封面 + 「整批没动过刀就丢掉」
     private func finishSession() {
+        guard !didDiscard else { return }
         savePlayhead()
         batch.lastEditedAt = Date()
 
@@ -511,13 +516,16 @@ final class BKEditorViewController: UIViewController {
         row1.setCustomSpacing(BKTheme.Space.lg, after: redoButton)
         row1.setCustomSpacing(BKTheme.Space.lg, after: playButton)
 
+        removeButton.setImage(UIImage(systemName: "xmark"), for: .normal)
+        styleRemoveStep(removeButton, action: #selector(removeTapped))
+
         zoomOutButton.setImage(UIImage(systemName: "minus"), for: .normal)
         styleZoomStep(zoomOutButton, action: #selector(zoomOutTapped))
         zoomInButton.setImage(UIImage(systemName: "plus"), for: .normal)
         styleZoomStep(zoomInButton, action: #selector(zoomInTapped))
 
         let spacer2 = UIView()
-        let row2 = UIStackView(arrangedSubviews: [spacer2, zoomOutButton, zoomInButton])
+        let row2 = UIStackView(arrangedSubviews: [spacer2, removeButton, zoomOutButton, zoomInButton])
         row2.axis = .horizontal
         row2.spacing = BKTheme.Space.sm
         row2.alignment = .center
@@ -561,6 +569,22 @@ final class BKEditorViewController: UIViewController {
         button.layer.cornerRadius = 14
         button.layer.borderWidth = BKTheme.Button.border
         button.layer.borderColor = BKTheme.Color.line.cgColor
+        button.clipsToBounds = true
+        button.addTarget(self, action: action, for: .touchUpInside)
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 28),
+            button.heightAnchor.constraint(equalToConstant: 28)
+        ])
+    }
+
+    /// ✕ 移除按钮：红色实心圆 + 白叉，和上方白底工具按钮拉开对比，一眼认出是「危险操作」。
+    /// 放在 −/+ 左边（定稿 4.4 第二排扩展）。点下去**先弹确认框**，不直接删
+    private func styleRemoveStep(_ button: UIButton, action: Selector) {
+        let cfg = UIImage.SymbolConfiguration(pointSize: 14, weight: .bold)
+        button.setImage(UIImage(systemName: "xmark", withConfiguration: cfg), for: .normal)
+        button.tintColor = .white
+        button.backgroundColor = UIColor(hex: 0xC0392B)
+        button.layer.cornerRadius = 14
         button.clipsToBounds = true
         button.addTarget(self, action: action, for: .touchUpInside)
         NSLayoutConstraint.activate([
@@ -626,6 +650,69 @@ final class BKEditorViewController: UIViewController {
             listTable.scrollToRow(at: IndexPath(row: itemIndex, section: 0),
                                   at: .middle, animated: false)
             BKLog.shared.d("打开素材列表，共 \(batch.items.count) 条")
+        }
+    }
+
+    // MARK: - ✕ 从本批移除当前这条
+
+    /// 点 ✕：先弹确认框，避免手滑把还能用的素材删了。
+    @objc private func removeTapped() {
+        let name = item.assetName
+        let alert = UIAlertController(title: "从本批移除这条视频？",
+                                      message: "「\(name)」不会被导出，也不会留在草稿里。",
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel, handler: nil))
+        alert.addAction(UIAlertAction(title: "移除", style: .destructive) { [weak self] _ in
+            self?.performRemoveCurrent()
+        })
+        present(alert, animated: true)
+    }
+
+    /// 真正执行移除：从 batch.items 里删掉当前条（不是「跳过导出」，是真删）。
+    /// 和列表面板那套同源 —— BKAssetRowCell 只负责显示，数据只在这一个地方改。
+    /// 删完分两种：① 整批空了 → 回起始页并丢草稿；② 还有别的 → 跳到相邻那条继续编
+    private func performRemoveCurrent() {
+        let removedIndex = itemIndex
+        var b = batch
+        b.items.remove(at: removedIndex)
+        b.lastEditedAt = Date()
+        batch = b
+        BKDraftStore.shared.scheduleSave(b)
+        BKDraftStore.shared.flushIfNeeded()
+
+        if b.items.isEmpty {
+            // 整批删空：回起始页，并直接把这份空草稿删掉
+            // （finishSession 见 didDiscard 短路，不会再把它存回去）
+            didDiscard = true
+            BKDraftStore.shared.cancelPending()
+            BKDraftStore.shared.permanentlyDelete(b)
+            navigationController?.popToRootViewController(animated: true)
+            return
+        }
+
+        // 跳到相邻那条（和 openItem 同一条「换素材」路径，复用已验证的探针 + 换栈顶逻辑）
+        let newIndex = min(removedIndex, b.items.count - 1)
+        let targetID = b.items[newIndex].assetLocalID
+        isSwitchingAsset = true
+        stopPlayback()
+        BKVideoLibrary.loadAVAsset(localID: targetID) { [weak self] asset in
+            guard let self = self else { return }
+            self.isSwitchingAsset = false
+            guard let asset = asset, let nav = self.navigationController else { return }
+            let probe = BKAssetProbe.probe(asset)
+            var bb = self.batch
+            if probe.duration > 0 { bb.items[newIndex].duration = probe.duration }
+            bb.items[newIndex].displayWidth = probe.displayWidth
+            bb.items[newIndex].displayHeight = probe.displayHeight
+            bb.items[newIndex].sourceRotationDegrees = probe.rotationDegrees
+            bb.items[newIndex].playheadTime = 0
+            bb.lastAssetId = targetID
+            let vc = BKEditorViewController(batch: bb, index: newIndex, asset: asset, probeInfo: probe)
+            var stack = nav.viewControllers
+            if stack.last === self { stack.removeLast() }
+            stack.append(vc)
+            nav.setViewControllers(stack, animated: true)
+            BKLog.shared.i("移除第 \(removedIndex + 1) 条，跳到第 \(newIndex + 1)/\(bb.items.count) 条")
         }
     }
 
@@ -1126,10 +1213,10 @@ final class BKEditorViewController: UIViewController {
                     }
                 }
                 self.exportLoop(targets, spec: spec, reference: ref,
-                                done: 0, ok: 0, failed: [])
+                                done: 0, ok: 0, failed: [], skipped: [])
             }
         } else {
-            exportLoop(targets, spec: spec, reference: nil, done: 0, ok: 0, failed: [])
+            exportLoop(targets, spec: spec, reference: nil, done: 0, ok: 0, failed: [], skipped: [])
         }
     }
 
@@ -1140,20 +1227,32 @@ final class BKEditorViewController: UIViewController {
                             reference: BKExporter.ExportReference?,
                             done: Int,
                             ok: Int,
-                            failed: [String]) {
+                            failed: [String],
+                            skipped: [String]) {
         if done >= targets.count {
-            finishExport(ok: ok, failed: failed)
+            finishExport(ok: ok, failed: failed, skipped: skipped)
             return
         }
         let idx = targets[done]
         let it = batch.items[idx]
+
+        // 整条都是红区（没有可保留片段）：按「跳过 + 明确提示」处理，不跑导出器。
+        // 这是之前两条视频导出失败的根因 —— keepRanges 为空时原代码直接抛错，
+        // 把整批记成失败。现在跳过它，让批量继续跑完，最后汇总告诉用户哪几条全红
+        if it.keepRanges.isEmpty {
+            BKLog.shared.w("跳过 \(it.assetName)：全是红区，没有可保留片段")
+            exportLoop(targets, spec: spec, reference: reference, done: done + 1,
+                       ok: ok, failed: failed, skipped: skipped + [it.assetName])
+            return
+        }
+
         statusLabel.text = "正在导出 \(done + 1)/\(targets.count) · \(it.assetName)"
 
         BKVideoLibrary.loadAVAsset(localID: it.assetLocalID) { [weak self] asset in
             guard let self = self else { return }
             guard let asset = asset else {
                 self.exportLoop(targets, spec: spec, reference: reference, done: done + 1,
-                                ok: ok, failed: failed + [it.assetName])
+                                ok: ok, failed: failed + [it.assetName], skipped: skipped)
                 return
             }
             let name = it.nextExportFileName
@@ -1168,7 +1267,7 @@ final class BKEditorViewController: UIViewController {
                 case .failure(let err):
                     BKLog.shared.e("导出失败 \(it.assetName)：\(err.localizedDescription)")
                     self.exportLoop(targets, spec: spec, reference: reference, done: done + 1,
-                                    ok: ok, failed: failed + [it.assetName])
+                                    ok: ok, failed: failed + [it.assetName], skipped: skipped)
                 case .success(let url):
                     BKRootViewController.saveToPhotos(url: url, fileName: name) { [weak self] success in
                         guard let self = self else { return }
@@ -1185,10 +1284,10 @@ final class BKEditorViewController: UIViewController {
                             BKDraftStore.shared.scheduleSave(self.batch)
                             self.updateInfo()
                             self.exportLoop(targets, spec: spec, reference: reference,
-                                            done: done + 1, ok: ok + 1, failed: failed)
+                                            done: done + 1, ok: ok + 1, failed: failed, skipped: skipped)
                         } else {
                             self.exportLoop(targets, spec: spec, reference: reference, done: done + 1,
-                                            ok: ok, failed: failed + [it.assetName])
+                                            ok: ok, failed: failed + [it.assetName], skipped: skipped)
                         }
                     }
                 }
@@ -1196,26 +1295,31 @@ final class BKEditorViewController: UIViewController {
         }
     }
 
-    private func finishExport(ok: Int, failed: [String]) {
+    private func finishExport(ok: Int, failed: [String], skipped: [String]) {
         isExporting = false
         setControlsEnabled(true)
         spinner.stopAnimating()
         BKDraftStore.shared.flushIfNeeded()
 
-        if failed.isEmpty {
+        // 三类结果分开说：成功 / 全红跳过 / 真失败。只有「全成功」才自动回起始页，
+        // 其余都弹一句让用户看清楚再走（弹窗和 pop 会打架，所以回起始页放在按钮里）
+        if failed.isEmpty, skipped.isEmpty {
             statusLabel.text = "已导出 \(ok) 条，即将返回草稿列表"
             // 皓哥定：全部导出完成后默认回到起始草稿页。
-            // 用延时 1.2s 而非弹 modal alert —— 弹窗和 pop 会打架（pop 把 VC 移走 alert 立刻失效），
-            // 且用户要的是「自动回去」，不是「看完点一下才走」。延时够看清结果即可
+            // 用延时 1.2s 而非弹 modal alert —— 延时够看清结果即可
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
                 self?.navigationController?.popToRootViewController(animated: true)
             }
         } else {
-            statusLabel.text = "\(ok) 条成功，\(failed.count) 条失败"
-            let alert = UIAlertController(title: "\(ok) 条成功，\(failed.count) 条失败",
-                                          message: "失败的：\n" + failed.joined(separator: "\n"),
+            var title = "\(ok) 条成功"
+            if skipped.count > 0 { title += "，\(skipped.count) 条全是红区已跳过" }
+            if failed.count > 0 { title += "，\(failed.count) 条失败" }
+            statusLabel.text = title
+
+            let detail = (skipped.map { "（全红跳过）\($0)" } + failed).joined(separator: "\n")
+            let alert = UIAlertController(title: title,
+                                          message: detail.isEmpty ? nil : detail,
                                           preferredStyle: .alert)
-            // 有失败需要用户知道，给一个明确的「返回草稿列表」动作再走
             alert.addAction(UIAlertAction(title: "返回草稿列表", style: .default) { [weak self] _ in
                 self?.navigationController?.popToRootViewController(animated: true)
             })
