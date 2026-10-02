@@ -58,16 +58,21 @@ enum BKAudioAnalyzer {
 
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderAudioMixOutput(audioTracks: [track], audioSettings: settings)
-        guard reader.add(output) else {
+        // 注意：add(_:) 返回 Void，能返回 Bool 预检的是 canAdd(_:) ——
+        // CI 第一次编译就在这里栽了（"cannot convert Void to Bool"）
+        guard reader.canAdd(output) else {
             throw BKAnalyzerError.readerSetupFailed
         }
+        reader.add(output)
         guard reader.startReading() else {
             throw BKAnalyzerError.readFailed(reader.error?.localizedDescription ?? "未知原因")
         }
 
         var samples: [Float] = []
-        while output.status == .reading {
-            guard let sb = output.copyNextSampleBuffer() else { break }
+        // 用 copyNextSampleBuffer 返回 nil 作为结束标志，而不是查 output.status：
+        // 后者在某些素材上拿到的是 .unknown，会让这个循环一次都不进，
+        // 最终报「音轨内容为空」——一个和真实原因毫不相干的错
+        while let sb = output.copyNextSampleBuffer() {
             if let block = CMSampleBufferGetDataBuffer(sb) {
                 var totalLength = 0
                 var dataPointer: UnsafeMutablePointer<Int8>? = nil
