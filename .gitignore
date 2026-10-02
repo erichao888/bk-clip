@@ -4,6 +4,12 @@ DerivedData/
 Payload/
 *.ipa
 
+# project.json 是 CI 上从 project.yml 现场转换的（绕开 XcodeGen 的 YAML 解析层），
+# 不进仓库 —— 人维护 yml，机器用 json，别让两份并存
+# spec_bisect_*.json 是诊断器现场生成又删掉的临时件，万一中断残留也不该进仓库
+project.json
+spec_bisect_*.json
+
 # 测试素材产物（波形图、试听视频）。体积大、可随时用 tools/preview_cut.py 重新生成，
 # 真正要进仓库的只有脚本本身
 *.mp4

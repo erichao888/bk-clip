@@ -47,32 +47,76 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen 2>&1 | tail -15
           xcodegen --version
 
-      - name: 生成 Xcode 工程
-        # 失败时自动做「分块二分」：把 spec 拆成一块一块单独喂给 XcodeGen，
-        # 哪一块炸，日志里直接报出来 —— 不用再凭报错猜
+      - name: 装转换依赖（尽力而为）
+        # macOS 的 python3 不自带 pyyaml（run #3 实测：No module named 'yaml'）。
+        # 【关键】这一步绝不能因为装不上就红 —— 那会让后面的诊断器根本跑不到，
+        # 白跑一整轮。所以装不上只警告，真正兜底的是下一步里的 ruby：
+        # macOS 自带 ruby，标准库就有 YAML 和 JSON，零安装、必可用
         run: |
-          xcodegen generate --spec project.yml && {
+          python3 -m pip install --quiet --user pyyaml 2>/dev/null \
+            || python3 -m pip install --quiet --break-system-packages pyyaml 2>/dev/null \
+            || pip3 install --quiet pyyaml 2>/dev/null \
+            || echo "::warning::pyyaml 没装上，改用 ruby 兜底转换"
+          python3 -c "import yaml; print('pyyaml 可用', yaml.__version__)" \
+            || echo "pyyaml 不可用"
+          ruby -e 'require "yaml"; require "json"; puts "ruby 兜底可用: #{RUBY_VERSION}"' \
+            || echo "::warning::ruby 也不可用，转换只能靠 pyyaml"
+
+      - name: 生成 Xcode 工程
+        # 【为什么先转 JSON】run #2/#3 的报错 Decoding failed at "path": Nothing found
+        # 出在「YAML 文本 → spec 对象」的解析段（Yams 库）。JSON 走的是同一个
+        # Codable 终点但没有 Yams —— 用 JSON 能跑通就说明是 YAML 层的坑，
+        # 跑不通则诊断器（同样走 JSON）会把肇事块直接点名
+        run: |
+          # 两条转换路径，谁先产出 project.json 用谁。都加了 || true：
+          # 在 GitHub 的 bash（-eo pipefail）下，任一条失败都会让整步立刻退出，
+          # 兜底就永远走不到
+          python3 - <<'PYEOF' || true
+          import yaml, json
+          spec = yaml.safe_load(open('project.yml', encoding='utf-8'))
+          with open('project.json', 'w', encoding='utf-8') as f:
+              json.dump(spec, f, ensure_ascii=False, indent=2)
+          print('project.json 已生成(python)，顶层键:', list(spec))
+          PYEOF
+
+          if [ ! -f project.json ]; then
+            echo "python 路径没产出，改用 ruby 转换 ↓"
+            ruby -ryaml -rjson -e '
+              spec = YAML.load_file("project.yml")
+              File.write("project.json", JSON.pretty_generate(spec) + "\n")
+              puts "project.json 已生成(ruby)，顶层键: #{spec.keys.inspect}"
+            ' || true
+          fi
+
+          if [ ! -f project.json ]; then
+            echo "::error::yml -> json 转换全线失败，无法继续"
+            exit 1
+          fi
+
+          xcodegen generate --spec project.json && {
             echo "=== 生成成功，工程里的 scheme： ==="
-            xcodebuild -list -project BKClip.xcodeproj
+            xcodebuild -list -project BKClip.xcodeproj || true
             exit 0
           }
-          echo "::error::XcodeGen 生成失败，开始自动分块定位 ↓"
+          echo "::error::XcodeGen 生成失败（JSON 路径），开始自动分块定位 ↓"
           python3 - <<'PYEOF'
-          import subprocess, yaml, os, glob
+          import subprocess, json, os, glob
 
-          spec = yaml.safe_load(open('project.yml', encoding='utf-8'))
+          spec = json.load(open('project.json', encoding='utf-8'))
 
           def try_spec(tag, s):
-              # XcodeGen 解析相对路径时以「spec 文件所在目录」为基准，
-              # 所以临时 spec 必须放在仓库根下，放 /tmp 会让 sources 假失败
-              p = f'spec_bisect_{tag}.yml'
+              # XcodeGen 以「spec 文件所在目录」解析相对路径，
+              # 临时 spec 必须放仓库根下，放 /tmp 会让 sources 假失败
+              p = f'spec_bisect_{tag}.json'
+              outdir = f'/tmp/bisect/{tag}'
+              os.makedirs(outdir, exist_ok=True)
               with open(p, 'w', encoding='utf-8') as f:
-                  yaml.dump(s, f, allow_unicode=True)
+                  json.dump(s, f, ensure_ascii=False, indent=2)
               r = subprocess.run(
                   ['xcodegen', 'generate', '--spec', p, '--project', f'/tmp/bisect/{tag}'],
                   capture_output=True, text=True)
               out = (r.stdout + r.stderr).strip().splitlines()
-              tail = ' | '.join(out[-2:]) if out else ''
+              tail = ' | '.join(out[-3:]) if out else ''
               print(f"  [{tag}] -> {'OK' if r.returncode == 0 else 'FAIL: ' + tail}")
               os.remove(p)
 
@@ -86,8 +130,8 @@ jobs:
           t = spec.get('targets', {}).get('BKClip', {})
           core = {'name': name, 'targets': {'BKClip': {'type': 'application', 'platform': 'iOS'}}}
           try_spec('4_target_bare', core)
-          if 'sources' in t:
-              try_spec('5_target_sources', {**core, 'targets': {'BKClip': {**core['targets']['BKClip'], 'sources': t['sources']}}})
+          for i, src in enumerate(t.get('sources', [])):
+              try_spec(f'5_source_{i}', {**core, 'targets': {'BKClip': {**core['targets']['BKClip'], 'sources': [src]}}})
           if 'settings' in t:
               try_spec('6_target_settings', {**core, 'targets': {'BKClip': {**core['targets']['BKClip'], 'settings': t['settings']}}})
           if 'info' in t:
@@ -95,7 +139,7 @@ jobs:
           if 'schemes' in t:
               try_spec('8_target_schemes', {**core, 'targets': {'BKClip': {**core['targets']['BKClip'], 'schemes': t['schemes']}}})
           try_spec('9_full', spec)
-          for f in glob.glob('spec_bisect_*.yml'): os.remove(f)
+          for f in glob.glob('spec_bisect_*.json'): os.remove(f)
           print("（从上往下，第一个 FAIL 的块就是肇事者）")
           PYEOF
           exit 1
