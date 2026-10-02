@@ -1,0 +1,87 @@
+name: 打包未签名 IPA
+
+# 这个工作流的产出是「未签名 ipa」—— 它不是安装包，还差一道签名。
+# 签名的活交给爱思助手，用你自己的 Apple ID（免费，7 天有效期）。
+# 详见 release/爱思助手安装.md
+#
+# ⚠️ 目录约定：这个文件必须位于仓库根目录下的 .github/workflows/。
+#    也就是说 —— **拿 bk-clip 这个文件夹的内容当仓库根目录**，
+#    project.yml 和 .github/ 就自然对上了。如果把 bk-clip 当成子目录塞进仓库，
+#    GitHub 根本扫不到这个工作流，Actions 页面会是空的。
+
+on:
+  # 手动触发是主要用法：Actions 页 → 选这个工作流 → Run workflow
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    # 公开仓库上 macOS runner 免费无限；私有仓库免费额度是 2000 分钟/月，
+    # macOS 按 10 倍计费 ≈ 实际可用 200 分钟。一次构建约 6~10 分钟，够跑二三十次。
+    # Free 计划默认消费上限是 $0，超额直接停任务，不会悄悄扣钱
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 打印环境
+        run: |
+          xcodebuild -version
+          sw_vers
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 生成 Xcode 工程
+        run: xcodegen generate --spec project.yml
+
+      # 这一步防护来自真实踩坑：PRODUCT_NAME 一旦写回中文，
+      # 打出来的 Payload 里就是「bk剪辑.app」，爱思重签会报「错误码 45」，
+      # 而那个提示完全不提中文的事 —— 与其以后花两小时排这个，不如在这里断掉
+      - name: 检查 PRODUCT_NAME 必须是纯 ASCII
+        run: |
+          NAME=$(grep -m1 'PRODUCT_NAME:' project.yml | awk '{print $2}')
+          echo "PRODUCT_NAME = $NAME"
+          case "$NAME" in
+            BKClip) echo "OK";;
+            *) echo "::error::PRODUCT_NAME 必须是 ASCII 的 BKClip，中文包名会导致爱思签名报错误码 45"; exit 1;;
+          esac
+
+      - name: 编译（不签名）
+        run: |
+          xcodebuild \
+            -project BKClip.xcodeproj \
+            -scheme BKClip \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            SWIFT_COMPILATION_MODE=wholemodule \
+            | tail -30
+
+      # ipa 的本质就是一个 zip：里面一层 Payload，Payload 里一个 .app。
+      # 没有别的魔法，这也是为什么它能被爱思拿去重签
+      - name: 打包 ipa
+        run: |
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+          if [ -z "$APP" ]; then echo "::error::没找到编译产物 .app"; exit 1; fi
+          echo "产物：$APP"
+          du -sh "$APP"
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          # -y 保留符号链接。App bundle 内部的软链丢了，签名必失败
+          zip -qry bkClip-unsigned.ipa Payload
+          ls -lh bkClip-unsigned.ipa
+          # 排错用：确认 Payload 里确实装进去了，且名字是英文
+          unzip -l bkClip-unsigned.ipa | head -8
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: bkClip-unsigned-ipa
+          path: bkClip-unsigned.ipa
+          retention-days: 30

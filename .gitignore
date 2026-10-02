@@ -1,0 +1,16 @@
+# 编译产物 —— 这些是云上生成的，本地传上去只会污染仓库
+build/
+DerivedData/
+Payload/
+*.ipa
+
+# Xcode 工程是 XcodeGen 从 project.yml 生成的，不进版本库。
+# 传它反而有害：两边不一致时你根本不知道该信谁
+*.xcodeproj/
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log

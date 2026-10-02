@@ -1,0 +1,34 @@
+{
+  "source": "IMG_2969.MOV",
+  "durationSec": 22.1427,
+  "thresholdOtsu": -24.24,
+  "thresholdUsed": -25.0,
+  "params": {
+    "minGap": 0.2,
+    "minSeg": 0.6,
+    "pad": 0.1,
+    "contrastDb": 6.0
+  },
+  "segments": [
+    {
+      "startSec": 0.0,
+      "endSec": 4.92,
+      "kept": true
+    },
+    {
+      "startSec": 5.05,
+      "endSec": 7.71,
+      "kept": true
+    },
+    {
+      "startSec": 7.91,
+      "endSec": 11.32,
+      "kept": true
+    },
+    {
+      "startSec": 12.69,
+      "endSec": 22.1427,
+      "kept": true
+    }
+  ]
+}

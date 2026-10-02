@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0",
+  "build": 1,
+  "date": "2026-10-01",
+  "size": "18.4 MB",
+  "note": [
+    "首个版本",
+    "导入视频后自动检测气口并切分",
+    "拖动分割线扩展红区 / 绿区",
+    "去气口后导出单个 mp4 到相册"
+  ],
+  "url": "itms-services://?action=download-manifest&url=https%3A%2F%2Fexample.com%2Fbk%2Fmanifest.plist",
+  "mandatory": false
+}

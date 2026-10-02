@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>bk剪辑 · 安装</title>
+<style>
+:root{
+  --bg:#F7F7F4; --card:#FFFFFF; --line:rgba(0,0,0,.10);
+  --t1:#1A1A1A; --t2:#6B6B66; --t3:#9A9A94;
+  --accent:#F09A28; --accent-t:#FFFFFF;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#1C1C1E; --card:#2C2C2E; --line:rgba(255,255,255,.12);
+    --t1:#F5F5F5; --t2:#A8A8A5; --t3:#7C7C79;
+  }
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--t1);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  display:flex; justify-content:center;
+  padding:32px 20px calc(32px + env(safe-area-inset-bottom));
+  min-height:100vh;
+}
+.wrap{width:100%;max-width:440px}
+.head{display:flex;align-items:center;gap:12px;margin-bottom:24px}
+.mark{width:52px;height:52px;border-radius:13px;background:var(--accent);flex:none}
+.name{font-size:19px;font-weight:600;letter-spacing:.2px}
+.sub{font-size:13px;color:var(--t2);margin-top:2px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:14px}
+.row{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.lbl{font-size:13px;color:var(--t2)}
+.val{font-size:14px;font-weight:500}
+.metalist{display:flex;gap:16px;padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:14px}
+.metalist .row{flex-direction:column;gap:3px;align-items:flex-start}
+.cap{font-size:12px;color:var(--t3);margin-bottom:10px;letter-spacing:.4px}
+ul{list-style:none}
+li{font-size:14px;line-height:1.65;color:var(--t1);padding-left:14px;position:relative;margin-bottom:7px}
+li:last-child{margin-bottom:0}
+li::before{content:"";position:absolute;left:0;top:10px;width:5px;height:5px;border-radius:50%;background:var(--accent)}
+.btn{
+  display:block;width:100%;padding:15px;border-radius:12px;
+  background:var(--accent);color:var(--accent-t);
+  font-size:16px;font-weight:600;text-align:center;text-decoration:none;
+  border:none;cursor:pointer;margin-top:18px;
+}
+.btn:active{opacity:.82}
+.btn[disabled]{background:var(--t3);opacity:.5;cursor:default}
+.hint{font-size:12px;color:var(--t3);text-align:center;margin-top:12px;line-height:1.6}
+.note{font-size:13px;color:var(--t2);line-height:1.75}
+.note b{color:var(--t1);font-weight:600}
+.steps{margin:8px 0 0 0;padding:0;list-style:none;counter-reset:s}
+.steps li{padding-left:24px;counter-increment:s;margin-bottom:6px;font-size:13px;color:var(--t2)}
+.steps li::before{
+  content:counter(s);position:absolute;left:0;top:3px;
+  width:16px;height:16px;border-radius:50%;background:var(--accent);
+  color:#fff;font-size:10px;line-height:16px;text-align:center;
+}
+.warn{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:10px;padding:14px 16px;font-size:13px;color:var(--t2);line-height:1.7}
+#waiting{display:block}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="head">
+    <div class="mark"></div>
+    <div>
+      <div class="name">bk剪辑</div>
+      <div class="sub">口播去气口 · 预处理工具</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="metalist">
+      <div class="row">
+        <div class="lbl">版本</div>
+        <div class="val" id="ver">加载中…</div>
+      </div>
+      <div class="row">
+        <div class="lbl">更新于</div>
+        <div class="val" id="date">—</div>
+      </div>
+      <div class="row">
+        <div class="lbl">大小</div>
+        <div class="val" id="size">—</div>
+      </div>
+    </div>
+    <div class="cap">本次更新</div>
+    <ul id="changelog"><li id="waiting">正在读取版本信息…</li></ul>
+    <a class="btn" id="install" href="#">安装</a>
+    <div class="hint" id="hint">仅限已登记 UDID 的设备安装</div>
+  </div>
+
+  <div class="warn" style="margin-bottom:14px">
+    <b>首次安装请注意</b><br>
+    装好后回到桌面打开 App，若提示「未受信任的开发者」，需手动信任一次，之后更新不再需要：
+    <ol class="steps">
+      <li>打开 iPhone <b>设置</b></li>
+      <li>进入 <b>通用 › VPN 与设备管理</b></li>
+      <li>在「开发者 App」下点你的 Apple ID</li>
+      <li>点 <b>信任</b>，确认</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <div class="cap">说明</div>
+    <p class="note">
+      本 App 通过 Apple 开发者账号的 <b>Ad Hoc</b> 方式分发，不经过 App Store。<br>
+      每台 iPhone 的 UDID 需提前登记，未登记的设备无法安装。<br>
+      新版本发布后在此页安装即可覆盖升级，<b>数据不会丢失</b>。
+    </p>
+  </div>
+
+</div>
+
+<script>
+var META_URL = 'version.json';
+
+function isIOS(){
+  return /iPad|iPhone|iPod/.test(navigator.userAgent)
+      || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+function fail(msg){
+  document.getElementById('ver').textContent = '—';
+  document.getElementById('changelog').innerHTML = '<li>' + msg + '</li>';
+  var b = document.getElementById('install');
+  b.textContent = '暂时无法安装';
+  b.setAttribute('disabled','');
+  document.getElementById('hint').textContent = '请稍后再试，或联系开发者';
+}
+
+fetch(META_URL, {cache:'no-store'})
+  .then(function(r){ if(!r.ok) throw new Error('bad status'); return r.json(); })
+  .then(function(d){
+    document.getElementById('ver').textContent   = d.version || '—';
+    document.getElementById('date').textContent  = d.date || '—';
+    document.getElementById('size').textContent  = d.size || '—';
+
+    if (Array.isArray(d.note) && d.note.length) {
+      document.getElementById('changelog').innerHTML =
+        d.note.map(function(t){ return '<li>' + t + '</li>'; }).join('');
+    } else {
+      document.getElementById('changelog').innerHTML = '<li>修复若干问题，优化稳定性</li>';
+    }
+
+    if (!d.url) { fail('版本信息缺少安装地址'); return; }
+
+    var btn = document.getElementById('install');
+    btn.href = d.url;
+    btn.textContent = isIOS() ? '安装' : '获取安装链接';
+
+    if (!isIOS()) {
+      btn.addEventListener('click', function(e){ e.preventDefault(); });
+      document.getElementById('hint').textContent = '请用 iPhone 或 iPad 的 Safari 打开本页';
+    }
+  })
+  .catch(function(){ fail('版本信息读取失败，多为网络问题'); });
+</script>
+</body>
+</html>

@@ -1,0 +1,99 @@
+# bk剪辑 · XcodeGen 工程定义
+#
+# 【为什么不用手写 .xcodeproj】
+# .pbxproj 是几千行的 UUID 交叉引用表，手写等于自找麻烦，git diff 也完全不可读
+# —— 两个人同时改必然冲突。用这一份 YAML 描述工程，改完跑一次生成命令即可。
+# 更关键的是：你在 Windows 上改这个文件，云 Mac 上直接生成，
+# 不需要来回传工程文件，也不依赖某台机器的 Xcode 版本。
+#
+# 【生成方式】（在 Mac 上执行一次）
+#   brew install xcodegen
+#   cd bk-clip && xcodegen generate
+#   然后 open BKClip.xcodeproj
+#
+# 【改这个文件要注意的三点】
+#   1. PRODUCT_BUNDLE_IDENTIFIER 必须和 release/manifest.plist 的
+#      bundle-identifier 完全一致，否则 Ad Hoc 描述文件不匹配，手机压根装不上
+#   2. DEVELOPMENT_TEAM 填你自己的 Team ID；留空则依赖 Xcode 自动签名
+#   3. 加新的 .swift 文件不需要改这里 —— sources 是整个 app/ 递归的
+
+name: BKClip
+
+options:
+  bundleIdPrefix: com.benka
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+  groupSortPosition: none
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    ENABLE_BITCODE: NO
+    TARGETED_DEVICE_FAMILY: "1"
+    CLANG_ENABLE_MODULES: YES
+
+targets:
+  BKClip:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+
+    sources:
+      # app/ 整棵递归：既有 DebugConsole.swift 在根上，新的按 Core / UI / App 分层
+      - path: app
+      # release/ 里混着 html / plist / json，不能整目录递归，单独挑这一个
+      - path: release/UpdateChecker.swift
+
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.benka.bkclip
+        # PRODUCT_NAME 必须是纯英文！它决定打出来的包叫「BKClip.app」还是「bk剪辑.app」。
+        # 爱思助手用个人 Apple ID 重签名时，包内路径出现中文会报「签名失败，错误码 45」，
+        # 而提示完全不会告诉你是因为中文 App 名。
+        # 想要中文名字就写在下面的 CFBundleDisplayName —— 那是主屏上显示的东西，
+        # 不参与文件路径，中文随便用
+        PRODUCT_NAME: BKClip
+        CFBundleName: BKClip
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: 1
+        CODE_SIGN_STYLE: Automatic
+        # 换成你自己的 Team ID 更稳；留 AUTO 就让 Xcode 自己去猜有时会挑错证书
+        # DEVELOPMENT_TEAM: XXXXXXXXXX
+
+    info:
+      properties:
+        CFBundleDisplayName: "bk剪辑"
+        CFBundleName: BKClip
+
+        # ---- 权限文案 ----
+        # 这两句话决定 App 有没有资格进相册、能不能把成品存回去。
+        # 写得太敷衍，用户点「不允许」的概率直线上升。
+        # 注意 iOS 的相册权限弹窗只给一次机会：
+        # 选了「不允许」之后系统不会再弹，只能引导用户自己去设置里改
+        NSPhotoLibraryUsageDescription: "bk剪辑需要读取你的相册，用来导入要剪辑的视频"
+        NSPhotoLibraryAddUsageDescription: "bk剪辑需要把剪辑完成的视频保存到相册"
+        # 用户选了「限定的照片」时不要反复弹「允许访问更多照片」，
+        # 反复弹比不能访问更招人烦
+        NSPhotoLibraryPreventAutomaticLimitedAccessAlert: YES
+
+        # ---- 界面 ----
+        # 锁竖屏。横过来之后波形时间轴会变成一条又短又挤的缝，
+        # 而竖屏素材本来也不该在横屏状态下编辑
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIRequiresFullScreen: YES
+        # 深色为主：波形在浅底上对比度不够，长时间盯也累眼
+        UIUserInterfaceStyle: Dark
+        UIStatusBarStyle: UIStatusBarStyleLightContent
+        UILaunchScreen:
+          UIColorName: ""
+
+        # ---- 文件分享：这是没有 Xcode 时的救命开关 ----
+        # 打开之后 iPhone 连上 Mac 访达 / Windows 的 iTunes，就能看到 App 沙盒，
+        # 直接把 bk.log 拖出来分析 —— 不用装任何额外工具，也不用重新编译。
+        # 没有它，「出问题时拿不到日志」这件事会让排障成本翻好几倍
+        UIFileSharingEnabled: YES
+
+        # 个人自用 App，不走 App Store 的加密合规申报
+        ITSAppUsesNonExemptEncryption: NO
