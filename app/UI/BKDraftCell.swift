@@ -31,6 +31,7 @@ final class BKDraftCell: UICollectionViewCell {
     private let shade = UIView()
     private let titleLabel = UILabel()
     private let badge = UILabel()
+    private let countBadge = UILabel()
     private let menuButton = UIButton(type: .system)
     private let checkView = UIImageView()
 
@@ -87,6 +88,17 @@ final class BKDraftCell: UICollectionViewCell {
         badge.clipsToBounds = true
         contentView.addSubview(badge)
 
+        // 视频条数角标：刀数是金底（主信息，不动），条数用低调的黑透明底白字垫在右边，
+        // 一眼分清「工作量」和「规模」。单条批（count<2）不显示 —— 写「1 条」是废话
+        countBadge.font = BKTheme.Font.small
+        countBadge.textColor = .white
+        countBadge.backgroundColor = UIColor(hex: 0x000000, alpha: 0.5)
+        countBadge.textAlignment = .center
+        countBadge.layer.cornerRadius = 3
+        countBadge.clipsToBounds = true
+        countBadge.isHidden = true
+        contentView.addSubview(countBadge)
+
         menuButton.setTitle("···", for: .normal)
         menuButton.titleLabel?.font = .systemFont(ofSize: 20, weight: .bold)
         menuButton.setTitleColor(.white, for: .normal)
@@ -103,7 +115,7 @@ final class BKDraftCell: UICollectionViewCell {
         checkView.isHidden = true
         contentView.addSubview(checkView)
 
-        for v in [cover, placeholder, shade, titleLabel, badge, menuButton, checkView] {
+        for v in [cover, placeholder, shade, titleLabel, badge, countBadge, menuButton, checkView] {
             v.translatesAutoresizingMaskIntoConstraints = false
         }
 
@@ -129,6 +141,10 @@ final class BKDraftCell: UICollectionViewCell {
             badge.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 5),
             badge.heightAnchor.constraint(equalToConstant: 17),
 
+            countBadge.leadingAnchor.constraint(equalTo: badge.trailingAnchor, constant: 4),
+            countBadge.topAnchor.constraint(equalTo: badge.topAnchor),
+            countBadge.heightAnchor.constraint(equalToConstant: 17),
+
             menuButton.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
             menuButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -4),
             menuButton.widthAnchor.constraint(equalToConstant: 30),
@@ -143,9 +159,16 @@ final class BKDraftCell: UICollectionViewCell {
 
     // MARK: - 装填
 
-    func configure(title: String, cuts: Int, coverImage: UIImage?, picking: Bool) {
+    func configure(title: String, cuts: Int, count: Int, coverImage: UIImage?, picking: Bool) {
         titleLabel.text = title
         badge.text = "\(cuts) 刀"
+        // 单条批（count<2）不显示条数角标；多条才显示，提示「这批要过一遍素材列表」
+        if count >= 2 {
+            countBadge.isHidden = false
+            countBadge.text = "\(count) 条"
+        } else {
+            countBadge.isHidden = true
+        }
         cover.image = coverImage
         placeholder.isHidden = coverImage != nil
         isPicking = picking

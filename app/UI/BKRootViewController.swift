@@ -376,7 +376,7 @@ extension BKRootViewController: UICollectionViewDataSource, UICollectionViewDele
         let b = batches[indexPath.item]
         let coverId = b.coverAssetId()
         let img = coverId.flatMap { BKCovers.load(batchId: b.id, assetId: $0) }
-        cell.configure(title: b.displayTitle, cuts: b.totalCuts, coverImage: img, picking: picking)
+        cell.configure(title: b.displayTitle, cuts: b.totalCuts, count: b.items.count, coverImage: img, picking: picking)
         cell.onMenu = { [weak self] in self?.showDraftMenu(for: b) }
         return cell
     }
