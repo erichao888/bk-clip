@@ -232,13 +232,21 @@ final class BKEditorViewController: UIViewController {
     private func setupNav() {
         navigationItem.title = item.assetName
 
+        // 左上角返回（关闭）：剪辑页禁用了系统边缘右滑返回（避免和拖轨道冲突），
+        // 必须给一个显式入口，否则用户卡在编辑页回不去起始草稿页
+        let backItem = UIBarButtonItem(image: UIImage(systemName: "chevron.backward"),
+                                       style: .plain,
+                                       target: self,
+                                       action: #selector(closeTapped))
+        backItem.accessibilityLabel = "返回草稿列表"
+
         let listItem = UIBarButtonItem(image: UIImage(systemName: "line.3.horizontal"),
                                        style: .plain,
                                        target: self,
                                        action: #selector(toggleListTapped))
         // 定稿 4.2：素材 ≤1 条时 ☰ 置灰
         listItem.isEnabled = batch.items.count > 1
-        navigationItem.leftBarButtonItem = listItem
+        navigationItem.leftBarButtonItems = [backItem, listItem]
 
         // 右：导出。定稿里唯一「图标 + 文字」的按钮 ——
         // 它按下去不可逆，只给图标认错代价太大
@@ -601,6 +609,13 @@ final class BKEditorViewController: UIViewController {
             listTable.topAnchor.constraint(equalTo: listPanel.topAnchor, constant: 4),
             listTable.bottomAnchor.constraint(equalTo: listPanel.bottomAnchor, constant: -4)
         ])
+    }
+
+    /// 左上角返回：pop 回起始草稿页。
+    /// pop 会触发 viewWillDisappear → isMovingFromParent=true → finishSession（存草稿 + 封面），
+    /// 所以这里只要 pop 即可，结算逻辑复用已有流程，不用另写
+    @objc private func closeTapped() {
+        navigationController?.popViewController(animated: true)
     }
 
     @objc private func toggleListTapped() {
@@ -1188,18 +1203,22 @@ final class BKEditorViewController: UIViewController {
         BKDraftStore.shared.flushIfNeeded()
 
         if failed.isEmpty {
-            statusLabel.text = "已导出 \(ok) 条，存入相册"
-            let alert = UIAlertController(title: "已保存到相册",
-                                          message: "\(ok) 条成品已存入系统相册，可以直接进剪映。",
-                                          preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "好", style: .cancel))
-            present(alert, animated: true)
+            statusLabel.text = "已导出 \(ok) 条，即将返回草稿列表"
+            // 皓哥定：全部导出完成后默认回到起始草稿页。
+            // 用延时 1.2s 而非弹 modal alert —— 弹窗和 pop 会打架（pop 把 VC 移走 alert 立刻失效），
+            // 且用户要的是「自动回去」，不是「看完点一下才走」。延时够看清结果即可
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                self?.navigationController?.popToRootViewController(animated: true)
+            }
         } else {
             statusLabel.text = "\(ok) 条成功，\(failed.count) 条失败"
             let alert = UIAlertController(title: "\(ok) 条成功，\(failed.count) 条失败",
                                           message: "失败的：\n" + failed.joined(separator: "\n"),
                                           preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "好", style: .cancel))
+            // 有失败需要用户知道，给一个明确的「返回草稿列表」动作再走
+            alert.addAction(UIAlertAction(title: "返回草稿列表", style: .default) { [weak self] _ in
+                self?.navigationController?.popToRootViewController(animated: true)
+            })
             present(alert, animated: true)
         }
     }
