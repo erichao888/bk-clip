@@ -291,7 +291,8 @@ final class BKEditorViewController: UIViewController {
             track.bottomAnchor.constraint(equalTo: trackContainer.bottomAnchor)
         ])
 
-        // ---- 工具栏第一排：停止 / 播放 / 反选 / 切割 / 检测 + 时间码 ----
+        // ---- 工具栏第一排：停止 / 播放 / 反选 / 切割 / 检测 ----
+        // 时间码不在这排（皓哥定稿：所有数字放画面预览区下面），两侧各一个弹性空位把它居中
         configureTool(stopButton, systemName: "stop.fill", action: #selector(stopTapped))
         configureTool(playButton, systemName: "play.fill", action: #selector(playTapped))
         updatePlayButtonIcon()
@@ -304,14 +305,10 @@ final class BKEditorViewController: UIViewController {
         // 皓哥指定：自动检测用**吸管**，不是滴管 —— 就是剪映那个取样的东西
         configureTool(detectButton, systemName: "eyedropper", action: #selector(detectTapped))
 
-        timeLabel.font = BKTheme.Font.monoBig
-        timeLabel.textColor = BKTheme.Color.text
-        timeLabel.text = "00:00 / 00:00"
-        timeLabel.setContentHuggingPriority(.required, for: .horizontal)
-
-        let spacer1 = UIView()
+        let row1Lead = UIView()
+        let row1Tail = UIView()
         let row1 = UIStackView(arrangedSubviews: [
-            stopButton, playButton, invertButton, cutButton, detectButton, spacer1, timeLabel
+            row1Lead, stopButton, playButton, invertButton, cutButton, detectButton, row1Tail
         ])
         row1.axis = .horizontal
         row1.spacing = BKTheme.Space.sm
@@ -354,7 +351,29 @@ final class BKEditorViewController: UIViewController {
         toolbar.isLayoutMarginsRelativeArrangement = true
         toolbar.layoutMargins = UIEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
 
-        // ---- 底部两行：阈值 + 状态 ----
+        // ---- 数字行：紧贴画面预览区下面（皓哥 2026-10-02 定稿）----
+        // 左边是「当前 / 总长」，右边是「原时长 · 剪后 · 刀数 · 删了多少」。
+        // 之前时间码塞在工具栏、统计塞在最底下，皓哥指出 iPhone 屏窄，
+        // 工具栏已有 5 个图标 + 缩放滑杆，再塞数字会挤成一团，统一收拢到画面正下方
+        timeLabel.font = BKTheme.Font.monoBig
+        timeLabel.textColor = BKTheme.Color.text
+        timeLabel.text = "00:00 / 00:00"
+        timeLabel.setContentHuggingPriority(.required, for: .horizontal)
+        timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        infoLabel.font = BKTheme.Font.monoSmall
+        infoLabel.textColor = BKTheme.Color.text2
+        infoLabel.numberOfLines = 2
+        infoLabel.textAlignment = .right
+        infoLabel.text = "正在准备…"
+
+        let statsSpacer = UIView()
+        let statsRow = UIStackView(arrangedSubviews: [timeLabel, statsSpacer, infoLabel])
+        statsRow.axis = .horizontal
+        statsRow.spacing = BKTheme.Space.md
+        statsRow.alignment = .center
+
+        // ---- 底部：阈值 + 状态 ----
         thresholdTitle.font = BKTheme.Font.mono
         thresholdTitle.textColor = BKTheme.Color.text
         thresholdTitle.text = "阈值 -37.5 dB"
@@ -375,11 +394,6 @@ final class BKEditorViewController: UIViewController {
         thresholdRow.spacing = BKTheme.Space.md
         thresholdRow.alignment = .center
 
-        infoLabel.font = BKTheme.Font.mono
-        infoLabel.textColor = BKTheme.Color.text
-        infoLabel.numberOfLines = 0
-        infoLabel.text = "正在准备…"
-
         statusLabel.font = BKTheme.Font.caption
         statusLabel.textColor = BKTheme.Color.warning
         statusLabel.numberOfLines = 0
@@ -394,15 +408,16 @@ final class BKEditorViewController: UIViewController {
 
         setupListPanel()
 
-        // 顺序照定稿第 4 节：工具栏 → 预览 → 主轨道 → 概览条 → 底部两行
+        // 顺序照定稿第 4 节：工具栏 → 预览 → 数字行 → 主轨道 → 概览条 → 阈值/状态
         let stack = UIStackView(arrangedSubviews: [
-            toolbar, listPanel, previewContainer, trackContainer, overview,
-            thresholdRow, infoLabel, statusRow
+            toolbar, listPanel, previewContainer, statsRow, trackContainer, overview,
+            thresholdRow, statusRow
         ])
         stack.axis = .vertical
         stack.spacing = BKTheme.Space.sm
         stack.alignment = .fill
         stack.setCustomSpacing(BKTheme.Space.xs, after: toolbar)
+        stack.setCustomSpacing(BKTheme.Space.xs, after: previewContainer)
         stack.setCustomSpacing(BKTheme.Space.md, after: listPanel)
 
         view.addSubview(stack)
