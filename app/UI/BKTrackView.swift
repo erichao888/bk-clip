@@ -1,25 +1,29 @@
 //
 //  BKTrackView.swift
-//  bk剪辑 — 滚动主轨道（第三批改：指针居中版）
+//  bk剪辑 — 滚动主轨道（第四批改：定稿版 —— 加缩放、加把手、配色焊死）
 //
-//  【为什么推翻上一版】
-//  上一版是全览式波形：整条素材摊开在固定宽度里，橙色播放头从左跑到右。
+//  【为什么推翻更早的全览式波形】
+//  最早是整条素材摊开在固定宽度里，橙色播放头从左跑到右。
 //  皓哥要的是剪映那种：**橙色指针钉死在正中央不动，内容在底下左右滚**。
 //  差别不是动画，是操作精度 —— 全览式里 42 秒素材挤进 350pt，
 //  一秒才 8pt，手指在屏幕上 1pt 的误差就是 0.12 秒，微调刀口根本下不去手。
 //
-//  【几何约定】先把数学说清楚，后面全靠它：
+//  【几何约定】先把数学说清楚，后面全靠它（定稿第 4.3 节）：
 //    W    = 可视宽度
 //    pad  = W / 2            左右各留半屏余量（皓哥要求：首尾也要能推到指针下）
-//    pps  = 每秒像素数
+//    pps  = 每秒像素数        由缩放决定
 //    L    = duration * pps   内容本身的长度
 //    画布总宽 = L + W        内容 + 左右半屏余量
 //    滚动范围 = [0, L]       offset 0 时指针指向 0 秒，offset L 时指向末尾
 //  **指针所指时间 t = offset / pps** —— 因为 pad 正好等于 W/2，两者相消。
 //  这个巧合不是巧合，是刻意把余量取成半屏换来的，别改成别的数。
 //
+//  【可见时间窗】给概览条画橙色视窗框用：
+//    t0 = t - W/(2*pps)      t1 = t + W/(2*pps)
+//  同样是因为 pad = W/2。
+//
 //  【谁负责滚】UIScrollView 负责惯性和回弹，不自己撸 pan。
-//  只有「拖分界线」这一种手势要跟滚动抢，做法是摸到线才临时关掉滚动。
+//  只有「拖边界把手」这一种手势要跟滚动抢，做法是摸到把手才临时关掉滚动。
 //
 
 import UIKit
@@ -33,8 +37,15 @@ protocol BKTrackViewDelegate: AnyObject {
     func track(_ view: BKTrackView, didScrollTo time: Double)
     /// 点了一下一个片段
     func track(_ view: BKTrackView, didTogglePieceAt time: Double)
+    /// 手指摸上了一条边界，拖动开始。VC 收到它就该开「合并提交」，
+    /// 否则拖动过程中每一帧都入一次撤销栈，撤一次只退一帧
+    func track(_ view: BKTrackView, didBeginBoundaryDragNear time: Double)
     /// 拖某条分界线。near 是起手时的旧位置，newTime 是要挪到的新位置
     func track(_ view: BKTrackView, didDragBoundaryNear near: Double, to newTime: Double)
+    /// 手指离开，拖动结束
+    func trackDidEndBoundaryDrag(_ view: BKTrackView)
+    /// 缩放变了（滑杆或双指捏合）。screens 是「整条素材摊成几屏宽」
+    func track(_ view: BKTrackView, didChangeZoomTo screens: CGFloat)
 }
 
 final class BKTrackView: UIView {
@@ -46,6 +57,7 @@ final class BKTrackView: UIView {
     private let pointer = TrackPointer()
     private var pan: UIPanGestureRecognizer!
     private var tap: UITapGestureRecognizer!
+    private var pinch: UIPinchGestureRecognizer!
 
     private var duration: Double = 0
     private var pps: CGFloat = 60
@@ -53,9 +65,18 @@ final class BKTrackView: UIView {
     /// 程序滚动的标志：播放时是代码在推 contentOffset，别再回调给外部去 seek
     private var programmatic = false
     private var draggedEdge: Double?
+    private var pinchBaseZoom: CGFloat = 6
 
-    /// 默认把整条素材摊成 6 屏宽。再密手指就抹不开，再松就看不见气口
-    private static let screensPerSession: CGFloat = 6
+    /// 整条素材摊成几屏宽。默认 6 屏：再密手指抹不开，再松就看不见气口
+    private(set) var zoomScreens: CGFloat = 6
+
+    /// 缩放上下限。1 屏 = 全览（看全局），20 屏 = 贴脸（单帧级微调）
+    static let zoomMin: CGFloat = 1
+    static let zoomMax: CGFloat = 20
+
+    /// 手指离边界多近才算「摸到了把手」。把手本身只有 4pt 宽，
+    /// 但手指不是鼠标 —— 按 4pt 判定基本抓不住
+    private static let handleGrabTolerance: CGFloat = 20
 
     // MARK: - 初始化
 
@@ -74,7 +95,7 @@ final class BKTrackView: UIView {
         clipsToBounds = true
 
         scroll.backgroundColor = .clear
-        scroll.showsHorizontalScrollIndicator = true
+        scroll.showsHorizontalScrollIndicator = false
         scroll.showsVerticalScrollIndicator = false
         scroll.alwaysBounceHorizontal = true
         scroll.delaysContentTouches = false
@@ -96,6 +117,10 @@ final class BKTrackView: UIView {
         tap = UITapGestureRecognizer(target: self, action: #selector(onTap(_:)))
         tap.delegate = self
         canvas.addGestureRecognizer(tap)
+
+        pinch = UIPinchGestureRecognizer(target: self, action: #selector(onPinch(_:)))
+        pinch.delegate = self
+        canvas.addGestureRecognizer(pinch)
     }
 
     // MARK: - 对外接口
@@ -122,6 +147,14 @@ final class BKTrackView: UIView {
         return Double(scroll.contentOffset.x) / Double(pps)
     }
 
+    /// 当前可见的时间窗，给概览条画橙色视窗框用
+    var viewport: (start: Double, end: Double) {
+        guard pps > 0, bounds.width > 0 else { return (0, 0) }
+        let half = Double(bounds.width / 2) / Double(pps)
+        let t = currentTime
+        return (t - half, t + half)
+    }
+
     func setPointerTime(_ t: Double) {
         guard pps > 0, duration > 0 else { return }
         let x = min(max(CGFloat(t) * pps, 0), CGFloat(duration) * pps)
@@ -133,6 +166,16 @@ final class BKTrackView: UIView {
         DispatchQueue.main.async { self.programmatic = false }
     }
 
+    /// 缩放。保持指针所指的时间不变：放大时是「以指针为中心放大」，
+    /// 否则一拉滑杆画面就跳到别处，根本没法对着气口调
+    func setZoomScreens(_ screens: CGFloat) {
+        let clamped = min(max(screens, BKTrackView.zoomMin), BKTrackView.zoomMax)
+        guard abs(clamped - zoomScreens) > 0.001 else { return }
+        zoomScreens = clamped
+        relayout(keepPointerTime: currentTime)
+        canvas.setNeedsDisplay()
+    }
+
     // MARK: - 布局
 
     override func layoutSubviews() {
@@ -141,6 +184,7 @@ final class BKTrackView: UIView {
         if abs(bounds.width - lastWidth) > 0.5 {
             lastWidth = bounds.width
             relayout(keepPointerTime: currentTime)
+            canvas.setNeedsDisplay()
         }
     }
 
@@ -148,7 +192,7 @@ final class BKTrackView: UIView {
         let w = bounds.width
         guard w > 1 else { return }
 
-        pps = duration > 0 ? max((w * BKTrackView.screensPerSession) / CGFloat(duration), 8) : 60
+        pps = duration > 0 ? max((w * zoomScreens) / CGFloat(duration), 8) : 60
         let contentLen = CGFloat(duration) * pps
         let total = contentLen + w           // 内容 + 左右各半屏余量
 
@@ -199,7 +243,7 @@ extension BKTrackView: UIGestureRecognizerDelegate {
         guard gestureRecognizer === pan else { return true }
         let x = gestureRecognizer.location(in: canvas).x
         guard let edge = nearestBoundary(to: timeAt(canvasX: x)) else { return false }
-        return abs(canvasX(of: edge) - x) <= 18
+        return abs(canvasX(of: edge) - x) <= BKTrackView.handleGrabTolerance
     }
 
     @objc private func onPan(_ g: UIPanGestureRecognizer) {
@@ -209,10 +253,16 @@ extension BKTrackView: UIGestureRecognizerDelegate {
             // 关掉滚动，否则拖拉的同时整条内容会跟着漂走
             scroll.isScrollEnabled = false
             draggedEdge = nearestBoundary(to: timeAt(canvasX: here.x))
+            if let edge = draggedEdge {
+                delegate?.track(self, didBeginBoundaryDragNear: edge)
+            }
         case .changed:
             guard let from = draggedEdge else { return }
             delegate?.track(self, didDragBoundaryNear: from, to: timeAt(canvasX: here.x))
         case .ended, .cancelled, .failed:
+            if draggedEdge != nil {
+                delegate?.trackDidEndBoundaryDrag(self)
+            }
             draggedEdge = nil
             scroll.isScrollEnabled = true
         default:
@@ -224,6 +274,18 @@ extension BKTrackView: UIGestureRecognizerDelegate {
         let t = timeAt(canvasX: g.location(in: canvas).x)
         guard t >= 0, t <= duration else { return }
         delegate?.track(self, didTogglePieceAt: t)
+    }
+
+    @objc private func onPinch(_ g: UIPinchGestureRecognizer) {
+        switch g.state {
+        case .began:
+            pinchBaseZoom = zoomScreens
+        case .changed:
+            setZoomScreens(pinchBaseZoom * g.scale)
+            delegate?.track(self, didChangeZoomTo: zoomScreens)
+        default:
+            break
+        }
     }
 }
 
@@ -257,6 +319,10 @@ fileprivate final class TrackCanvas: UIView {
 
     fileprivate var r = TrackRender()
 
+    /// 把手尺寸（定稿第 1.1 节：4×8pt 小白条）
+    private let handleW: CGFloat = 4
+    private let handleH: CGFloat = 8
+
     override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
         let pad = r.pad
@@ -270,7 +336,7 @@ fileprivate final class TrackCanvas: UIView {
         let mid = waveTop + waveH / 2
         let amp = waveH / 2 - 3
 
-        // 轨道底色
+        // 轨道底色（浅绿 #C7D8BD）
         if contentLen > 0 {
             ctx.setFillColor(BKTheme.Color.track.cgColor)
             ctx.fill(CGRect(x: pad, y: waveTop, width: contentLen, height: waveH))
@@ -295,7 +361,7 @@ fileprivate final class TrackCanvas: UIView {
             ctx.fillPath()
         }
 
-        // 待删除区间：红色半透明覆盖 + 两侧边界线
+        // 待删除区间：粉红半透明覆盖 + 两侧边界线
         for pc in r.pieces where pc.kind == .cut {
             let x0 = pad + CGFloat(pc.start) * pps
             let x1 = pad + CGFloat(pc.end) * pps
@@ -311,11 +377,11 @@ fileprivate final class TrackCanvas: UIView {
             ctx.strokePath()
         }
 
-        // 手动切口：把这一竖条挖成底色，再在两侧各画一条描边 ——
+        // 手动切口：把这一竖条挖成页面底色，再在两侧各画一条描边 ——
         // 看上去是真被剪开的一道缝，而不是一条线。视觉上「切开」这件事必须看得见
         for s in r.splits {
             let x = pad + CGFloat(s) * pps
-            ctx.setFillColor(BKTheme.Color.bg.cgColor)
+            ctx.setFillColor(BKTheme.Color.page.cgColor)
             ctx.fill(CGRect(x: x - 2, y: waveTop, width: 4, height: waveH))
             ctx.setStrokeColor(BKTheme.Color.selection.cgColor)
             ctx.setLineWidth(1)
@@ -326,7 +392,7 @@ fileprivate final class TrackCanvas: UIView {
             ctx.strokePath()
         }
 
-        // 阈值虚线：低于这条线的才算静音
+        // 阈值虚线：低于这条线的才算静音（黄 #EF9F27）
         let conv = min(max((r.thresholdDb - dbLo) / (dbHi - dbLo), 0.0), 1.0)
         let ty = mid - CGFloat(conv) * amp
         ctx.setStrokeColor(BKTheme.Color.warning.cgColor)
@@ -336,6 +402,25 @@ fileprivate final class TrackCanvas: UIView {
         ctx.addLine(to: CGPoint(x: pad + contentLen, y: ty))
         ctx.strokePath()
         ctx.setLineDash(phase: 0, lengths: [])
+
+        // 边界把手：粉红块两端各一枚小白条（定稿：#FFFFFF 4×8pt）
+        // 白压在浅绿上边界会糊，加一道极淡的灰边把它提出来
+        for pc in r.pieces where pc.kind == .cut {
+            for edge in [pc.start, pc.end] {
+                let x = pad + CGFloat(edge) * pps
+                let box = CGRect(x: x - handleW / 2,
+                                 y: mid - handleH / 2,
+                                 width: handleW,
+                                 height: handleH)
+                let rounded = CGPath(roundedRect: box, cornerWidth: 1.5, cornerHeight: 1.5,
+                                     transform: nil)
+                ctx.setFillColor(BKTheme.Color.handle.cgColor)
+                ctx.setStrokeColor(BKTheme.Color.handleLine.cgColor)
+                ctx.setLineWidth(0.5)
+                ctx.addPath(rounded)
+                ctx.drawPath(using: .fillStroke)
+            }
+        }
 
         // 时间刻度：每 5 秒一个小齿
         if r.duration > 0 {

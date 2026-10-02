@@ -211,6 +211,13 @@ final class BKDraftStore {
         return allDrafts.first
     }
 
+    /// 全部草稿累计导出的成品条数。起始页那句「v1.0 · 已导出 N 条」用它。
+    /// 走 allDrafts（真读文件）而不是缓存 —— 这个数只在进起始页时读一次，
+    /// 为了它单独维护一份索引不值当
+    var totalExportCount: Int {
+        allDrafts.reduce(0) { $0 + $1.exportHistory.count }
+    }
+
     // MARK: - 工具
 
     private func fileURL(for id: UUID) -> URL {

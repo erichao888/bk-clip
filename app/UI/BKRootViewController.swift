@@ -73,10 +73,16 @@ final class BKRootViewController: UIViewController {
         pickButton.heightAnchor.constraint(equalToConstant: 50).isActive = true
         pickButton.addTarget(self, action: #selector(pickTapped), for: .touchUpInside)
 
-        resumeButton.setTitle("继续上次编辑", for: .normal)
-        resumeButton.titleLabel?.font = BKTheme.Font.button
-        resumeButton.setTitleColor(BKTheme.Color.accent, for: .normal)
-        resumeButton.heightAnchor.constraint(equalToConstant: BKTheme.Space.minTap).isActive = true
+        // 「继续上次草稿」是白卡片 + 黑字，副标题写素材名和刀数（定稿第 3 节）。
+        // 用两段属性的 NSAttributedString 而不是 UIButton.Configuration：
+        // 后者要写 textAttributesTransformer，多一层不确定的 API，这里的需求两行就够
+        resumeButton.titleLabel?.numberOfLines = 2
+        resumeButton.titleLabel?.textAlignment = .center
+        resumeButton.backgroundColor = BKTheme.Color.panel
+        resumeButton.layer.cornerRadius = BKTheme.Radius.card
+        resumeButton.layer.borderWidth = 1
+        resumeButton.layer.borderColor = BKTheme.Color.line.cgColor
+        resumeButton.heightAnchor.constraint(equalToConstant: 56).isActive = true
         resumeButton.addTarget(self, action: #selector(resumeTapped), for: .touchUpInside)
 
         statusLabel.font = BKTheme.Font.mono
@@ -84,7 +90,6 @@ final class BKRootViewController: UIViewController {
         statusLabel.numberOfLines = 0
         statusLabel.text = "尚无素材"
 
-        versionLabel.text = "ver \(BKConfig.appVersion)"
         versionLabel.font = BKTheme.Font.small
         versionLabel.textColor = BKTheme.Color.text3
         versionLabel.textAlignment = .center
@@ -124,8 +129,38 @@ final class BKRootViewController: UIViewController {
         ])
     }
 
+    /// 定稿第 3 节：有草稿才出现这一格，并且要把「是哪条素材、切了几刀」写出来 ——
+    /// 只写「继续上次编辑」的话，皓哥根本想不起上次剪的是哪条
     private func refreshResumeVisibility() {
-        resumeButton.isHidden = BKDraftStore.shared.resumeProject() == nil
+        guard let project = BKDraftStore.shared.resumeProject() else {
+            resumeButton.isHidden = true
+            versionLabel.text = "v\(BKConfig.appVersion)"
+            return
+        }
+        resumeButton.isHidden = false
+        let name = BKVideoLibrary.assetName(localID: project.assetLocalID)
+        resumeButton.setAttributedTitle(resumeTitle(name: name, cuts: project.cutCount),
+                                        for: .normal)
+        versionLabel.text = "v\(BKConfig.appVersion) · 已导出 \(BKDraftStore.shared.totalExportCount) 条"
+    }
+
+    private func resumeTitle(name: String, cuts: Int) -> NSAttributedString {
+        let para = NSMutableParagraphStyle()
+        para.alignment = .center
+        para.lineSpacing = 2
+
+        let text = NSMutableAttributedString()
+        text.append(NSAttributedString(
+            string: "继续上次草稿\n",
+            attributes: [.font: BKTheme.Font.button,
+                         .foregroundColor: BKTheme.Color.text,
+                         .paragraphStyle: para]))
+        text.append(NSAttributedString(
+            string: "\(name) · \(cuts) 刀",
+            attributes: [.font: BKTheme.Font.caption,
+                         .foregroundColor: BKTheme.Color.text2,
+                         .paragraphStyle: para]))
+        return text
     }
 
     // MARK: - 交互

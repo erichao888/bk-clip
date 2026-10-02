@@ -99,9 +99,13 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         UIRequiresFullScreen: YES
-        # 深色为主：波形在浅底上对比度不够，长时间盯也累眼
-        UIUserInterfaceStyle: Dark
-        UIStatusBarStyle: UIStatusBarStyleLightContent
+        # 【浅色，且锁死】
+        # 定稿第 1.1 节：配色焊死，不跟系统深浅模式。皓哥手机开着深色模式时，
+        # 上一版直接把整套波形渲染成暗色 —— 和参考图定的浅色系完全对不上。
+        # 这里必须显式声明 Light：光靠代码里的固定色值不够，
+        # 系统弹的告警框、授权弹窗、导航栏走的是系统语义色，不锁就会一半深一半浅
+        UIUserInterfaceStyle: Light
+        UIStatusBarStyle: UIStatusBarStyleDefault
         UILaunchScreen:
           UIColorName: ""
 

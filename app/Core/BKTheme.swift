@@ -6,13 +6,21 @@
 //  颜色写在各个 View 里，改一次主题要翻十个文件；而且同一个「次要文字」
 //  在不同页面上会慢慢变成三种灰。这里是唯一的定义处，别处只引用。
 //
-//  【这里的色值和 proto/index.html 的 CSS 变量逐一对齐】
-//  网页原型是你在电脑上看到的样子，App 是真机上跑出来的样子。
-//  两边色值不一致，原型就白做了 —— 改原型改这里，改这里也改原型。
+//  【这里的色值和 docs/界面定稿.md 的配色表逐一对齐】
+//  定稿是唯一的设计来源，改配色先改定稿，再改这里。
 //
-//  【深色优先】
-//  剪辑软件一律深色为主：波形在浅底上对比度不够，长时间盯也累眼。
-//  但 iOS 用户可能开浅色模式，所以两套都给全了，用 dynamic 跟随系统。
+//  【⚠️ 配色一律焊死，不跟系统深浅模式 —— 这是踩过坑的地方】
+//  这一版之前用的是 UIColor.bk(light:dark:) 动态色，结果皓哥手机开着深色模式，
+//  打开 App 看到的是一整套暗色波形 —— 而参考图定的是浅色系。
+//  剪辑软件要的是「颜色稳定可预期」：白天剪和夜里剪，同一段素材看起来必须一样，
+//  否则你对「这一段到底静不静」的判断会被环境光带偏。剪映同理。
+//
+//  所以从今往后：
+//    · 全 App 只准用下面这些固定色值
+//    · 不准用 .label / .systemBackground 之类跟随系统的语义色
+//    · 不准再写 UIColor.bk(light:dark:)（这个 helper 已经删掉，防止有人捡回去）
+//    · project.yml 里 UIUserInterfaceStyle 也锁成 Light，
+//      否则系统弹的告警框、导航栏还是深色的，跟浅色界面拼在一起很割裂
 //
 
 import UIKit
@@ -31,18 +39,6 @@ extension UIColor {
                   blue: CGFloat(hex & 0xFF) / 255.0,
                   alpha: alpha)
     }
-
-    /// 跟随系统深浅自动生成。
-    /// iOS 13 起 UIColor 支持动态 provider，切深/浅模式时会自动刷新，
-    /// 不需要在 traitCollectionDidChange 里手动重设 —— 前提是你别把颜色
-    /// 在 viewDidLoad 里提前 resolve 成 cgColor 存起来
-    static func bk(light: UInt32, dark: UInt32, alpha: CGFloat = 1.0) -> UIColor {
-        UIColor { trait in
-            trait.userInterfaceStyle == .dark
-                ? UIColor(hex: dark, alpha: alpha)
-                : UIColor(hex: light, alpha: alpha)
-        }
-    }
 }
 
 // MARK: - 颜色令牌
@@ -51,57 +47,79 @@ enum BKTheme {
 
     enum Color {
 
-        // 容器
-        /// 页面底色（ iPhone 屏幕上手指基地之外的区域）
-        static let page   = UIColor.bk(light: 0xDCDCE1, dark: 0x2C2C2E)
-        /// 内容区背景
-        static let bg     = UIColor.bk(light: 0xF2F2F7, dark: 0x000000)
+        // ---- 容器 ----
+        /// 页面底 / 内容区背景（定稿：#F7F7F4 浅白）
+        static let page  = UIColor(hex: 0xF7F7F4)
+        static let bg    = UIColor(hex: 0xF7F7F4)
+        /// 工具栏底（定稿：#F1F1EE，比页面底略深一点，好把工具栏从页面上分出来）
+        static let bar   = UIColor(hex: 0xF1F1EE)
         /// 面板、卡片、导航栏背景
-        static let panel  = UIColor.bk(light: 0xFFFFFF, dark: 0x1C1C1E)
+        static let panel = UIColor(hex: 0xFFFFFF)
         /// 次级面板（按钮按下态、胶囊标签底）
-        static let panel2 = UIColor.bk(light: 0xE5E5EA, dark: 0x2C2C2E)
-        /// 分隔线
-        static let line   = UIColor.bk(light: 0xD1D1D6, dark: 0x38383A)
+        static let panel2 = UIColor(hex: 0xE5E5EA)
+        /// 分隔线 / 按钮描边（定稿：#D1D1D6）
+        static let line  = UIColor(hex: 0xD1D1D6)
 
-        // 文字
-        static let text   = UIColor.bk(light: 0x1A1A1A, dark: 0xF5F5F5)
-        static let text2  = UIColor.bk(light: 0x6E6E73, dark: 0x98989D)
-        static let text3  = UIColor.bk(light: 0xAEAEB2, dark: 0x636366)
+        // ---- 文字 ----
+        static let text  = UIColor(hex: 0x1A1A1A)
+        static let text2 = UIColor(hex: 0x5F5E5A)
+        static let text3 = UIColor(hex: 0xAEAEB2)
 
-        // 波形
-        /// 波形轨道底色
-        static let track  = UIColor.bk(light: 0xC7D8BD, dark: 0x1E2A20)
-        /// 波形本体
-        static let wave   = UIColor.bk(light: 0x24430F, dark: 0x8FC98A)
-        /// 待切除区的高亮覆盖
-        static let cut    = UIColor.bk(light: 0xD6707A, dark: 0xC25B5B).withAlphaComponent(0.55)
-        /// 待切除区的边框 / 分割线
-        static let cutLine = UIColor.bk(light: 0xD6707A, dark: 0xC25B5B)
-
-        // 概览条
-        static let ovBg   = UIColor.bk(light: 0x8F9389, dark: 0x3A3A3C)
-        static let ovWave = UIColor.bk(light: 0x4C5049, dark: 0x8E8E93)
-
-        // 强调
-        /// 主强调色，用于可点文字和链接
-        static let accent = UIColor.bk(light: 0x007AFF, dark: 0x0A84FF)
-        /// 品牌金。播放头、进度条、调试入口专用 —— 它是「正在动」的颜色，
-        /// 别拿去当普通点缀，会跟播放头抢注意力
-        static let gold   = UIColor(hex: 0xF09A28)
-        /// 播放头
+        // ---- 主轨道（定稿第 4.3 节）----
+        /// 轨道底色：浅绿 #C7D8BD
+        static let track = UIColor(hex: 0xC7D8BD)
+        /// 波形本体：深绿实心 #24430F
+        static let wave  = UIColor(hex: 0x24430F)
+        /// 待删气口：粉红 60% #D6707A
+        static let cut     = UIColor(hex: 0xD6707A, alpha: 0.60)
+        /// 气口边界线：粉红实心 #D6707A
+        static let cutLine = UIColor(hex: 0xD6707A)
+        /// 边界把手：小白条 #FFFFFF
+        static let handle  = UIColor(hex: 0xFFFFFF)
+        /// 把手的描边。纯白压在浅绿上边界会糊，加一道极淡的灰边把它提出来
+        static let handleLine = UIColor(hex: 0x8F9389, alpha: 0.9)
+        /// 指针：橙 #F09A28
         static let playhead = UIColor(hex: 0xF09A28)
-        /// 选中描边
-        static let selection = UIColor.bk(light: 0x1A1A1A, dark: 0xFFFFFF)
-
-        // 预览区
-        /// 播放器背景。深浅两套都给纯黑/近黑 —— 视频本身是内容背景，
-        /// 给它染色会污染你对画面的判断
-        static let preview = UIColor.bk(light: 0x141414, dark: 0x000000)
-
-        // 语义色
-        static let success = UIColor(hex: 0x8FC98A)
+        /// 阈值虚线：黄 #EF9F27
         static let warning = UIColor(hex: 0xEF9F27)
-        static let danger  = UIColor(hex: 0xE24B4A)
+
+        // ---- 概览条（定稿第 4.4 节）----
+        static let ovBg   = UIColor(hex: 0x8F9389)
+        static let ovWave = UIColor(hex: 0x4C5049)
+
+        // ---- 强调 ----
+        /// 主动作色。定稿要求按钮一律黑线条，所以它就是正文黑
+        static let accent = UIColor(hex: 0x1A1A1A)
+        /// 品牌橙。指针、视窗框、当前项高亮专用 —— 它是「正在动」的颜色，
+        /// 别拿去当普通点缀，会跟指针抢注意力
+        static let gold   = UIColor(hex: 0xF09A28)
+        /// 手动切口的缝线
+        static let selection = UIColor(hex: 0x1A1A1A)
+
+        // ---- 预览区 ----
+        /// 播放器背景。给视频画面染色会污染你对画面的判断，一律近黑不解释
+        static let preview = UIColor(hex: 0x141414)
+
+        // ---- 语义色 ----
+        static let success = UIColor(hex: 0x24430F)
+        static let danger  = UIColor(hex: 0xD6707A)
+    }
+
+    // MARK: - 按钮样式
+    //
+    // 定稿第 1.2 节：一律白圆底 + 黑线条 + SF Symbols，唯一例外是导出按钮。
+    // 把尺寸和描边收在这里，是为了避免「五个按钮五种粗细」——
+    // 这行代码散在各自的 setup 里写，慢慢一定会歪。
+
+    enum Button {
+        /// 直径。44 是苹果规定的最小可点区域，再小手指就开始点不准
+        static let size: CGFloat = 44
+        /// 圆角半径：直径的一半就是正圆
+        static let radius: CGFloat = 22
+        /// 描边
+        static let border: CGFloat = 1.0
+        /// 图标字号。SF Symbols 是字，靠字号控线条粗细
+        static let iconPoint: CGFloat = 20
     }
 
     // MARK: - 字体
@@ -116,6 +134,7 @@ enum BKTheme {
         static let small   = UIFont.systemFont(ofSize: 11, weight: .regular)
         /// 时间码、参数这类跳动数字：等宽数字不会左右抖
         static let mono    = UIFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        static let monoBig = UIFont.monospacedDigitSystemFont(ofSize: 15, weight: .semibold)
         static let monoSmall = UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         static let button  = UIFont.systemFont(ofSize: 16, weight: .medium)
     }
