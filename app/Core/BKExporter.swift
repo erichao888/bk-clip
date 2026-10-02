@@ -160,14 +160,15 @@ enum BKExporter {
                 decodeTimeStamp: dts.isValid ? CMTimeAdd(dts, offset) : dts
             )
 
-            // Swift 导入后的真实标签（与 C 头文件命名不同！）：
-            // allocator: / sampleBuffer: / sampleTimingEntryCount: / sampleTimingEntryArray: / sampleBufferOut:
+            // Swift 导入后的真实标签（不对称，别想当然！）：
+            // allocator: / sampleBuffer: / sampleTimingEntryCount: / sampleTimingArray: / sampleBufferOut:
+            // 计数带 Entry，数组不带 —— 这是 C 声明和 Swift 导入两层改名叠出来的
             var retimed: CMSampleBuffer?
             let status = CMSampleBufferCreateCopyWithNewTiming(
                 allocator: nil,
                 sampleBuffer: sb,
                 sampleTimingEntryCount: 1,
-                sampleTimingEntryArray: &timing,
+                sampleTimingArray: &timing,
                 sampleBufferOut: &retimed)
             CMSampleBufferInvalidate(sb)
 
