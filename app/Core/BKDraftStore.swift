@@ -120,8 +120,11 @@ final class BKDraftStore {
             let data = try encoder.encode(batch)
             try data.write(to: url, options: .atomic)
             pending = nil
+            // ⚠️ `uuidString.prefix(8)` 是 Substring，进 String(format:) 会报
+            // "does not conform to expected type 'CVarArg'"。插值不用套，format 必须套
+            let tag = String(batch.id.uuidString.prefix(8))
             BKLog.shared.d(String(format: "草稿已保存 %@ · %d KB · 合计 %d 刀",
-                                  batch.id.uuidString.prefix(8), data.count / 1024, batch.totalCuts))
+                                  tag, data.count / 1024, batch.totalCuts))
         } catch {
             // 保存失败不打日志也白搭 —— 磁盘满是最常见的原因，
             // 而这类失败用户完全感知不到，只会觉得「上次的工程没了」

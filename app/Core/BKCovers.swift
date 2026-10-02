@@ -46,7 +46,13 @@ enum BKCovers {
         guard let data = image.jpegData(compressionQuality: 0.7) else { return }
         do {
             try data.write(to: fileURL(batchId: batchId, assetId: assetId), options: .atomic)
-            BKLog.shared.d(String(format: "封面已存 %@ · %d KB", safe(assetId).prefix(24), data.count / 1024))
+            // ⚠️ `String.prefix(_:)` 返回的是 **Substring**，不是 String。
+            // 字符串插值 `\(x.prefix(8))` 会自动转换，但 `String(format:)` 的参数要求
+            // `CVarArg`，Substring 不满足 → 编译期直接报
+            // "argument type 'String.SubSequence' does not conform to expected type 'CVarArg'"。
+            // 所以凡是进 format 的都得先套一层 String(...)
+            let tag = String(safe(assetId).prefix(24))
+            BKLog.shared.d(String(format: "封面已存 %@ · %d KB", tag, data.count / 1024))
         } catch {
             BKLog.shared.w("封面保存失败：\(error.localizedDescription)")
         }
