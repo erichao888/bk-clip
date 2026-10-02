@@ -1,0 +1,25 @@
+{
+  "total_count": 1,
+  "artifacts": [
+    {
+      "id": 11244746231,
+      "node_id": "MDg6QXJ0aWZhY3QxMTI0NDc0NjIzMQ==",
+      "name": "bkClip-unsigned-ipa",
+      "size_in_bytes": 307748,
+      "url": "https://api.github.com/repos/erichao888/bk-clip/actions/artifacts/11244746231",
+      "archive_download_url": "https://api.github.com/repos/erichao888/bk-clip/actions/artifacts/11244746231/zip",
+      "expired": false,
+      "digest": "sha256:d86feb11f3c0cec60c01aac70f2d7e73cc8bf3293dc5a59702e6c9fb20401a28",
+      "created_at": "2026-10-02T18:17:21Z",
+      "updated_at": "2026-10-02T18:17:21Z",
+      "expires_at": "2026-11-01T18:17:19Z",
+      "workflow_run": {
+        "id": 37046273243,
+        "repository_id": 1400850410,
+        "head_repository_id": 1400850410,
+        "head_branch": "v1.1.4",
+        "head_sha": "f3b7bf1cfa96f794455849580d4e8c40eba83216"
+      }
+    }
+  ]
+}
