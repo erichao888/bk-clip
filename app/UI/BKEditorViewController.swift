@@ -1229,6 +1229,11 @@ final class BKEditorViewController: UIViewController {
                             ok: Int,
                             failed: [(String, String)],
                             skipped: [String]) {
+        // 每一轮（一条素材）开始前清一次历史，
+        // 免得复制诊断信息时把上一批的旧报告也带进去
+        if done == 0 {
+            BKDiag.shared.clearHistory()
+        }
         if done >= targets.count {
             finishExport(ok: ok, failed: failed, skipped: skipped)
             return
@@ -1320,6 +1325,19 @@ final class BKEditorViewController: UIViewController {
             let alert = UIAlertController(title: title,
                                           message: detail.isEmpty ? nil : detail,
                                           preferredStyle: .alert)
+            // 【IMG_4873 案】有真失败时给一条「复制诊断信息」：
+            // 报告里有素材规格 / 导出参数 / 段边界 / 卡在哪一段 / writer 真实错误，
+            // 粘贴给巴蒂就能直接定位，不用再靠猜（UIAlert 按钮从 2 个变 3 个是可读的）
+            if !failed.isEmpty {
+                alert.addAction(UIAlertAction(title: "复制诊断信息", style: .default) { [weak self] _ in
+                    UIPasteboard.general.string = BKDiag.shared.allReportsText()
+                    let ok = UIAlertController(title: "已复制",
+                                               message: "直接粘贴给巴蒂就行，他看到的是完整现场（哪一段卡死、参数、真实错误）。",
+                                               preferredStyle: .alert)
+                    ok.addAction(UIAlertAction(title: "好", style: .default))
+                    self?.present(ok, animated: true)
+                })
+            }
             alert.addAction(UIAlertAction(title: "返回草稿列表", style: .default) { [weak self] _ in
                 self?.navigationController?.popToRootViewController(animated: true)
             })
