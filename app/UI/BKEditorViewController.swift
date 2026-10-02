@@ -1096,9 +1096,14 @@ final class BKEditorViewController: UIViewController {
                 guard let self = self else { return }
                 var ref: BKExporter.ExportReference?
                 if let a = asset, let t = a.tracks(withMediaType: .video).first {
+                    // 显示尺寸一律走 BKAssetProbe —— 它已经把 preferredTransform 应用过了。
+                    // ⚠️ **别用 `asset.naturalSize`**：Swift 4.2 起它在 iOS SDK 上是
+                    // `unavailable`（不是 deprecated），因为一个 asset 可能挂多条视频轨，
+                    // 没说清是哪一条。只有 `AVAssetTrack.naturalSize` 能用。
+                    let probe = BKAssetProbe.probe(a)
                     ref = BKExporter.ExportReference(
-                        displayWidth: refItem.displayWidth > 0 ? refItem.displayWidth : a.naturalSize.width,
-                        displayHeight: refItem.displayHeight > 0 ? refItem.displayHeight : a.naturalSize.height,
+                        displayWidth: refItem.displayWidth > 0 ? refItem.displayWidth : probe.displayWidth,
+                        displayHeight: refItem.displayHeight > 0 ? refItem.displayHeight : probe.displayHeight,
                         fps: t.nominalFrameRate > 0 ? Double(t.nominalFrameRate) : 30)
                     if let r = ref {
                         BKLog.shared.i(String(format: "批量导出统一按最长那条：%@ %.0f×%.0f %.0ffps",
