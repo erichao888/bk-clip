@@ -160,15 +160,14 @@ enum BKExporter {
                 decodeTimeStamp: dts.isValid ? CMTimeAdd(dts, offset) : dts
             )
 
-            // 参数标签以 CoreMedia 头文件为准：sampleBuffer / sampleTimingArray
-            // （写成 sourceBuffer / sampleTimingEntries 整个调用都匹配不上，
-            // 编译器会报出一串互相矛盾的错 —— 报错下面那行 note 是唯一权威）
+            // Swift 导入后的真实标签（与 C 头文件命名不同！）：
+            // allocator: / sampleBuffer: / sampleTimingEntryCount: / sampleTimingEntryArray: / sampleBufferOut:
             var retimed: CMSampleBuffer?
             let status = CMSampleBufferCreateCopyWithNewTiming(
                 allocator: nil,
                 sampleBuffer: sb,
-                numSampleTimingEntries: 1,
-                sampleTimingArray: &timing,
+                sampleTimingEntryCount: 1,
+                sampleTimingEntryArray: &timing,
                 sampleBufferOut: &retimed)
             CMSampleBufferInvalidate(sb)
 
