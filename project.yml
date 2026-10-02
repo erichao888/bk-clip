@@ -74,6 +74,10 @@ targets:
         # DEVELOPMENT_TEAM: XXXXXXXXXX
 
     info:
+      # path 是必填键：XcodeGen 按它生成 Info.plist 文件并自动设好 INFOPLIST_FILE。
+      # 缺它就是 CI 一直在报的 Decoding failed at "path": Nothing found（诊断器第 7 块点名）。
+      # 放 app/ 下没问题 —— 生成的 plist 会被 XcodeGen 自动排除出 sources，不会重复拷进包
+      path: app/Info.plist
       properties:
         CFBundleDisplayName: "bk剪辑"
         CFBundleName: BKClip
