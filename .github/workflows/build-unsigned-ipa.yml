@@ -48,15 +48,57 @@ jobs:
           xcodegen --version
 
       - name: 生成 Xcode 工程
-        # 失败时把 project.yml 打出来 —— 十有八九是手滑改坏了某个缩进，
-        # 有原文在手就不用来回猜
+        # 失败时自动做「分块二分」：把 spec 拆成一块一块单独喂给 XcodeGen，
+        # 哪一块炸，日志里直接报出来 —— 不用再凭报错猜
         run: |
-          xcodegen generate --spec project.yml || {
-            echo "::error::XcodeGen 生成失败，project.yml 内容如下："
-            cat -n project.yml
-            exit 1
+          xcodegen generate --spec project.yml && {
+            echo "=== 生成成功，工程里的 scheme： ==="
+            xcodebuild -list -project BKClip.xcodeproj
+            exit 0
           }
-          xcodebuild -list -project BKClip.xcodeproj
+          echo "::error::XcodeGen 生成失败，开始自动分块定位 ↓"
+          python3 - <<'PYEOF'
+          import subprocess, yaml, os, glob
+
+          spec = yaml.safe_load(open('project.yml', encoding='utf-8'))
+
+          def try_spec(tag, s):
+              # XcodeGen 解析相对路径时以「spec 文件所在目录」为基准，
+              # 所以临时 spec 必须放在仓库根下，放 /tmp 会让 sources 假失败
+              p = f'spec_bisect_{tag}.yml'
+              with open(p, 'w', encoding='utf-8') as f:
+                  yaml.dump(s, f, allow_unicode=True)
+              r = subprocess.run(
+                  ['xcodegen', 'generate', '--spec', p, '--project', f'/tmp/bisect/{tag}'],
+                  capture_output=True, text=True)
+              out = (r.stdout + r.stderr).strip().splitlines()
+              tail = ' | '.join(out[-2:]) if out else ''
+              print(f"  [{tag}] -> {'OK' if r.returncode == 0 else 'FAIL: ' + tail}")
+              os.remove(p)
+
+          name = spec.get('name', 'BKClip')
+          try_spec('1_name_only', {'name': name})
+          if 'options' in spec:
+              try_spec('2_name_options', {'name': name, 'options': spec['options']})
+          if 'settings' in spec:
+              try_spec('3_name_settings', {'name': name, 'settings': spec['settings']})
+
+          t = spec.get('targets', {}).get('BKClip', {})
+          core = {'name': name, 'targets': {'BKClip': {'type': 'application', 'platform': 'iOS'}}}
+          try_spec('4_target_bare', core)
+          if 'sources' in t:
+              try_spec('5_target_sources', {**core, 'targets': {'BKClip': {**core['targets']['BKClip'], 'sources': t['sources']}}})
+          if 'settings' in t:
+              try_spec('6_target_settings', {**core, 'targets': {'BKClip': {**core['targets']['BKClip'], 'settings': t['settings']}}})
+          if 'info' in t:
+              try_spec('7_target_info', {**core, 'targets': {'BKClip': {**core['targets']['BKClip'], 'info': t['info']}}})
+          if 'schemes' in t:
+              try_spec('8_target_schemes', {**core, 'targets': {'BKClip': {**core['targets']['BKClip'], 'schemes': t['schemes']}}})
+          try_spec('9_full', spec)
+          for f in glob.glob('spec_bisect_*.yml'): os.remove(f)
+          print("（从上往下，第一个 FAIL 的块就是肇事者）")
+          PYEOF
+          exit 1
 
       # 这一步防护来自真实踩坑：PRODUCT_NAME 一旦写回中文，
       # 打出来的 Payload 里就是「bk剪辑.app」，爱思重签会报「错误码 45」，

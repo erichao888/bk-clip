@@ -24,14 +24,13 @@ options:
   deploymentTarget:
     iOS: "15.0"
   createIntermediateGroups: true
-  groupSortPosition: none
 
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    ENABLE_BITCODE: NO
+    ENABLE_BITCODE: "NO"
     TARGETED_DEVICE_FAMILY: "1"
-    CLANG_ENABLE_MODULES: YES
+    CLANG_ENABLE_MODULES: "YES"
 
 targets:
   BKClip:
@@ -39,11 +38,13 @@ targets:
     platform: iOS
     deploymentTarget: "15.0"
 
+    # sources 用最朴素的字符串写法 —— 这是 XcodeGen 文档的第一示例，
+    # 兼容性最好。之前用「- path: xxx」字典写法在云端解码报错，换成简写绕开
     sources:
       # app/ 整棵递归：既有 DebugConsole.swift 在根上，新的按 Core / UI / App 分层
-      - path: app
+      - app
       # release/ 里混着 html / plist / json，不能整目录递归，单独挑这一个
-      - path: release/UpdateChecker.swift
+      - release/UpdateChecker.swift
 
     # 显式声明 scheme。Xcode 自动创建的 scheme 存在用户目录里，
     # 云端无人登录的环境不一定能看到，xcodebuild -scheme 会报「找不到 scheme」——
@@ -67,7 +68,7 @@ targets:
         PRODUCT_NAME: BKClip
         CFBundleName: BKClip
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: 1
+        CURRENT_PROJECT_VERSION: "1"
         CODE_SIGN_STYLE: Automatic
         # 换成你自己的 Team ID 更稳；留 AUTO 就让 Xcode 自己去猜有时会挑错证书
         # DEVELOPMENT_TEAM: XXXXXXXXXX
