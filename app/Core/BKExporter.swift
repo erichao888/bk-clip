@@ -71,7 +71,7 @@ enum BKExporter {
         writer.add(videoInput)
 
         var audioInput: AVAssetWriterInput?
-        if let track = audioTrack {
+        if audioTrack != nil {
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
             if writer.canAdd(input) {
                 writer.add(input)
@@ -101,7 +101,7 @@ enum BKExporter {
             reader.add(videoOut)
 
             var audioOut: AVAssetReaderTrackOutput?
-            if let track = audioTrack, let aIn = audioInput {
+            if let track = audioTrack, audioInput != nil {
                 let out = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
                 if reader.canAdd(out) {
                     reader.add(out)
@@ -152,20 +152,23 @@ enum BKExporter {
             let dts = CMSampleBufferGetDecodeTimeStamp(sb)
             let dur = CMSampleBufferGetDuration(sb)
 
-            // DTS 可能是 invalid（无 B 帧的流），invalid 直接原样带过去，
-            // 对它做加法只会产出另一个 invalid —— 但不能让它参与 CMTimeAdd 报警
+            // DTS 可能是 invalid（无 B 帧的流），invalid 直接原样带过去。
+            // Swift 里 CMTime 只有 .isValid（isInvalid 是 C 宏，不进 Swift）
             var timing = CMSampleTimingInfo(
                 duration: dur,
                 presentationTimeStamp: CMTimeAdd(pts, offset),
-                decodeTimeStamp: dts.isInvalid ? dts : CMTimeAdd(dts, offset)
+                decodeTimeStamp: dts.isValid ? CMTimeAdd(dts, offset) : dts
             )
 
+            // 参数标签以 CoreMedia 头文件为准：sampleBuffer / sampleTimingArray
+            // （写成 sourceBuffer / sampleTimingEntries 整个调用都匹配不上，
+            // 编译器会报出一串互相矛盾的错 —— 报错下面那行 note 是唯一权威）
             var retimed: CMSampleBuffer?
             let status = CMSampleBufferCreateCopyWithNewTiming(
                 allocator: nil,
-                sourceBuffer: sb,
+                sampleBuffer: sb,
                 numSampleTimingEntries: 1,
-                sampleTimingEntries: &timing,
+                sampleTimingArray: &timing,
                 sampleBufferOut: &retimed)
             CMSampleBufferInvalidate(sb)
 
