@@ -46,6 +46,14 @@ targets:
       # release/ 里混着 html / plist / json，不能整目录递归，单独挑这一个
       - release/UpdateChecker.swift
 
+    # 【App 图标 —— 2026-10-03 补上】
+    # 之前只画了 SVG 放在 assets/，**没接进工程**，结果每次打包 iOS 都用系统默认白底占位图。
+    # resources 必须显式声明：sources 的递归对 .xcassets 不生效，
+    # 不写这一段，图标文件不会进包，主屏上还是占位图。
+    # 生成脚本：assets/make_icon.py（C 方案 橙红正底白字 BK）
+    resources:
+      - path: app/Assets.xcassets
+
     # 显式声明 scheme。Xcode 自动创建的 scheme 存在用户目录里，
     # 云端无人登录的环境不一定能看到，xcodebuild -scheme 会报「找不到 scheme」——
     # 与其在 CI 上赌 Xcode 的自动行为，不如写死在这里
@@ -81,6 +89,15 @@ targets:
       properties:
         CFBundleDisplayName: "bk剪辑"
         CFBundleName: BKClip
+
+        # ---- App 图标 ----
+        # 不写这一句 Xcode 不会去 assets 里找 AppIcon，主屏上就是系统默认白底占位图。
+        # 名要和 Assets.xcassets/AppIcon.appiconset 的目录名严格一致
+        CFBundleIcons:
+          CFBundlePrimaryIcon:
+            CFBundleIconName: AppIcon
+        # 关掉图标打阴影，iOS 15+ 自己做遮罩，自己加会变成双层阴影
+        CFBundleIconName: AppIcon
 
         # ---- 权限文案 ----
         # 这两句话决定 App 有没有资格进相册、能不能把成品存回去。
