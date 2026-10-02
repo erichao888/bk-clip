@@ -61,6 +61,13 @@ enum BKConfig {
         /// 从原理上无法用静音检测去气口，判死刑并给用户明确提示
         static let minContrastDb: Double = 6.0
 
+        /// 6dB 局部对比度余量：气口必须比它两边 200ms 的语音低这么多才下刀。
+        /// 治「音量起伏大的素材被误杀整句」（与 preview_cut.py 的 CONTRAST_DB 一致）
+        static let localContrastDb: Double = 6.0
+
+        /// 局部对比度取样窗口（秒）（与 preview_cut.py 的 PAD_SAMPLE 一致）
+        static let padSampleSec: Double = 0.20
+
         /// 低于这个电平的帧占比，用来辅助判断素材是不是「太安静」
         static let silenceFloorDb: Double = -45.0
     }
@@ -72,6 +79,9 @@ enum BKConfig {
         static let frameMs: Int = 20
         /// 跳距（毫秒）。10ms = 50% 重叠，太疏会漏掉短气口
         static let hopMs: Int = 10
+        /// 分析采样率（Hz）。不用原始 48k，省算力，对气口检测足够
+        /// （与 preview_cut.py 的 SR 一致）
+        static let sampleRate: Int = 16000
     }
 
     // MARK: - 素材类型默认阈值

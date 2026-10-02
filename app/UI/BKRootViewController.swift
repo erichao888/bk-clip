@@ -40,6 +40,13 @@ final class BKRootViewController: UIViewController {
         BKLog.shared.d("起始页已就绪")
     }
 
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // 编辑页回来时把导航栏重新藏起来，保持起始页的沉浸样式
+        navigationController?.setNavigationBarHidden(true, animated: animated)
+        refreshResumeVisibility()
+    }
+
     // MARK: - 布局
 
     private func setupUI() {
@@ -156,13 +163,40 @@ final class BKRootViewController: UIViewController {
     @objc private func resumeTapped() {
         guard let project = BKDraftStore.shared.resumeProject() else { return }
         BKLog.shared.i("恢复工程 \(project.id.uuidString.prefix(8))，\(project.cutCount) 刀")
-        let text = """
-        已找到上次的工程
-        素材 \(String(format: "%.1f", project.duration))s · \(project.sizeText) · \(project.isPortrait ? "竖" : "横")
-        已标 \(project.cutCount) 刀，删除 \(String(format: "%.1f", project.removedDuration))s
-        （编辑界面在下一批接入）
-        """
-        statusLabel.text = text
+        spinner.startAnimating()
+        statusLabel.text = "正在找回上次的素材…"
+
+        // 工程里只存了 localIdentifier，素材要靠它重新捞回来
+        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [project.assetLocalID], options: nil)
+        guard let phAsset = fetch.firstObject else {
+            spinner.stopAnimating()
+            statusLabel.text = "上次的素材找不到了，可能已被删除"
+            BKLog.shared.e("恢复失败：localIdentifier 查不到 PHAsset \(project.assetLocalID)")
+            return
+        }
+
+        let options = PHVideoRequestOptions()
+        options.isNetworkAccessAllowed = true
+        options.deliveryMode = .highQualityFormat
+        PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { [weak self] asset, _, info in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.spinner.stopAnimating()
+                guard let asset = asset else {
+                    self.statusLabel.text = "素材读取失败"
+                    let err = info?[PHImageErrorKey] as? Error
+                    BKLog.shared.e("恢复时 AVAsset 请求失败：\(err?.localizedDescription ?? "未知原因")")
+                    return
+                }
+                let probe = BKAssetProbe.probe(asset)
+                self.openEditor(asset: asset, localID: project.assetLocalID, project: project, probeInfo: probe)
+            }
+        }
+    }
+
+    private func openEditor(asset: AVAsset, localID: String, project: BKProject?, probeInfo: BKAssetProbe.Info) {
+        let editor = BKEditorViewController(asset: asset, localID: localID, probeInfo: probeInfo, project: project)
+        navigationController?.pushViewController(editor, animated: true)
     }
 
     @objc private func versionTapped() {
@@ -252,10 +286,20 @@ extension BKRootViewController: PHPickerViewControllerDelegate {
 
         if !info.hasAudio {
             BKLog.shared.w("素材没有音轨，去气口无从谈起")
+            spinner.stopAnimating()
+            let alert = UIAlertController(
+                title: "这条视频没有声音",
+                message: "去气口靠音轨判断呼吸停顿，无声视频没法自动找气口。",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "知道了", style: .cancel))
+            present(alert, animated: true)
+            return
         }
         if info.isPortrait && info.displayWidth > info.displayHeight {
             // 理论上不可能，出现了说明 preferredTransform 没取到
             BKLog.shared.e("方向判定异常：isPortrait 与显示尺寸自相矛盾")
         }
+
+        openEditor(asset: asset, localID: localID, project: nil, probeInfo: info)
     }
 }
