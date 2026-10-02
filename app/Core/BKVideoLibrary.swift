@@ -21,8 +21,13 @@ import Foundation
 import Photos
 import AVFoundation
 
-enum BKVideoLibrary {
+/// 能被「统一关掉」的预览页。Core 层不认识具体的 UIViewController 子类，
+/// 只约一个纯 Swift 协议，靠动态派发在运行期解析 —— 这样 Core 保持不碰 UIKit。
+protocol BKPreviewStopping: AnyObject {
+    func stopPreview()
+}
 
+enum BKVideoLibrary {
     /// 相册里的视频，最新的排前面。上限是性能护栏 —— 几千条素材全列出来
     /// 既没意义也会拖慢首屏
     static func videoLocalIDs(limit: Int = 300) -> [String] {
@@ -73,6 +78,33 @@ enum BKVideoLibrary {
 
     static func index(of localID: String, in ids: [String]) -> Int? {
         ids.firstIndex(of: localID)
+    }
+
+    /// 正在播放的预览页。勾选页一次只可能有一个在播，记下来是为了
+    /// 离开勾选页时能把它关掉（不然声音停不下来）。
+    /// ⚠️ **不能用 `weak`**：Swift 不允许 weak 修饰静态存储属性（硬编译错误），
+    /// 所以这里用普通强引用 + 手动清空（预览页 close / 消失时置 nil）。
+    /// 引用环风险：预览页持有 player，播放器不持有预览页，不会成环。
+    ///
+    /// 类型是 `AnyObject?` 而不是具体预览页，正是为了**不引入 UIKit**：
+    /// 本文件头注释写着「Core 层保持干净」。`stopPreview()` 靠
+    /// Swift 的动态派发在运行期解析，Core 层编译时不需要认得那个类。
+    static var playingPreview: AnyObject? {
+        get { _playingPreview }
+        set { _playingPreview = newValue }
+    }
+    private static var _playingPreview: AnyObject?
+
+    /// 统一收口：关掉正在播的预览页。勾选页离开时调它
+    static func stopPreview() {
+        (_playingPreview as? BKPreviewStopping)?.stopPreview()
+        _playingPreview = nil
+    }
+
+    /// 只清引用不回调。**预览页的 stopPreview() 里必须用这个** ——
+    /// 回头调 `stopPreview()` 会绕回它自己，无限递归。
+    static func clearPreviewRef() {
+        _playingPreview = nil
     }
 
     /// mm:ss 或 hh:mm:ss。素材列表和进度显示共用一套写法

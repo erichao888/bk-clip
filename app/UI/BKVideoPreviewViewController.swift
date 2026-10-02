@@ -1,0 +1,278 @@
+//
+//  BKVideoPreviewViewController.swift
+//  bk剪辑 — 全屏视频预览（勾选页点圆圈以外进入）
+//
+//  【为什么单独一个播放器，而不是复用编辑页那个】
+//  编辑页的播放器是「工作台」：有波形、有轨道、拖动要跟切点联动。
+//  挑素材时只想「看这一条长什么样、听声音对不对」，多一屏控件都是干扰。
+//  所以这里是最简形态：黑底、画面、一个中央播放键、底部一条进度。
+//
+//  【铁律：显式设音频会话】
+//  视频不显式设 .playback 就默认服从静音键 —— 一按静音整条无声，
+//  「听声音对不对」这个目的直接落空。踩过，记在这。
+//
+//  【自动播放】
+//  进来直接播（看片子的直觉，不用多点一下）。不在后台/离屏时自动播 ——
+//  用户自己点开的，静音和暂停都该由他决定。
+//
+
+import UIKit
+import AVFoundation
+
+final class BKVideoPreviewViewController: UIViewController, BKPreviewStopping {
+
+    /// 关闭回调（勾选页用来 pop / dismiss）
+    var onClose: (() -> Void)?
+
+    private let localID: String
+    private let player = AVPlayer()
+    private let playerLayer = AVPlayerLayer()
+    private let playIcon = UIImageView()
+    private let backButton = UIButton(type: .system)
+    private let timeLabel = UILabel()
+    private let slider = UISlider()
+
+    /// 时间拖动时先暂停，松开再继续 —— 不然跟播放器抢着走，进度条会跳
+    private var wasPlayingBeforeScrub = false
+
+    init(localID: String) {
+        self.localID = localID
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("本 App 不走 storyboard") }
+
+    // MARK: - 生命周期
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = BKTheme.Color.preview
+        setupUI()
+        setupAudio()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        BKVideoLibrary.playingPreview = self
+        loadAndPlay()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        player.pause()
+    }
+
+    /// 离开时把播放停掉。不停的话声音会盖住下面的界面
+    func pauseAndDismiss() {
+        stopPreview()
+    }
+
+    /// 协议方法：停播 + 清掉 Core 层的静态引用（那是强引用，不清会挂着整个页面）
+    func stopPreview() {
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        // 只清引用，不回头调 BKVideoLibrary.stopPreview() —— 那会绕回本方法无限递归
+        BKVideoLibrary.clearPreviewRef()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    private func setupAudio() {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            BKLog.shared.w("预览音频会话设置失败：\(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - 布局
+
+    private func setupUI() {
+        // 画面层：videoGravity = resizeAspect，竖屏素材在竖屏机上正好铺满
+        playerLayer.videoGravity = .resizeAspect
+        playerLayer.player = player
+        view.layer.addSublayer(playerLayer)
+
+        // 中央播放/暂停键：只有暂停时显示，播放中不挡画面（参考图就是这样）
+        playIcon.image = UIImage(systemName: "play.fill")
+        playIcon.tintColor = UIColor(hex: 0xFFFFFF, alpha: 0.85)
+        playIcon.contentMode = .center
+        playIcon.backgroundColor = UIColor(hex: 0x000000, alpha: 0.35)
+        playIcon.layer.cornerRadius = 28
+        playIcon.isHidden = true
+        let tapPlay = UITapGestureRecognizer(target: self, action: #selector(centerTapped))
+        playIcon.addGestureRecognizer(tapPlay)
+        playIcon.isUserInteractionEnabled = true
+        view.addSubview(playIcon)
+
+        // 左上角返回。参考图是纯白线条，不带底色
+        backButton.setImage(UIImage(systemName: "chevron.left"), for: .normal)
+        backButton.tintColor = .white
+        backButton.backgroundColor = UIColor(hex: 0x000000, alpha: 0.3)
+        backButton.layer.cornerRadius = 17
+        backButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+        view.addSubview(backButton)
+
+        // 底部进度：时间码 + 拖动条
+        timeLabel.font = BKTheme.Font.monoSmall
+        timeLabel.textColor = .white
+        timeLabel.text = "00:00 / 00:00"
+        view.addSubview(timeLabel)
+
+        slider.minimumTrackTintColor = .white
+        slider.maximumTrackTintColor = UIColor(hex: 0xFFFFFF, alpha: 0.3)
+        slider.addTarget(self, action: #selector(scrubStart), for: .touchDown)
+        slider.addTarget(self, action: #selector(scrubMove), for: .valueChanged)
+        slider.addTarget(self, action: #selector(scrubEnd), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        view.addSubview(slider)
+
+        for v in [playIcon, backButton, timeLabel, slider] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+        }
+        NSLayoutConstraint.activate([
+            playIcon.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            playIcon.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            playIcon.widthAnchor.constraint(equalToConstant: 56),
+            playIcon.heightAnchor.constraint(equalToConstant: 56),
+
+            backButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            backButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            backButton.widthAnchor.constraint(equalToConstant: 34),
+            backButton.heightAnchor.constraint(equalToConstant: 34),
+
+            slider.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            slider.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            slider.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
+
+            timeLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            timeLabel.bottomAnchor.constraint(equalTo: slider.topAnchor, constant: -4)
+        ])
+
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(playbackEnded),
+            name: .AVPlayerItemDidPlayToEndTime, object: nil)
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // AVPlayerLayer 不吃 Auto Layout，必须手动给 frame
+        playerLayer.frame = view.bounds
+    }
+
+    // MARK: - 播放
+
+    private func loadAndPlay() {
+        BKVideoLibrary.loadAVAsset(localID: localID) { [weak self] asset in
+            guard let self = self else { return }
+            guard let asset = asset else {
+                self.showLoadFailed()
+                return
+            }
+            let item = AVPlayerItem(asset: asset)
+            self.player.replaceCurrentItem(with: item)
+            self.player.play()
+            self.slider.value = 0
+            // UISlider.value 是 Float，CMTimeGetSeconds 给的是 Double —— 必须转，
+            // 否则 "cannot assign Float64 to Float"
+            let totalSec = CMTimeGetSeconds(item.asset.duration)
+            self.slider.maximumValue = totalSec.isFinite ? Float(totalSec) : 1
+            self.playIcon.isHidden = true
+            self.installPeriodicTime()
+        }
+    }
+
+    /// 定时把播放进度刷到进度条和 timeLabel 上
+    private func installPeriodicTime() {
+        let interval = CMTime(seconds: 0.05, preferredTimescale: 600)
+        player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] t in
+            guard let self = self, let item = self.player.currentItem else { return }
+            // 拖动中不刷，否则 slider 会跟手打架
+            if self.slider.isTracking { return }
+            let cur = CMTimeGetSeconds(t)
+            let total = CMTimeGetSeconds(item.duration)
+            guard total.isFinite, total > 0 else { return }
+            self.slider.value = Float(cur / total)
+            let a = BKVideoLibrary.formatDuration(cur)
+            let b = BKVideoLibrary.formatDuration(total)
+            self.timeLabel.text = "\(a) / \(b)"
+        }
+    }
+
+    private func showLoadFailed() {
+        let label = UILabel()
+        label.text = "视频加载失败\n可能还在 iCloud 上，联网重试一次"
+        label.font = BKTheme.Font.body
+        label.textColor = .white
+        label.textAlignment = .center
+        label.numberOfLines = 0
+        label.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+        ])
+    }
+
+    // MARK: - 动作
+
+    @objc private func centerTapped() {
+        if player.timeControlStatus == .playing {
+            player.pause()
+        } else {
+            // 播完了再点 = 从头重放
+            if let item = player.currentItem,
+               CMTimeGetSeconds(player.currentTime()) >= CMTimeGetSeconds(item.duration) - 0.1 {
+                player.seek(to: .zero)
+            }
+            player.play()
+        }
+        syncPlayIcon()
+    }
+
+    private func syncPlayIcon() {
+        playIcon.isHidden = player.timeControlStatus == .playing
+    }
+
+    @objc private func closeTapped() {
+        pauseAndDismiss()
+        if let cb = onClose {
+            cb()
+        } else {
+            dismiss(animated: true)
+        }
+    }
+
+    @objc private func playbackEnded() {
+        player.seek(to: .zero)
+        player.pause()
+        syncPlayIcon()
+    }
+
+    // MARK: - 拖动进度
+
+    @objc private func scrubStart() {
+        wasPlayingBeforeScrub = player.timeControlStatus == .playing
+        player.pause()
+    }
+
+    @objc private func scrubMove() {
+        guard let item = player.currentItem else { return }
+        let total = CMTimeGetSeconds(item.duration)
+        guard total.isFinite, total > 0 else { return }
+        let t = Double(slider.value) * total
+        player.seek(to: CMTime(seconds: t, preferredTimescale: 600))
+        let a = BKVideoLibrary.formatDuration(t)
+        let b = BKVideoLibrary.formatDuration(total)
+        timeLabel.text = "\(a) / \(b)"
+    }
+
+    @objc private func scrubEnd() {
+        if wasPlayingBeforeScrub {
+            player.play()
+        }
+        syncPlayIcon()
+    }
+}

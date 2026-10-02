@@ -203,13 +203,13 @@ final class BKRootViewController: UIViewController {
     }
 
     private func presentPicker() {
-        var config = PHPickerConfiguration(photoLibrary: .shared())
-        config.filter = .videos          // 系统层过滤，拿到的结果一定是视频
-        config.selectionLimit = 0        // 0 = 不限数量，一次选一批
-        config.preferredAssetRepresentationMode = .automatic
-
-        let picker = PHPickerViewController(configuration: config)
-        picker.delegate = self
+        // 自建勾选页，不走系统 PHPicker（定稿 6.1）：
+        // 系统选择器没有「点圈选 / 点圈外当场预览」这套手势，挑素材时
+        // 看不到片段对不对，只能选完再退出去看一遍。
+        let picker = BKVideoPickerViewController()
+        picker.onDone = { [weak self] ids in
+            self?.dismiss(animated: true) { self?.handleImported(ids: ids) }
+        }
         present(picker, animated: true)
     }
 
@@ -580,12 +580,11 @@ extension BKRootViewController {
 
 extension BKRootViewController: PHPickerViewControllerDelegate {
 
+    // 【已废弃】导入改走自建勾选页 BKVideoPickerViewController（见 presentPicker）。
+    // 保留这段是为了留住「为什么不用系统 PHPicker」的理由，别让人手贱改回去：
+    // 系统选择器没有「点圈选 / 点圈外当场预览」这套手势。
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated: true)
-
-        // 拿 localIdentifier 而不是直接取数据：
-        // 一是它稳定，下次启动还能凭它找回同一条素材；
-        // 二是直接取 NSItemProvider 在大文件上会先把整个视频读进内存
         let ids = results.compactMap { $0.assetIdentifier }
         guard !ids.isEmpty else {
             BKLog.shared.d("相册选择已取消")
