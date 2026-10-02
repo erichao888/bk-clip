@@ -1227,7 +1227,7 @@ final class BKEditorViewController: UIViewController {
                             reference: BKExporter.ExportReference?,
                             done: Int,
                             ok: Int,
-                            failed: [String],
+                            failed: [(String, String)],
                             skipped: [String]) {
         if done >= targets.count {
             finishExport(ok: ok, failed: failed, skipped: skipped)
@@ -1252,7 +1252,7 @@ final class BKEditorViewController: UIViewController {
             guard let self = self else { return }
             guard let asset = asset else {
                 self.exportLoop(targets, spec: spec, reference: reference, done: done + 1,
-                                ok: ok, failed: failed + [it.assetName], skipped: skipped)
+                                ok: ok, failed: failed + [(it.assetName, "素材加载失败（AVAsset 为 nil）")], skipped: skipped)
                 return
             }
             let name = it.nextExportFileName
@@ -1267,7 +1267,7 @@ final class BKEditorViewController: UIViewController {
                 case .failure(let err):
                     BKLog.shared.e("导出失败 \(it.assetName)：\(err.localizedDescription)")
                     self.exportLoop(targets, spec: spec, reference: reference, done: done + 1,
-                                    ok: ok, failed: failed + [it.assetName], skipped: skipped)
+                                    ok: ok, failed: failed + [(it.assetName, err.localizedDescription)], skipped: skipped)
                 case .success(let url):
                     BKRootViewController.saveToPhotos(url: url, fileName: name) { [weak self] success in
                         guard let self = self else { return }
@@ -1287,7 +1287,7 @@ final class BKEditorViewController: UIViewController {
                                             done: done + 1, ok: ok + 1, failed: failed, skipped: skipped)
                         } else {
                             self.exportLoop(targets, spec: spec, reference: reference, done: done + 1,
-                                            ok: ok, failed: failed + [it.assetName], skipped: skipped)
+                                            ok: ok, failed: failed + [(it.assetName, "保存到相册失败")], skipped: skipped)
                         }
                     }
                 }
@@ -1295,7 +1295,7 @@ final class BKEditorViewController: UIViewController {
         }
     }
 
-    private func finishExport(ok: Int, failed: [String], skipped: [String]) {
+    private func finishExport(ok: Int, failed: [(String, String)], skipped: [String]) {
         isExporting = false
         setControlsEnabled(true)
         spinner.stopAnimating()
@@ -1316,7 +1316,7 @@ final class BKEditorViewController: UIViewController {
             if failed.count > 0 { title += "，\(failed.count) 条失败" }
             statusLabel.text = title
 
-            let detail = (skipped.map { "（全红跳过）\($0)" } + failed).joined(separator: "\n")
+            let detail = (skipped.map { "（全红跳过）\($0)" } + failed.map { "\($0.0)：\($0.1)" }).joined(separator: "\n")
             let alert = UIAlertController(title: title,
                                           message: detail.isEmpty ? nil : detail,
                                           preferredStyle: .alert)
