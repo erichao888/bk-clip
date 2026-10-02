@@ -75,7 +75,6 @@ final class BKEditorViewController: UIViewController {
     private let undoButton = UIButton(type: .system)
     private let redoButton = UIButton(type: .system)
     private let zoomOutButton = UIButton(type: .system)
-    private let zoomSlider = UISlider()
     private let zoomInButton = UIButton(type: .system)
 
     private let exportButton = UIButton(type: .system)
@@ -318,28 +317,20 @@ final class BKEditorViewController: UIViewController {
         configureTool(undoButton, systemName: "arrow.uturn.backward", action: #selector(undoTapped))
         configureTool(redoButton, systemName: "arrow.uturn.forward", action: #selector(redoTapped))
 
+        // 缩放滑杆已撤（皓哥 2026-10-02：主轨道能双指捏合就行，杆子占地方）。
+        // ± 留着当保底 —— 捏合一旦在某个系统版本上不灵，至少还有个能点的入口
         zoomOutButton.setImage(UIImage(systemName: "minus"), for: .normal)
         styleZoomStep(zoomOutButton, action: #selector(zoomOutTapped))
         zoomInButton.setImage(UIImage(systemName: "plus"), for: .normal)
         styleZoomStep(zoomInButton, action: #selector(zoomInTapped))
 
-        zoomSlider.minimumValue = Float(BKTrackView.zoomMin)
-        zoomSlider.maximumValue = Float(BKTrackView.zoomMax)
-        zoomSlider.value = Float(track.zoomScreens)
-        zoomSlider.minimumTrackTintColor = BKTheme.Color.gold
-        zoomSlider.addTarget(self, action: #selector(zoomSliderChanged), for: .valueChanged)
-        // 抗拉伸设成 required：UIStackView 的 fill 会去撑「最能被撑开」的那个，
-        // 不钉住的话滑杆会被拉长、而 spacer 拿不到余量，布局就跟设计对不上了
-        zoomSlider.setContentHuggingPriority(.required, for: .horizontal)
-
         let spacer2 = UIView()
         let row2 = UIStackView(arrangedSubviews: [
-            undoButton, redoButton, spacer2, zoomOutButton, zoomSlider, zoomInButton
+            undoButton, redoButton, spacer2, zoomOutButton, zoomInButton
         ])
         row2.axis = .horizontal
         row2.spacing = BKTheme.Space.sm
         row2.alignment = .center
-        zoomSlider.widthAnchor.constraint(equalToConstant: 120).isActive = true
 
         // 两排工具栏共用一条底：把工具栏从页面上分出来（定稿：#F1F1EE）
         let toolbar = UIStackView(arrangedSubviews: [row1, row2])
@@ -872,11 +863,6 @@ final class BKEditorViewController: UIViewController {
         runDetection(override: nil)
     }
 
-    @objc private func zoomSliderChanged() {
-        track.setZoomScreens(CGFloat(zoomSlider.value))
-        overview.setViewport(track.viewport)
-    }
-
     /// ± 每次走 2 屏。1 屏一档太慢，从 6 屏拉到 20 屏要按 14 下
     @objc private func zoomInTapped() { zoomStep(by: 2) }
 
@@ -884,7 +870,6 @@ final class BKEditorViewController: UIViewController {
 
     private func zoomStep(by delta: CGFloat) {
         track.setZoomScreens(track.zoomScreens + delta)
-        zoomSlider.value = Float(track.zoomScreens)
         overview.setViewport(track.viewport)
     }
 
@@ -987,7 +972,6 @@ final class BKEditorViewController: UIViewController {
         exportButton.isEnabled = enabled
         exportButton.alpha = enabled ? 1.0 : 0.4
         thresholdSlider.isEnabled = enabled
-        zoomSlider.isEnabled = enabled
         // 撤销 / 重做还得再看一眼栈里有没有东西，不能一刀切全亮
         if enabled { updateUndoButtons() }
     }
@@ -1107,8 +1091,8 @@ extension BKEditorViewController: BKTrackViewDelegate {
     }
 
     func track(_ view: BKTrackView, didChangeZoomTo screens: CGFloat) {
-        zoomSlider.value = Float(screens)
         overview.setViewport(track.viewport)
+        BKLog.shared.d(String(format: "轨道缩放 %.1f 屏", screens))
     }
 }
 

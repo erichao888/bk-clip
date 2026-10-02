@@ -66,6 +66,9 @@ final class BKTrackView: UIView {
     private var programmatic = false
     private var draggedEdge: Double?
     private var pinchBaseZoom: CGFloat = 6
+    /// 捏合时钉住的那一点：手指中点底下对应的时间，以及它在屏幕上的横坐标
+    private var pinchAnchorTime: Double = 0
+    private var pinchAnchorX: CGFloat = 0
 
     /// 整条素材摊成几屏宽。默认 6 屏：再密手指抹不开，再松就看不见气口
     private(set) var zoomScreens: CGFloat = 6
@@ -112,6 +115,9 @@ final class BKTrackView: UIView {
 
         pan = UIPanGestureRecognizer(target: self, action: #selector(onPan(_:)))
         pan.delegate = self
+        // 只认单指。默认是允许多指的，那样双指捏合时拖边界的 pan 也会跟着起手，
+        // 一边缩放一边把刀口拖跑了
+        pan.maximumNumberOfTouches = 1
         canvas.addGestureRecognizer(pan)
 
         tap = UITapGestureRecognizer(target: self, action: #selector(onTap(_:)))
@@ -166,13 +172,31 @@ final class BKTrackView: UIView {
         DispatchQueue.main.async { self.programmatic = false }
     }
 
-    /// 缩放。保持指针所指的时间不变：放大时是「以指针为中心放大」，
+    /// 缩放。默认保持指针所指的时间不变：放大时是「以指针为中心放大」，
     /// 否则一拉滑杆画面就跳到别处，根本没法对着气口调
     func setZoomScreens(_ screens: CGFloat) {
+        applyZoom(screens, anchorTime: nil, anchorScreenX: nil)
+    }
+
+    /// 真正干活的缩放。捏合时额外传一个锚点，把手指底下那一刻钉住。
+    private func applyZoom(_ screens: CGFloat, anchorTime: Double?, anchorScreenX: CGFloat?) {
         let clamped = min(max(screens, BKTrackView.zoomMin), BKTrackView.zoomMax)
         guard abs(clamped - zoomScreens) > 0.001 else { return }
         zoomScreens = clamped
+
+        // 先按「指针时间不变」重排，拿到新的 pps
         relayout(keepPointerTime: currentTime)
+
+        // 再把锚点挪回手指底下。几何还是那条：
+        //   canvasX = pad + t*pps，pad = W/2，offset = canvasX - 屏幕x
+        // 想让 t 停在屏幕 sx 处，offset 就必须等于 t*pps + W/2 - sx
+        if let t = anchorTime, let sx = anchorScreenX {
+            let target = CGFloat(t) * pps + bounds.width / 2 - sx
+            let maxOffset = CGFloat(duration) * pps
+            programmatic = true
+            scroll.contentOffset = CGPoint(x: min(max(target, 0), maxOffset), y: 0)
+            DispatchQueue.main.async { self.programmatic = false }
+        }
         canvas.setNeedsDisplay()
     }
 
@@ -276,12 +300,24 @@ extension BKTrackView: UIGestureRecognizerDelegate {
         delegate?.track(self, didTogglePieceAt: t)
     }
 
+    /// 双指捏合缩放。刻度是「整条素材摊成几屏宽」，1 屏 = 全览，20 屏 = 贴脸。
+    ///
+    /// 【为什么锚点取手指中点而不是屏幕正中】
+    /// 屏幕正中是橙色指针。你两根手指明明捏在左边第 5 秒那个气口上，
+    /// 结果放大的是正中间第 20 秒 —— 想看的东西一放大就跑出屏幕了。
+    /// 钉住手指底下那一刻才是符合直觉的。
     @objc private func onPinch(_ g: UIPinchGestureRecognizer) {
         switch g.state {
         case .began:
             pinchBaseZoom = zoomScreens
+            let sx = g.location(in: self).x
+            pinchAnchorX = sx
+            // 屏幕坐标 → 画布坐标：加上当前的滚动偏移
+            pinchAnchorTime = timeAt(canvasX: scroll.contentOffset.x + sx)
         case .changed:
-            setZoomScreens(pinchBaseZoom * g.scale)
+            applyZoom(pinchBaseZoom * g.scale,
+                      anchorTime: pinchAnchorTime,
+                      anchorScreenX: pinchAnchorX)
             delegate?.track(self, didChangeZoomTo: zoomScreens)
         default:
             break
