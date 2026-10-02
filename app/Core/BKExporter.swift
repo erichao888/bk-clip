@@ -167,11 +167,16 @@ enum BKExporter {
             guard reader.startReading() else {
                 throw BKExportError.readFailed(reader.error?.localizedDescription ?? "未知原因")
             }
+            // 搬完就释放解码占地（十几段素材时每个 reader 都留着会很可观）
+            defer { reader.cancelReading() }
 
-            try drain(videoOut, into: videoInput, offset: offset, writer: writer)
-            if let out = audioOut, let aIn = audioInput {
-                try drain(out, into: aIn, offset: offset, writer: writer)
-            }
+            // 双通道交替搬运（见 drainSegment 的注释：先搬完一条再搬另一条会死锁）
+            try drainSegment(video: videoOut,
+                             videoInput: videoInput,
+                             audio: audioOut,
+                             audioInput: audioInput,
+                             offset: offset,
+                             writer: writer)
 
             outputCursor = outputCursor + segRange.duration
             written += segRange.duration.seconds
@@ -211,51 +216,102 @@ enum BKExporter {
 
     // MARK: - 搬运一段的所有采样
 
-    private static func drain(_ output: AVAssetReaderTrackOutput,
-                              into input: AVAssetWriterInput,
-                              offset: CMTime,
-                              writer: AVAssetWriter) throws {
-        while let sb = output.copyNextSampleBuffer() {
-            let pts = CMSampleBufferGetPresentationTimeStamp(sb)
-            let dts = CMSampleBufferGetDecodeTimeStamp(sb)
-            let dur = CMSampleBufferGetDuration(sb)
+    /// 时间戳平移：把采样挪到它在成品里的新位置。
+    ///
+    /// DTS 可能是 invalid（无 B 帧的流），invalid 直接原样带过去 ——
+    /// Swift 里 CMTime 只有 .isValid（isInvalid 是 C 宏，不进 Swift）。
+    private static func retimedBuffer(_ sb: CMSampleBuffer,
+                                      offset: CMTime) throws -> CMSampleBuffer {
+        let pts = CMSampleBufferGetPresentationTimeStamp(sb)
+        let dts = CMSampleBufferGetDecodeTimeStamp(sb)
+        let dur = CMSampleBufferGetDuration(sb)
 
-            // DTS 可能是 invalid（无 B 帧的流），invalid 直接原样带过去。
-            // Swift 里 CMTime 只有 .isValid（isInvalid 是 C 宏，不进 Swift）
-            var timing = CMSampleTimingInfo(
-                duration: dur,
-                presentationTimeStamp: CMTimeAdd(pts, offset),
-                decodeTimeStamp: dts.isValid ? CMTimeAdd(dts, offset) : dts
-            )
+        var timing = CMSampleTimingInfo(
+            duration: dur,
+            presentationTimeStamp: CMTimeAdd(pts, offset),
+            decodeTimeStamp: dts.isValid ? CMTimeAdd(dts, offset) : dts
+        )
 
-            // Swift 导入后的真实标签（不对称，别想当然！）：
-            // allocator: / sampleBuffer: / sampleTimingEntryCount: / sampleTimingArray: / sampleBufferOut:
-            // 计数带 Entry，数组不带 —— 这是 C 声明和 Swift 导入两层改名叠出来的
-            var retimed: CMSampleBuffer?
-            let status = CMSampleBufferCreateCopyWithNewTiming(
-                allocator: nil,
-                sampleBuffer: sb,
-                sampleTimingEntryCount: 1,
-                sampleTimingArray: &timing,
-                sampleBufferOut: &retimed)
-            CMSampleBufferInvalidate(sb)
+        // Swift 导入后的真实标签（不对称，别想当然！）：
+        // allocator: / sampleBuffer: / sampleTimingEntryCount: / sampleTimingArray: / sampleBufferOut:
+        // 计数带 Entry，数组不带 —— 这是 C 声明和 Swift 导入两层改名叠出来的
+        var retimed: CMSampleBuffer?
+        let status = CMSampleBufferCreateCopyWithNewTiming(
+            allocator: nil,
+            sampleBuffer: sb,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleBufferOut: &retimed)
+        CMSampleBufferInvalidate(sb)
 
-            guard status == noErr, let out = retimed else {
-                throw BKExportError.retimeFailed(status)
-            }
+        guard status == noErr, let out = retimed else {
+            throw BKExportError.retimeFailed(status)
+        }
+        return out
+    }
 
-            // 输入通道背压：满了就等。设 10 秒上限防死等
-            var waits = 0
-            while !input.isReadyForMoreMediaData {
-                Thread.sleep(forTimeInterval: 0.005)
-                waits += 1
-                if waits > 2000 {
-                    throw BKExportError.writeFailed("输入通道 10 秒不就绪")
+    /// 交替搬运一段的音视频采样。
+    ///
+    /// 【为什么一定要交替】writer 同时挂着视频、音频两个 input 时，它们共享同一条
+    /// 容器写入队列。视频压缩慢、通道很快就填满，writer 在等音频的包来拼交织
+    /// （interleave）；这时候如果代码还在视频通道上傻等就绪，两边互不相让 ——
+    /// 视频等 writer 排空、writer 等音频数据，死锁。
+    ///
+    /// 第一版就是「先把整段视频搬完再搬音频」，真机直接报：
+    /// 导出失败：写入失败：输入通道 10 秒不就绪。
+    /// 改成「谁就绪喂谁」之后解开。
+    ///
+    /// 顺带一提，10 秒上限的语义也变了：不是「某一条通道久不就绪」就算卡死，
+    /// 而是「一整轮里两条通道谁都没喂进去」持续 10 秒才算真卡死 ——
+    /// 背压等待本身是完全正常的，不该被判死刑。
+    private static func drainSegment(video: AVAssetReaderTrackOutput,
+                                     videoInput: AVAssetWriterInput,
+                                     audio: AVAssetReaderTrackOutput?,
+                                     audioInput: AVAssetWriterInput?,
+                                     offset: CMTime,
+                                     writer: AVAssetWriter) throws {
+        // 没有音轨（或音频没能加进 writer）时退化成单通道搬运，逻辑同一份
+        var videoDone = false
+        var audioDone = (audio == nil || audioInput == nil)
+        var idleRounds = 0
+
+        while !(videoDone && audioDone) {
+            var fedAnything = false
+
+            if !videoDone, videoInput.isReadyForMoreMediaData {
+                if let sb = video.copyNextSampleBuffer() {
+                    let buffer = try retimedBuffer(sb, offset: offset)
+                    guard videoInput.append(buffer) else {
+                        throw BKExportError.writeFailed(writer.error?.localizedDescription ?? "视频写入失败")
+                    }
+                } else {
+                    videoDone = true   // 这一段视频搬完了
                 }
+                fedAnything = true
             }
 
-            guard input.append(out) else {
-                throw BKExportError.writeFailed(writer.error?.localizedDescription ?? "append 失败")
+            if !audioDone, let audioOut = audio, let audioIn = audioInput,
+               audioIn.isReadyForMoreMediaData {
+                if let sb = audioOut.copyNextSampleBuffer() {
+                    let buffer = try retimedBuffer(sb, offset: offset)
+                    guard audioIn.append(buffer) else {
+                        throw BKExportError.writeFailed(writer.error?.localizedDescription ?? "音频写入失败")
+                    }
+                } else {
+                    audioDone = true   // 这一段音频搬完了
+                }
+                fedAnything = true
+            }
+
+            if fedAnything {
+                idleRounds = 0
+            } else {
+                // 两条通道都堵着：让出 CPU 等 writer 消化，别让它俩空转抢锁
+                idleRounds += 1
+                Thread.sleep(forTimeInterval: 0.005)
+                if idleRounds > 2000 {
+                    throw BKExportError.writeFailed("视频/音频通道同时超过 10 秒不就绪")
+                }
             }
         }
     }
