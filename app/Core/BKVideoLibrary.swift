@@ -5,15 +5,16 @@
 //  【为什么单独一层】
 //  之前 App 只能「选一条 → 编辑一条」，切素材必须退回起始页重新挑，
 //  对比着看两条素材的刀口几乎不可能。加了这一层之后，
-//  编辑页可以「上一条 / 下一条」横向翻，也能从列表页直接进。
+//  编辑页可以「上一条 / 下一条」横向翻，也能从 ☰ 列表里直接点名切换。
 //
 //  【只存 localIdentifier，不存 AVAsset】
 //  localIdentifier 是 Photos 给的稳定 ID，重启后依然能捞回同一条；
 //  AVAsset 不能序列化，也没法跨页面传递（大文件读进内存代价高）。
 //
-//  【列表不取缩略图】
-//  缩略图是按需、按屏请求的（见 BKVideoListViewController）。
-//  一次性把几百张图拉进内存，iPhone 上直接给你 OOM。
+//  【这层不碰 UIKit】
+//  只做 ID / AVAsset / 文件名 / 时长这类纯数据。之前在这里放过一个
+//  取缩略图的方法（用到 UIImage），独立列表页删掉后没人用了，
+//  连同 UIKit 依赖一起删 —— Core 层保持干净
 //
 
 import Foundation
@@ -53,25 +54,6 @@ enum BKVideoLibrary {
         options.deliveryMode = .highQualityFormat
         PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { asset, _, _ in
             DispatchQueue.main.async { completion(asset) }
-        }
-    }
-
-    /// 缩略图。按屏幕需要的尺寸请求，别拿原图
-    static func thumbnail(localID: String,
-                          targetSize: CGSize,
-                          completion: @escaping (UIImage?) -> Void) {
-        guard let phAsset = phAsset(localID: localID) else {
-            completion(nil)
-            return
-        }
-        let opts = PHImageRequestOptions()
-        opts.deliveryMode = .opportunistic
-        opts.isNetworkAccessAllowed = true
-        PHImageManager.default().requestImage(for: phAsset,
-                                              targetSize: targetSize,
-                                              contentMode: .aspectFill,
-                                              options: opts) { image, _ in
-            DispatchQueue.main.async { completion(image) }
         }
     }
 
