@@ -192,8 +192,10 @@ final class BKTrackView: UIView {
 
 extension BKTrackView: UIGestureRecognizerDelegate {
 
-    /// 只有真的摸到分界线，自定义 pan 才接管；否则一律放行给 UIScrollView 去滚
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+    /// 只有真的摸到分界线，自定义 pan 才接管；否则一律放行给 UIScrollView 去滚。
+    /// 注意这是 UIView 自带的方法，必须 override —— 直接写 func 会报
+    /// "overriding declaration requires an 'override' keyword"
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard gestureRecognizer === pan else { return true }
         let x = gestureRecognizer.location(in: canvas).x
         guard let edge = nearestBoundary(to: timeAt(canvasX: x)) else { return false }
