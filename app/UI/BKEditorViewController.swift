@@ -49,8 +49,8 @@ final class BKEditorViewController: UIViewController {
     private let previewContainer = UIView()
     private let timeLabel = UILabel()
     private let waveContainer = UIView()
-    private let waveform = BKWaveformView()
-    private let playheadLine = UIView()
+    /// 主轨道：橙色指针钉在正中，内容在底下滚
+    private let track = BKTrackView()
     private let thresholdTitle = UILabel()
     private let thresholdSlider = UISlider()
     private let infoLabel = UILabel()
@@ -71,15 +71,10 @@ final class BKEditorViewController: UIViewController {
     private let listTable = UITableView(frame: .zero, style: .plain)
     private var listVisible = false
 
-    private var playheadLeading: NSLayoutConstraint!
-
     // MARK: - 初始化
 
     /// 素材库顺序。有它才能「上一条 / 下一条」；只从起始页单挑一条进来时是空的
     private let videoIDs: [String]
-
-    /// 手动切割的起点。nil = 还没按下第一次
-    private var manualCutStart: Double?
 
     init(asset: AVAsset,
          localID: String,
@@ -161,7 +156,8 @@ final class BKEditorViewController: UIViewController {
         playerLayer = layer
         previewContainer.layer.addSublayer(layer)
 
-        let interval = CMTime(seconds: 0.05, preferredTimescale: 600)
+        // 0.033 ≈ 30fps。滚动是连续画面，20fps 会明显一格一格地跳
+        let interval = CMTime(seconds: 0.033, preferredTimescale: 600)
         timeObserver = p.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self = self else { return }
             self.handlePlaybackTime(to: CMTimeGetSeconds(time))
@@ -229,11 +225,29 @@ final class BKEditorViewController: UIViewController {
         let clamped = min(max(t, 0), p.duration)
         lastTime = clamped
         timeLabel.text = "\(formatTime(clamped)) / \(formatTime(p.duration))"
-        let w = waveContainer.bounds.width - 4
-        playheadLeading.constant = CGFloat(clamped / max(p.duration, 1e-9)) * w + 1
+        // 「内容滚到指针底下」，而不是「指针跑到内容左边」。
+        // 指针位置其实是 track 的 contentOffset，播放时一行代码就能跟上
+        track.setPointerTime(clamped)
     }
 
     // MARK: - 布局
+
+    /// 图标按钮的统一入口。抽出来是因为五个按钮的样式必须一模一样，
+    /// 散在各自的配置里写，慢慢一定会歪成五种
+    private func configureIcon(_ button: UIButton, systemName: String, tint: UIColor) {
+        button.setImage(UIImage(systemName: systemName), for: .normal)
+        button.setTitle("", for: .normal)
+        button.tintColor = tint
+        button.imageView?.contentMode = .scaleAspectFit
+        button.contentHorizontalAlignment = .center
+        button.contentVerticalAlignment = .center
+    }
+
+    /// 播放 / 暂停图标互换。收集到一个地方，免得三处调用改了形状忘了另一处
+    private func updatePlayButtonIcon() {
+        playButton.setImage(UIImage(systemName: playing ? "pause.fill" : "play.fill"),
+                            for: .normal)
+    }
 
     private func setupUI() {
         previewContainer.backgroundColor = BKTheme.Color.preview
@@ -260,28 +274,19 @@ final class BKEditorViewController: UIViewController {
         waveContainer.layer.cornerRadius = BKTheme.Radius.card
         waveContainer.clipsToBounds = true
 
-        waveform.backgroundColor = .clear
-        waveform.delegate = self
-        waveform.translatesAutoresizingMaskIntoConstraints = false
-        waveContainer.addSubview(waveform)
-
-        playheadLine.backgroundColor = BKTheme.Color.playhead
-        playheadLine.layer.cornerRadius = 1
-        playheadLine.translatesAutoresizingMaskIntoConstraints = false
-        waveContainer.addSubview(playheadLine)
+        // 轨道铺满容器：中置指针由轨道自己画，外面不再摆任何可动的线。
+        // 上一版是把播放头当 subview 用 leading 约束推来推去 ——
+        // 现在内容滚、指针不动，那条约束没有存在的意义了
+        track.delegate = self
+        track.translatesAutoresizingMaskIntoConstraints = false
+        waveContainer.addSubview(track)
 
         NSLayoutConstraint.activate([
-            waveform.leadingAnchor.constraint(equalTo: waveContainer.leadingAnchor),
-            waveform.trailingAnchor.constraint(equalTo: waveContainer.trailingAnchor),
-            waveform.topAnchor.constraint(equalTo: waveContainer.topAnchor),
-            waveform.bottomAnchor.constraint(equalTo: waveContainer.bottomAnchor),
-
-            playheadLine.topAnchor.constraint(equalTo: waveContainer.topAnchor),
-            playheadLine.bottomAnchor.constraint(equalTo: waveContainer.bottomAnchor),
-            playheadLine.widthAnchor.constraint(equalToConstant: 2)
+            track.leadingAnchor.constraint(equalTo: waveContainer.leadingAnchor),
+            track.trailingAnchor.constraint(equalTo: waveContainer.trailingAnchor),
+            track.topAnchor.constraint(equalTo: waveContainer.topAnchor),
+            track.bottomAnchor.constraint(equalTo: waveContainer.bottomAnchor)
         ])
-        playheadLeading = playheadLine.leadingAnchor.constraint(equalTo: waveContainer.leadingAnchor, constant: 1)
-        playheadLeading.isActive = true
 
         thresholdTitle.font = BKTheme.Font.mono
         thresholdTitle.textColor = BKTheme.Color.text
@@ -309,35 +314,34 @@ final class BKEditorViewController: UIViewController {
         spinner.hidesWhenStopped = true
         spinner.color = BKTheme.Color.gold
 
-        previewButton.setTitle("成品试听", for: .normal)
-        previewButton.setTitleColor(BKTheme.Color.accent, for: .normal)
-        previewButton.titleLabel?.font = BKTheme.Font.caption
+        // 全部走 SF Symbols。昨晚皓哥定的样式：不要文字，用线条图案。
+        // 系统图标的字重和线宽天然统一，自己画五个必然画出五种粗细
+        configureIcon(playButton, systemName: "play.fill", tint: .white)
+        playButton.backgroundColor = BKTheme.Color.gold
+        playButton.layer.cornerRadius = 10
+        playButton.addTarget(self, action: #selector(playTapped), for: .touchUpInside)
+
+        configureIcon(previewButton, systemName: "headphones", tint: BKTheme.Color.accent)
         previewButton.layer.borderWidth = 1
         previewButton.layer.borderColor = BKTheme.Color.line.cgColor
         previewButton.layer.cornerRadius = 10
         previewButton.addTarget(self, action: #selector(previewTapped), for: .touchUpInside)
 
-        cutButton.setTitle("切割", for: .normal)
-        cutButton.setTitleColor(BKTheme.Color.danger, for: .normal)
-        cutButton.titleLabel?.font = BKTheme.Font.caption
+        configureIcon(cutButton, systemName: "scissors", tint: BKTheme.Color.danger)
         cutButton.layer.borderWidth = 1
         cutButton.layer.borderColor = BKTheme.Color.danger.cgColor
         cutButton.layer.cornerRadius = 10
         cutButton.addTarget(self, action: #selector(cutTapped), for: .touchUpInside)
 
-        detectButton.setTitle("自动检测", for: .normal)
-        detectButton.setTitleColor(BKTheme.Color.accent, for: .normal)
-        detectButton.titleLabel?.font = BKTheme.Font.caption
+        // 皓哥指定：自动检测用**吸管**，不是滴管 —— 就是剪映那个取样的东西
+        configureIcon(detectButton, systemName: "eyedropper", tint: BKTheme.Color.accent)
         detectButton.addTarget(self, action: #selector(detectTapped), for: .touchUpInside)
 
-        playButton.setTitle("播放", for: .normal)
-        playButton.setTitleColor(.white, for: .normal)
-        playButton.titleLabel?.font = BKTheme.Font.caption
-        playButton.backgroundColor = BKTheme.Color.gold
-        playButton.layer.cornerRadius = 10
-        playButton.addTarget(self, action: #selector(playTapped), for: .touchUpInside)
-
-        exportButton.setTitle("导出", for: .normal)
+        // 导出是昨晚定死的唯一例外。这里图标 + 文字一起给：
+        // 图标负责一眼认出来，文字负责不认错 —— 这个按钮按下去不可逆
+        exportButton.setImage(UIImage(systemName: "square.and.arrow.up"), for: .normal)
+        exportButton.setTitle(" 导出", for: .normal)
+        exportButton.tintColor = BKTheme.Color.accent
         exportButton.setTitleColor(BKTheme.Color.accent, for: .normal)
         exportButton.titleLabel?.font = BKTheme.Font.caption
         exportButton.addTarget(self, action: #selector(exportTapped), for: .touchUpInside)
@@ -532,37 +536,38 @@ final class BKEditorViewController: UIViewController {
 
     // MARK: - 手动切割
 
-    /// 两步式：第一次点记起点，第二次点记终点，把这一段标为删除。
-    /// 为什么不「点一下就切掉当前整段」：整段往往几秒长，一切就把大段说话也删了。
-    /// 让用户自己划范围，代价只是多一点一次点按
+    /// 按一下，就从**橙色指针现在指的地方**把轨道切开。
+    ///
+    /// 上一版做成「两步式：点起点、点终点，把中间删掉」，皓哥试了说不对 ——
+    /// 他要的是剪映那种：按一下，指针那儿就把这一段劈成两半，看得见一道缝。
+    ///
+    /// 【切开 ≠ 删除】切口不进 cutRanges，所以导出时长纹丝不动。
+    /// 它的作用是把一段划成两段，好让你单独处理其中一半 ——
+    /// 下一步点哪一半，哪一半就变红被删掉。顺序是「先看切开什么样，再决定删哪边」，
+    /// 比一按下去就删掉一截要安全得多
     @objc private func cutTapped() {
-        guard let p = project else { return }
+        guard var p = project else { return }
+        let t = min(max(lastTime, 0), p.duration)
 
-        if let start = manualCutStart {
-            let a = min(start, lastTime)
-            let b = max(start, lastTime)
-            manualCutStart = nil
-            cutButton.setTitle("切割", for: .normal)
-            cutButton.backgroundColor = .clear
-
-            guard (b - a) >= BKConfig.Detect.minCut else {
-                statusLabel.text = String(format: "这段只有 %.2fs，短于最短一刀 %.2fs，不切",
-                                          b - a, BKConfig.Detect.minCut)
-                return
-            }
-
-            // 手动刀和自动刀走同一条重建路径，保证「相邻严丝合缝」这个不变量不被破坏
-            var cuts = p.cutRanges
-            cuts.append((a, b))
-            applyMarks(BKTimeline.build(duration: p.duration, cuts: cuts))
-            statusLabel.text = ""
-            BKLog.shared.i(String(format: "手动切掉 %.2f~%.2fs（%.2fs）", a, b, b - a))
-        } else {
-            manualCutStart = lastTime
-            cutButton.setTitle("确认终点", for: .normal)
-            cutButton.backgroundColor = BKTheme.Color.danger.withAlphaComponent(0.15)
-            statusLabel.text = String(format: "起点 %.1fs —— 播放或拖到终点，再点一次完成切割", lastTime)
+        // 离两头太近不切：切出来的是一截 0.1 秒的碎片，没有任何收拾的价值
+        guard t > 0.1, t < p.duration - 0.1 else {
+            statusLabel.text = "指针太靠两头了，这里切不出东西"
+            return
         }
+        // 同一个地方不重复下刀
+        guard !p.splits.contains(where: { abs($0 - t) < 0.05 }) else {
+            statusLabel.text = "这里已经有一道切口了"
+            return
+        }
+
+        p.splits.append(t)
+        p.splits.sort()
+        p.updatedAt = Date()
+        project = p
+        refreshTrack()
+        statusLabel.text = String(format: "在 %.2fs 处切开 —— 点旁边的片段就能把那一段删掉", t)
+        BKLog.shared.i(String(format: "手动切口 %.2fs（现有 %d 道）", t, p.splits.count))
+        BKDraftStore.shared.scheduleSave(p)
     }
 
     // MARK: - 分析与检测
@@ -588,7 +593,7 @@ final class BKEditorViewController: UIViewController {
                     if let p = self.project {
                         BKDraftStore.shared.markOpened(p.id)
                     }
-                    self.refreshWaveform()
+                    self.refreshTrack()
                     self.updateInfo()
                     self.statusLabel.text = "已恢复上次的编辑进度"
                 }
@@ -611,6 +616,7 @@ final class BKEditorViewController: UIViewController {
             autoThresholdDb: nil,
             sourceApplicable: true,
             marks: [BKMark(start: 0, end: duration, kind: .keep)],
+            splits: [],
             createdAt: Date(),
             updatedAt: Date(),
             exportHistory: []
@@ -657,7 +663,7 @@ final class BKEditorViewController: UIViewController {
                 // 程序设值不触发 valueChanged，不会造成重入
                 self.thresholdSlider.value = Float(outcome.info.thresholdDb)
                 self.thresholdTitle.text = String(format: "阈值 %.1f dB", outcome.info.thresholdDb)
-                self.refreshWaveform()
+                self.refreshTrack()
                 self.updateInfo()
                 BKDraftStore.shared.scheduleSave(proj)
             }
@@ -671,17 +677,23 @@ final class BKEditorViewController: UIViewController {
         p.marks = BKTimeline.normalize(marks, duration: p.duration)
         p.updatedAt = Date()
         project = p
-        refreshWaveform()
+        refreshTrack()
         updateInfo()
         BKDraftStore.shared.scheduleSave(p)
     }
 
-    private func refreshWaveform() {
+    private func refreshTrack() {
         guard let p = project else { return }
-        waveform.setContent(envelope: envelope,
-                            marks: p.marks,
-                            duration: p.duration,
-                            thresholdDb: p.thresholdDb)
+        // 显示序列 = 删除区间 + 手动切口 一起算出来的片段。
+        // 导出永远只认 keepRanges，切口不参与 —— 切一刀不会让成品少一帧
+        let shown = BKTimeline.pieces(duration: p.duration,
+                                      cuts: p.cutRanges,
+                                      splits: p.splits)
+        track.setContent(envelope: envelope,
+                         pieces: shown,
+                         splits: p.splits,
+                         duration: p.duration,
+                         thresholdDb: p.thresholdDb)
     }
 
     private func updateInfo() {
@@ -702,24 +714,27 @@ final class BKEditorViewController: UIViewController {
         if playing {
             p.pause()
             playing = false
-            playButton.setTitle("播放", for: .normal)
+            updatePlayButtonIcon()
         } else {
+            // 从橙色指针所在的位置播起 —— 指针在正中不动，画面会持续向左滚过去
+            p.seek(to: CMTime(seconds: lastTime, preferredTimescale: 600))
             p.play()
             playing = true
-            playButton.setTitle("暂停", for: .normal)
+            updatePlayButtonIcon()
         }
     }
 
     @objc private func previewTapped() {
         previewMode.toggle()
-        previewButton.setTitle(previewMode ? "试听中" : "成品试听", for: .normal)
         if previewMode {
             previewButton.backgroundColor = BKTheme.Color.accent
-            previewButton.setTitleColor(.white, for: .normal)
+            previewButton.tintColor = .white
+            previewButton.layer.borderColor = BKTheme.Color.accent.cgColor
             statusLabel.text = "试听模式：播放会自动跳过所有刀口（导出前先听一遍）"
         } else {
             previewButton.backgroundColor = .clear
-            previewButton.setTitleColor(BKTheme.Color.accent, for: .normal)
+            previewButton.tintColor = BKTheme.Color.accent
+            previewButton.layer.borderColor = BKTheme.Color.line.cgColor
             statusLabel.text = ""
         }
         BKLog.shared.i("试听模式 \(previewMode ? "开" : "关")")
@@ -902,28 +917,58 @@ extension BKEditorViewController: UITableViewDataSource, UITableViewDelegate {
 
 // MARK: - 波形手势回调
 
-extension BKEditorViewController: BKWaveformViewDelegate {
+extension BKEditorViewController: BKTrackViewDelegate {
 
-    func waveform(_ view: BKWaveformView, didDragBoundaryAfterIndex index: Int, to time: Double) {
+    func track(_ view: BKTrackView, didScrollTo time: Double) {
         guard let p = project else { return }
-        // 拖到非法位置（越过邻居）时 moveBoundary 返回 nil，界面保持原样
-        if let next = BKTimeline.moveBoundary(in: p.marks, afterIndex: index, to: time) {
-            applyMarks(next)
+        let t = min(max(time, 0), p.duration)
+        // 手动一滚就先停播放。否则「用户拖 contentOffset」和
+        // 「播放回调推 contentOffset」两边同时发力，画面会来回抽
+        if playing {
+            player?.pause()
+            playing = false
+            updatePlayButtonIcon()
         }
+        player?.seek(to: CMTime(seconds: t, preferredTimescale: 600))
+        lastTime = t
+        timeLabel.text = "\(formatTime(t)) / \(formatTime(p.duration))"
     }
 
-    func waveform(_ view: BKWaveformView, didToggleCutAt time: Double) {
+    /// 点一下片段：红色的把它恢复，绿色的把它删掉。
+    /// 「点即选中」是昨晚定的 —— 不单独再做一个选中按钮，少一次点按
+    func track(_ view: BKTrackView, didTogglePieceAt time: Double) {
         guard let p = project else { return }
-        // 只允许点掉已有的刀（红→绿），不支持点一下就加一刀 —— 误触的代价太高
-        for (i, m) in p.marks.enumerated() where m.kind == .cut && time >= m.start && time <= m.end {
-            applyMarks(BKTimeline.toggle(marks: p.marks, at: i))
-            BKLog.shared.i(String(format: "点掉刀口 %.2f~%.2fs", m.start, m.end))
+        let shown = BKTimeline.pieces(duration: p.duration,
+                                      cuts: p.cutRanges,
+                                      splits: p.splits)
+        for pc in shown where time >= pc.start && time <= pc.end {
+            var cuts = p.cutRanges
+
+            if pc.kind == .cut {
+                cuts.removeAll { abs($0.0 - pc.start) < 1e-6 && abs($0.1 - pc.end) < 1e-6 }
+                statusLabel.text = String(format: "恢复 %.2f~%.2fs", pc.start, pc.end)
+                BKLog.shared.i(String(format: "恢复 %0.2f~%.2fs", pc.start, pc.end))
+            } else {
+                guard (pc.end - pc.start) >= BKConfig.Detect.minCut else {
+                    statusLabel.text = String(format: "这段只有 %.2fs，短于 %.2fs，不动它",
+                                              pc.end - pc.start, BKConfig.Detect.minCut)
+                    return
+                }
+                cuts.append((pc.start, pc.end))
+                statusLabel.text = String(format: "删掉 %.2f~%.2fs", pc.start, pc.end)
+                BKLog.shared.i(String(format: "删掉 %.2f~%.2fs", pc.start, pc.end))
+            }
+            // 手动增删和自动刀走同一条重建路径，保住「相邻严丝合缝」这条不变量
+            applyMarks(BKTimeline.build(duration: p.duration, cuts: cuts))
             return
         }
     }
 
-    func waveform(_ view: BKWaveformView, didScrubTo time: Double) {
-        player?.seek(to: CMTime(seconds: time, preferredTimescale: 600))
-        syncPlayhead(to: time)
+    func track(_ view: BKTrackView, didDragBoundaryNear near: Double, to newTime: Double) {
+        guard let p = project else { return }
+        // 拖到非法位置（越过邻居）时返回 nil，界面保持原样
+        if let next = BKTimeline.moveBoundary(in: p.marks, near: near, to: newTime) {
+            applyMarks(next)
+        }
     }
 }

@@ -161,12 +161,49 @@ struct BKProject: Codable, Identifiable {
     // 编辑内容
     var marks: [BKMark]
 
+    /// 手动切口。**和 cut 是两回事**：切口只把片段划开，不删任何内容。
+    /// 导出时长完全不受它影响（keepRanges 不算它），它的作用是让你能
+    /// 单独点掉切开的其中一半 —— 这才是「点切割能从指针处分开」的真意
+    var splits: [Double]
+
     // 时间
     var createdAt: Date
     var updatedAt: Date
 
     // 导出历史
     var exportHistory: [BKExportRecord]
+}
+
+// MARK: - 草稿解码兼容
+
+extension BKProject {
+
+    /// 手写这一段就为一个目的：**让旧草稿能被读回来**。
+    /// 合成的 init(from:) 遇到缺 key 会直接 throw —— 皓哥手机上已经存着一堆
+    /// 没有 splits 字段的草稿，一 throw 就全没了。所以全部用 decodeIfPresent 兜底。
+    enum CodingKeys: String, CodingKey {
+        case id, assetLocalID, duration, displayWidth, displayHeight
+        case sourceRotationDegrees, thresholdDb, autoThresholdDb
+        case sourceApplicable, marks, createdAt, updatedAt, exportHistory, splits
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        assetLocalID = try c.decode(String.self, forKey: .assetLocalID)
+        duration = try c.decode(Double.self, forKey: .duration)
+        displayWidth = try c.decode(Double.self, forKey: .displayWidth)
+        displayHeight = try c.decode(Double.self, forKey: .displayHeight)
+        sourceRotationDegrees = try c.decode(Double.self, forKey: .sourceRotationDegrees)
+        thresholdDb = try c.decode(Double.self, forKey: .thresholdDb)
+        autoThresholdDb = try c.decodeIfPresent(Double.self, forKey: .autoThresholdDb)
+        sourceApplicable = try c.decode(Bool.self, forKey: .sourceApplicable)
+        marks = try c.decode([BKMark].self, forKey: .marks)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        exportHistory = (try? c.decodeIfPresent([BKExportRecord].self, forKey: .exportHistory)) ?? []
+        splits = (try? c.decodeIfPresent([Double].self, forKey: .splits)) ?? []
+    }
 }
 
 // MARK: - 工程派生计算
@@ -223,10 +260,7 @@ enum BKTimeline {
         var marks: [BKMark] = []
         var cursor: Double = 0
 
-        let sorted = cuts
-            .map { (max($0.0, 0), min($0.1, duration)) }
-            .filter { $0.1 > $0.0 }
-            .sorted { $0.0 < $1.0 }
+        let sorted = merge(cuts, duration: duration)
 
         for (s, e) in sorted {
             if s > cursor {
@@ -239,6 +273,88 @@ enum BKTimeline {
             marks.append(BKMark(start: cursor, end: duration, kind: .keep))
         }
         return normalize(marks, duration: duration)
+    }
+
+    /// 洗净 + 合并区间：夹回 [0, duration]、丢掉零宽的、排序、**合并重叠与相接的**。
+    ///
+    /// 合并这一步不是洁癖，是真 bug：手动划掉的一段和自动检出的气口一旦重叠，
+    /// 不合并的话游标会往后退，拼出来的序列中间会漏一条缝 ——
+    /// 而这条缝在成品里表现为内容凭空消失，完全看不出是这儿出的问题。
+    /// （Python 版先在 4000 组随机用例上撞出来：735 组失败，加上合并后 6000 组全绿）
+    static func merge(_ cuts: [(Double, Double)], duration: Double) -> [(Double, Double)] {
+        let clean = cuts
+            .map { (max($0.0, 0), min($0.1, duration)) }
+            .filter { $0.1 > $0.0 }
+            .sorted { $0.0 < $1.0 }
+
+        var out: [(Double, Double)] = []
+        for iv in clean {
+            if let last = out.last, iv.0 <= last.1 {
+                out[out.count - 1].1 = max(last.1, iv.1)
+            } else {
+                out.append(iv)
+            }
+        }
+        return out
+    }
+
+    /// 把「删除区间 + 手动切口」合成**显示用**的片段序列。
+    ///
+    /// 和 build 的区别：build 出来的每个 keep 是一条整段；pieces 会把 keep 段再按
+    /// 切口切开，于是轨道上看到的就是真正一分为二的两段。
+    /// **只用于显示与点选，不参与导出** —— 导出只认 keepRanges（不含 splits）。
+    ///
+    /// 算法与 tools 侧的 Python 逐行对应，不变量已在 6000 组随机用例 + 脏数据上验证：
+    /// 覆盖 [0, duration]、相邻严丝合缝、无零宽、切口不吞时间。
+    static func pieces(duration: Double,
+                       cuts: [(Double, Double)],
+                       splits: [Double]) -> [BKMark] {
+        let clean = merge(cuts, duration: duration)
+
+        // 切口洗净：夹回素材内、去重排序、删掉落在删除区里的（那里已经看不见了）
+        let cutList = clean.filter { $0.1 > $0.0 }
+        let edges = Set(splits.map { min(max($0, 0), duration) })
+            .filter { t in t > 0 && t < duration && !cutList.contains { t >= $0.0 && t <= $0.1 } }
+            .sorted()
+
+        var out: [BKMark] = []
+        var cursor: Double = 0
+
+        // 把 [a, b) 这段保留区按落在它内部的切口切开
+        func splitKeep(_ a: Double, _ b: Double) {
+            guard b > a else { return }
+            var from = a
+            for t in edges where t > a && t < b {
+                if t > from { out.append(BKMark(start: from, end: t, kind: .keep)) }
+                from = t
+            }
+            if b > from { out.append(BKMark(start: from, end: b, kind: .keep)) }
+        }
+
+        for iv in clean {
+            splitKeep(cursor, iv.0)
+            if iv.1 > iv.0 { out.append(BKMark(start: iv.0, end: iv.1, kind: .cut)) }
+            cursor = iv.1
+        }
+        splitKeep(cursor, duration)
+        return out
+    }
+
+    /// 按「最近的边界」拖动，不按 index。
+    /// 原因：index 会随显示粒度变 —— 一段有没有被切口切开，同一次触摸算出来的
+    /// index 就不是同一个东西，拖动会错位。时间坐标才是稳的。
+    static func moveBoundary(in marks: [BKMark],
+                             near time: Double,
+                             to newTime: Double) -> [BKMark]? {
+        // 找内部边界里离触点最近的那条（最后一条的 end 是素材末尾，不动）
+        var bestIdx: Int?
+        var bestDist = Double.greatestFiniteMagnitude
+        for i in 0 ..< max(0, marks.count - 1) {
+            let d = abs(marks[i].end - time)
+            if d < bestDist { bestDist = d; bestIdx = i }
+        }
+        guard let idx = bestIdx else { return nil }
+        return moveBoundary(in: marks, afterIndex: idx, to: newTime)
     }
 
     /// 拖动一条分界线。同时改左右两条标记的边界。
