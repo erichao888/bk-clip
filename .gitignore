@@ -4,6 +4,12 @@ DerivedData/
 Payload/
 *.ipa
 
+# 测试素材产物（波形图、试听视频）。体积大、可随时用 tools/preview_cut.py 重新生成，
+# 真正要进仓库的只有脚本本身
+*.mp4
+tools/*.html
+tools/*.json
+
 # Xcode 工程是 XcodeGen 从 project.yml 生成的，不进版本库。
 # 传它反而有害：两边不一致时你根本不知道该信谁
 *.xcodeproj/
