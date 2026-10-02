@@ -20,6 +20,7 @@
 
 import UIKit
 import AVFoundation
+import Photos
 
 final class BKEditorViewController: UIViewController {
 
@@ -38,6 +39,7 @@ final class BKEditorViewController: UIViewController {
     private var sliderWork: DispatchWorkItem?
     private var playing = false
     private var lastTime: Double = 0
+    private var isExporting = false
 
     // MARK: - 界面
 
@@ -110,9 +112,16 @@ final class BKEditorViewController: UIViewController {
     // MARK: - 播放器
 
     private func setupPlayer() {
+        // 音频会话必须自己显式设。默认的 soloAmbient 会服从机身静音键，
+        // 一拨静音视频就没声 —— 视频类 App 一律用 .playback 类别忽略它
+        configureAudioSession()
+
         let item = AVPlayerItem(asset: asset)
         let p = AVPlayer(playerItem: item)
+        p.volume = 1.0
+        p.isMuted = false
         player = p
+        logAudioDiagnostics()
 
         let layer = AVPlayerLayer()
         layer.player = p
@@ -131,6 +140,35 @@ final class BKEditorViewController: UIViewController {
                                                selector: #selector(playerFinished),
                                                name: .AVPlayerItemDidPlayToEndTime,
                                                object: item)
+    }
+
+    /// 音频会话：显式声明这是个要出声的视频播放器
+    private func configureAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .moviePlayback, options: [])
+            try session.setActive(true)
+        } catch {
+            // setActive 在别家 App 占着音频通道时会失败。
+            // 不打这行日志，用户看到的现象只是「没声音」，根本没法归因
+            BKLog.shared.e("音频会话激活失败：\(error.localizedDescription)")
+        }
+    }
+
+    /// 没有 Xcode 时，排障全靠这一行：真机上如果还是没声，
+    /// 用「文件 App → bk剪辑」把 bk.log 拖出来，一眼看出是
+    /// 素材没音轨、路由不对，还是类别没设上
+    private func logAudioDiagnostics() {
+        let session = AVAudioSession.sharedInstance()
+        let trackCount = asset.tracks(withMediaType: .audio).count
+        BKLog.shared.i(String(
+            format: "音频会话 类别=%@ 模式=%@ 输出=%@ 音量=%.2f 他人占道=%@ | 素材音轨=%d",
+            session.category.rawValue,
+            session.mode.rawValue,
+            session.currentRoute.outputs.first?.portName ?? "未知",
+            session.outputVolume,
+            session.isOtherAudioPlaying ? "是" : "否",
+            trackCount))
     }
 
     @objc private func playerFinished() {
@@ -421,12 +459,99 @@ final class BKEditorViewController: UIViewController {
     }
 
     @objc private func exportTapped() {
-        let alert = UIAlertController(
-            title: "导出在下一批",
-            message: "先把刀口调对：红色区间就是会删掉的部分。播放校对一遍，确认没有误删，导出功能马上到。",
-            preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "知道了", style: .cancel))
-        present(alert, animated: true)
+        guard let p = project, !isExporting else { return }
+        isExporting = true
+        setButtonsEnabled(false)
+        statusLabel.text = "正在导出…"
+        spinner.startAnimating()
+        let startedAt = Date()
+
+        BKExporter.export(project: p, asset: asset) { [weak self] done, total in
+            guard let self = self else { return }
+            self.statusLabel.text = "正在导出… 第 \(done)/\(total) 段"
+        } completion: { [weak self] result in
+            guard let self = self else { return }
+            self.isExporting = false
+            self.setButtonsEnabled(true)
+            self.spinner.stopAnimating()
+
+            switch result {
+            case .failure(let err):
+                self.statusLabel.text = "导出失败：\(err.localizedDescription)"
+                BKLog.shared.e("导出失败：\(err.localizedDescription)")
+            case .success(let url):
+                let elapsed = Date().timeIntervalSince(startedAt)
+                self.saveToPhotos(url, elapsed: elapsed)
+            }
+        }
+    }
+
+    private func saveToPhotos(_ url: URL, elapsed: Double) {
+        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+
+        func request(_ work: @escaping () -> Void) {
+            PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in
+                DispatchQueue.main.async { work() }
+            }
+        }
+
+        func performSave() {
+            PHPhotoLibrary.shared().performChanges({
+                PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+            }) { [weak self] ok, err in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    if ok {
+                        // 记进导出历史：排障时「哪个文件、多大、耗时多久」全靠它
+                        if var p = self.project {
+                            let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
+                            let size = (attr?[.size] as? Int64) ?? 0
+                            let record = BKExportRecord(id: UUID(),
+                                                        date: Date(),
+                                                        fileSize: size,
+                                                        duration: p.outputDuration,
+                                                        fileName: url.lastPathComponent,
+                                                        elapsedSec: elapsed)
+                            p.exportHistory.append(record)
+                            p.updatedAt = Date()
+                            self.project = p
+                            BKDraftStore.shared.scheduleSave(p)
+                            BKLog.shared.i("成品已存相册 \(record.fileName) · \(record.sizeText) · \(String(format: "%.1f", elapsed))s")
+                        }
+                        self.statusLabel.text = ""
+                        let alert = UIAlertController(
+                            title: "已保存到相册",
+                            message: "成品已存入系统相册，可以直接进剪映。",
+                            preferredStyle: .alert)
+                        alert.addAction(UIAlertAction(title: "好", style: .cancel))
+                        self.present(alert, animated: true)
+                    } else {
+                        let msg = err?.localizedDescription ?? "未知原因"
+                        self.statusLabel.text = "存相册失败：\(msg)"
+                        BKLog.shared.e("存相册失败：\(msg)")
+                    }
+                }
+            }
+        }
+
+        switch status {
+        case .authorized, .limited:
+            performSave()
+        case .notDetermined:
+            request(performSave)
+        default:
+            statusLabel.text = "没有相册写入权限，去系统设置里开"
+        }
+    }
+
+    private func setButtonsEnabled(_ enabled: Bool) {
+        playButton.isEnabled = enabled
+        detectButton.isEnabled = enabled
+        exportButton.isEnabled = enabled
+        thresholdSlider.isEnabled = enabled
+        playButton.alpha = enabled ? 1.0 : 0.5
+        detectButton.alpha = enabled ? 1.0 : 0.5
+        exportButton.alpha = enabled ? 1.0 : 0.5
     }
 
     @objc private func sliderChanged() {
