@@ -45,6 +45,17 @@ targets:
       # release/ 里混着 html / plist / json，不能整目录递归，单独挑这一个
       - path: release/UpdateChecker.swift
 
+    # 显式声明 scheme。Xcode 自动创建的 scheme 存在用户目录里，
+    # 云端无人登录的环境不一定能看到，xcodebuild -scheme 会报「找不到 scheme」——
+    # 与其在 CI 上赌 Xcode 的自动行为，不如写死在这里
+    schemes:
+      BKClip:
+        build:
+          targets:
+            BKClip: all
+        run:
+          config: Release
+
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.benka.bkclip

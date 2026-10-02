@@ -16,6 +16,13 @@ on:
     tags:
       - 'v*'
 
+# 让所有脚本默认带 pipefail：管道里任何一个命令挂了，整步就红。
+# 没有它，xcodebuild 失败会被后面的 tail 吞掉，步骤显示绿色但产物是空的 ——
+# 那种「假成功」比直接红更浪费排查时间
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     # 公开仓库上 macOS runner 免费无限；私有仓库免费额度是 2000 分钟/月，
@@ -30,27 +37,48 @@ jobs:
         run: |
           xcodebuild -version
           sw_vers
+          which brew
 
       - name: 安装 XcodeGen
-        run: brew install xcodegen
+        # HOMEBREW_NO_AUTO_UPDATE=1：跳过 brew 自我更新。CI 上那次更新
+        # 经常一跑一两分钟，甚至因为网络抖动整个步骤挂掉，纯属陪葬
+        run: |
+          set -o pipefail
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen 2>&1 | tail -15
+          xcodegen --version
 
       - name: 生成 Xcode 工程
-        run: xcodegen generate --spec project.yml
+        # 失败时把 project.yml 打出来 —— 十有八九是手滑改坏了某个缩进，
+        # 有原文在手就不用来回猜
+        run: |
+          xcodegen generate --spec project.yml || {
+            echo "::error::XcodeGen 生成失败，project.yml 内容如下："
+            cat -n project.yml
+            exit 1
+          }
+          xcodebuild -list -project BKClip.xcodeproj
 
       # 这一步防护来自真实踩坑：PRODUCT_NAME 一旦写回中文，
       # 打出来的 Payload 里就是「bk剪辑.app」，爱思重签会报「错误码 45」，
       # 而那个提示完全不提中文的事 —— 与其以后花两小时排这个，不如在这里断掉
       - name: 检查 PRODUCT_NAME 必须是纯 ASCII
         run: |
-          NAME=$(grep -m1 'PRODUCT_NAME:' project.yml | awk '{print $2}')
-          echo "PRODUCT_NAME = $NAME"
-          case "$NAME" in
-            BKClip) echo "OK";;
-            *) echo "::error::PRODUCT_NAME 必须是 ASCII 的 BKClip，中文包名会导致爱思签名报错误码 45"; exit 1;;
-          esac
+          NAME=$(grep -m1 '^        PRODUCT_NAME:' project.yml | awk '{print $2}')
+          echo "PRODUCT_NAME = [$NAME]"
+          if [ -z "$NAME" ]; then
+            echo "::error::没从 project.yml 里取到 PRODUCT_NAME，检查缩进是不是变了"
+            exit 1
+          fi
+          if [ "$NAME" != "BKClip" ]; then
+            echo "::error::PRODUCT_NAME 必须是 ASCII 的 BKClip，中文包名会导致爱思签名报错误码 45"
+            exit 1
+          fi
 
       - name: 编译（不签名）
+        # tee 落盘完整日志：失败时只打最后 60 行，但完整版留在文件里
+        # 可以在下一步或者打包前再翻。管道 + pipefail 保证真实退出码不被吞
         run: |
+          set -o pipefail
           xcodebuild \
             -project BKClip.xcodeproj \
             -scheme BKClip \
@@ -61,7 +89,14 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             SWIFT_COMPILATION_MODE=wholemodule \
-            | tail -30
+            2>&1 | tee xcodebuild.log | grep -E "error|warning: |BUILD|note: " | tail -60
+          status=${PIPESTATUS[0]}
+          echo "xcodebuild 退出码 $status"
+          [ "$status" = "0" ] || {
+            echo "====== 失败日志最后 80 行 ======"
+            tail -80 xcodebuild.log
+            exit 1
+          }
 
       # ipa 的本质就是一个 zip：里面一层 Payload，Payload 里一个 .app。
       # 没有别的魔法，这也是为什么它能被爱思拿去重签
