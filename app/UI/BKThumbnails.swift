@@ -30,8 +30,12 @@ enum BKThumbnails {
 
     /// 取缩略图。命中缓存同步回调（便宜），否则异步向 Photos 要一张。
     /// - parameter size: 期望的**点**尺寸，内部会乘屏幕密度
+    /// - parameter networkAllowed: 是否允许联网拉 iCloud 原件。
+    ///   勾选页滚动时传 false（只取本机已缓存的，绝不偷跑流量）；
+    ///   真正点开预览播放时才传 true（BKVideoPreviewViewController 走 loadAVAsset 已允许联网）。
     static func image(localID: String,
                       size: CGSize,
+                      networkAllowed: Bool = false,
                       completion: @escaping (UIImage?) -> Void) {
         let key = localID as NSString
         if let hit = cache.object(forKey: key) {
@@ -45,7 +49,7 @@ enum BKThumbnails {
         let opts = PHImageRequestOptions()
         opts.deliveryMode = .opportunistic      // 先低清再补高清
         opts.resizeMode = .fast
-        opts.isNetworkAccessAllowed = true      // iCloud 上的素材允许拉
+        opts.isNetworkAccessAllowed = networkAllowed   // 滚动缩略图默认 false，不偷拉 iCloud
         let scale = UIScreen.main.scale
         let target = CGSize(width: size.width * scale, height: size.height * scale)
 

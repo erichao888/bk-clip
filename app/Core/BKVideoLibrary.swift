@@ -28,17 +28,15 @@ protocol BKPreviewStopping: AnyObject {
 }
 
 enum BKVideoLibrary {
-    /// 相册里的视频，最新的排前面。上限是性能护栏 —— 几千条素材全列出来
-    /// 既没意义也会拖慢首屏
-    static func videoLocalIDs(limit: Int = 300) -> [String] {
+    /// 相册里的视频，最新的排前面。**不再限制条数**：勾选页用 UICollectionView 复用 cell，
+    /// 几千条也只是多滚几屏，内存由 BKThumbnails 的 NSCache(400) 钉死，撑得住。
+    static func videoLocalIDs() -> [String] {
         let opts = PHFetchOptions()
         opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         let result = PHAsset.fetchAssets(with: .video, options: opts)
-
         var ids: [String] = []
-        result.enumerateObjects { asset, idx, stop in
+        result.enumerateObjects { asset, _, _ in
             ids.append(asset.localIdentifier)
-            if ids.count >= limit { stop.pointee = true }
         }
         return ids
     }

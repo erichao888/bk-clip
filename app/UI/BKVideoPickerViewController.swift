@@ -364,6 +364,8 @@ final class BKVideoPickCell: UICollectionViewCell {
     private let durLabel = UILabel()
     private let circle = UIButton(type: .system)
     private let numLabel = UILabel()
+    /// 云素材占位图标：本机没有缩略图（iCloud 原件未下载）时显示，不偷拉网络
+    private let cloudBadge = UIImageView()
     private var pick = 0
 
     override init(frame: CGRect) {
@@ -404,7 +406,14 @@ final class BKVideoPickCell: UICollectionViewCell {
         numLabel.isUserInteractionEnabled = false
         contentView.addSubview(numLabel)
 
-        for v in [cover, shade, durLabel, circle, numLabel] {
+        // 云占位：iCloud 原件未下载、本机没缩略图时显示（单线条图标，符合工具栏风格）
+        cloudBadge.image = UIImage(systemName: "icloud")
+        cloudBadge.tintColor = UIColor(hex: 0xAEAEB2)
+        cloudBadge.contentMode = .center
+        cloudBadge.isHidden = true
+        contentView.addSubview(cloudBadge)
+
+        for v in [cover, shade, durLabel, circle, numLabel, cloudBadge] {
             v.translatesAutoresizingMaskIntoConstraints = false
         }
         NSLayoutConstraint.activate([
@@ -427,7 +436,12 @@ final class BKVideoPickCell: UICollectionViewCell {
             circle.heightAnchor.constraint(equalToConstant: 24),
 
             numLabel.centerXAnchor.constraint(equalTo: circle.centerXAnchor),
-            numLabel.centerYAnchor.constraint(equalTo: circle.centerYAnchor)
+            numLabel.centerYAnchor.constraint(equalTo: circle.centerYAnchor),
+
+            cloudBadge.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            cloudBadge.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            cloudBadge.widthAnchor.constraint(equalToConstant: 30),
+            cloudBadge.heightAnchor.constraint(equalToConstant: 30)
         ])
 
         // 整格点击 = 预览。小圆圈盖在上面，它的点击优先（后加的子视图在上层）
@@ -440,9 +454,18 @@ final class BKVideoPickCell: UICollectionViewCell {
     func setID(_ id: String) {
         lastID = id
         durLabel.text = BKVideoLibrary.formatDuration(BKVideoLibrary.duration(localID: id))
-        BKThumbnails.image(localID: id, size: CGSize(width: 200, height: 200)) { [weak self] img in
+        cover.image = nil
+        cloudBadge.isHidden = true
+        // 滚动时只取本机已缓存缩略图（networkAllowed:false），绝不偷拉 iCloud 原件流量；
+        // 本机没有缩略图（云上未下载）就给云占位图标
+        BKThumbnails.image(localID: id, size: CGSize(width: 200, height: 200), networkAllowed: false) { [weak self] img in
             guard let self = self, self.lastID == id else { return }
-            self.cover.image = img
+            if let img = img {
+                self.cover.image = img
+                self.cloudBadge.isHidden = true
+            } else {
+                self.cloudBadge.isHidden = false
+            }
         }
         applyPick()
     }
@@ -483,6 +506,7 @@ final class BKVideoPickCell: UICollectionViewCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         cover.image = nil
+        cloudBadge.isHidden = true
         onToggle = nil
         onPreview = nil
         lastID = ""
