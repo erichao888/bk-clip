@@ -75,7 +75,7 @@ targets:
         # 不参与文件路径，中文随便用
         PRODUCT_NAME: BKClip
         CFBundleName: BKClip
-        MARKETING_VERSION: "1.2.4"
+        MARKETING_VERSION: "1.2.5"
         CURRENT_PROJECT_VERSION: "1"
         CODE_SIGN_STYLE: Automatic
         # 换成你自己的 Team ID 更稳；留 AUTO 就让 Xcode 自己去猜有时会挑错证书
