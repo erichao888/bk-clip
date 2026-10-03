@@ -250,7 +250,11 @@ final class BKRootViewController: UIViewController {
         picker.onDone = { [weak self] ids in
             self?.dismiss(animated: true) { self?.handleImported(ids: ids) }
         }
-        present(picker, animated: true) {
+        // 套一层导航控制器：勾选页才有真导航条 —— 左上「返回」按钮、标题、右上已选角标都显示出来；
+        // 下滑关闭手势依旧可用，返回按钮只是更省事（不必先滚到列表最顶）。
+        let nav = UINavigationController(rootViewController: picker)
+        nav.modalPresentationStyle = .pageSheet
+        present(nav, animated: true) {
             BKLog.shared.i("presentPicker：present 动画完成，勾选页已上台")
         }
         BKLog.shared.i("presentPicker：present 已发出")

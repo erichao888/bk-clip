@@ -102,6 +102,12 @@ final class BKVideoPickerViewController: UIViewController {
         countButton.addTarget(self, action: #selector(filterTapped), for: .touchUpInside)
         navigationItem.rightBarButtonItem = UIBarButtonItem(customView: countButton)
 
+        // 左上角：返回（关闭勾选页）。点一下直接 dismiss，不必先滚到列表最顶再下滑
+        let back = UIBarButtonItem(image: UIImage(systemName: "chevron.left"),
+                                   style: .plain, target: self, action: #selector(closeTapped))
+        back.tintColor = BKTheme.Color.text
+        navigationItem.leftBarButtonItem = back
+
         // 底部：确认条
         footer.backgroundColor = BKTheme.Color.bar
         view.addSubview(footer)
@@ -120,7 +126,7 @@ final class BKVideoPickerViewController: UIViewController {
             v.translatesAutoresizingMaskIntoConstraints = false
         }
         NSLayoutConstraint.activate([
-            grid.topAnchor.constraint(equalTo: view.topAnchor),
+            grid.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             grid.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             grid.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             grid.bottomAnchor.constraint(equalTo: footer.topAnchor),
@@ -244,6 +250,17 @@ final class BKVideoPickerViewController: UIViewController {
     @objc private func doneTapped() {
         guard !picked.isEmpty else { return }
         onDone?(picked)
+    }
+
+    /// 左上角返回：点一下直接 dismiss 整个 modal（外面包了 UINavigationController，
+    /// dismiss self 会带着导航栏一起收掉），不必先滚到列表最顶再下滑返回
+    @objc private func closeTapped() {
+        dismiss(animated: true) { [weak self] in
+            // 收尾清一下预览，防残留
+            BKVideoLibrary.stopPreview()
+            BKLog.shared.i("勾选页 closeTapped：已 dismiss")
+            _ = self
+        }
     }
 }
 
