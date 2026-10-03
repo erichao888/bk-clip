@@ -141,7 +141,8 @@ final class BKVideoPickerViewController: UIViewController {
     // MARK: - 素材库
 
     private func loadLibrary() {
-        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        // 避开 .readWrite（PHAccessLevel / iOS 16+）— 否则 iOS 15 设备上 + 打不开页面
+        let status = PHPhotoLibrary.authorizationStatus()
         guard status == .authorized || status == .limited else {
             showDenied()
             return

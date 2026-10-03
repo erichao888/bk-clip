@@ -183,12 +183,17 @@ final class BKRootViewController: UIViewController {
     // MARK: - 导入
 
     @objc private func importTapped() {
-        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        // ⚠️ 用基础 API（无参），别用 authorizationStatus(for: .readWrite)：
+        // .readWrite 是 PHAccessLevel，iOS 16 才有的类型。本 App 部署目标 15.0，
+        // 写在 iOS 15 真机上 = 未识别选择器，一点 + 就崩（v1.2.6 修的 + 打不开）。
+        // 无参 authorizationStatus() 自 iOS 8 就在，返回的 PHAuthorizationStatus
+        // 同样含 .limited，逻辑不变。
+        let status = PHPhotoLibrary.authorizationStatus()
         switch status {
         case .authorized, .limited:
             presentPicker()
         case .notDetermined:
-            PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] newStatus in
+            PHPhotoLibrary.requestAuthorization { [weak self] newStatus in
                 DispatchQueue.main.async {
                     if newStatus == .authorized || newStatus == .limited {
                         self?.presentPicker()
@@ -565,11 +570,12 @@ extension BKRootViewController {
             }
         }
 
-        switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
+        // 同样避开 .addOnly（PHAccessLevel / iOS 16+），用无参基础 API，15/16 通吃
+        switch PHPhotoLibrary.authorizationStatus() {
         case .authorized, .limited:
             work()
         case .notDetermined:
-            PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in DispatchQueue.main.async { work() } }
+            PHPhotoLibrary.requestAuthorization { _ in DispatchQueue.main.async { work() } }
         default:
             completion(false)
         }
