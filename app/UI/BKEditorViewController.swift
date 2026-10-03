@@ -473,13 +473,24 @@ final class BKEditorViewController: UIViewController {
         statusBar.translatesAutoresizingMaskIntoConstraints = false
         // 提示文案必须完整显示，竖直方向不可被压缩
         statusLabel.setContentCompressionResistancePriority(.required, for: .vertical)
+        // 小屏竖向预算不够时宁可让内容栈向下溢出、也不能把提示文字压扁：
+        // 状态栏是视图最上层 + 垫一层页面底色，溢出内容从它底下穿过被盖住，
+        // 黄字永远完整可读（之前被上下削半截 = 约束打架时 Auto Layout 断了文字的抗压）
+        statusLabel.backgroundColor = BKTheme.Color.page
+        statusBar.backgroundColor = BKTheme.Color.page
+
+        // 内容栈底 ≤ 状态栏顶，优先级 999（全场最低，约束打架时第一个断它）：
+        // 竖向预算够时二者照常互不重叠；不够时内容栈向下溢出，保住状态栏文字完整
+        let stackUnderStatus = stack.bottomAnchor.constraint(
+            lessThanOrEqualTo: statusBar.topAnchor, constant: -BKTheme.Space.md)
+        stackUnderStatus.priority = UILayoutPriority(999)
 
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: BKTheme.Space.lg),
             stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -BKTheme.Space.lg),
             stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: BKTheme.Space.sm),
             // 内容栈底部接到状态栏顶部，把状态栏「顶」在工具栏上方，二者互不重叠
-            stack.bottomAnchor.constraint(equalTo: statusBar.topAnchor, constant: -BKTheme.Space.md),
+            stackUnderStatus,
 
             statusBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: BKTheme.Space.lg),
             statusBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -BKTheme.Space.lg),
@@ -549,8 +560,9 @@ final class BKEditorViewController: UIViewController {
         toolbar.axis = .vertical
         toolbar.spacing = BKTheme.Space.sm
         toolbar.alignment = .fill
-        // 不要灰色底框：透明背景、无圆角，按钮直接贴内容区左右边(16pt)，更紧凑
-        toolbar.backgroundColor = .clear
+        // 不要灰色底框：无圆角，按钮直接贴内容区左右边(16pt)，更紧凑。
+        // 底色用页面色而非透明：小屏内容栈溢出时穿过工具栏区，页面色能把它盖住
+        toolbar.backgroundColor = BKTheme.Color.page
         toolbar.layer.cornerRadius = 0
         toolbar.isLayoutMarginsRelativeArrangement = false
         return toolbar
