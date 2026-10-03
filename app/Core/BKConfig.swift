@@ -22,9 +22,15 @@ enum BKConfig {
 
     // MARK: - 版本
 
-    /// 展示版本号，必须和 release/version.json 的 version 保持一致
-    static let appVersion = "1.0.0"
-    static let buildNumber = 1
+    /// 展示版本号。**唯一真源是 project.yml 的 MARKETING_VERSION**，经 Info.plist 注入后
+    /// 在这里从 Bundle 读出——不再写死字面量（v1.2.3 前写死 "1.0.0"，草稿页一直显示假版本号）。
+    /// 若取不到（理论上不会）回落 "1.0.0" 兜底。
+    static let appVersion =
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
+            ?? "1.0.0"
+    /// build 号，同上读 CURRENT_PROJECT_VERSION
+    static let buildNumber =
+        Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 1
 
     // MARK: - 气口检测参数
     //

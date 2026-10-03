@@ -146,7 +146,7 @@ final class BKRootViewController: UIViewController {
         grid.isHidden = batches.isEmpty
         grid.reloadData()
         navigationItem.rightBarButtonItem?.isEnabled = !batches.isEmpty
-        versionLabel.text = "v\(BKConfig.appVersion) · 已导出 \(BKDraftStore.shared.totalExportCount) 条"
+        versionLabel.text = "BK剪辑 专剪口播 v\(BKConfig.appVersion) · 已导出 \(BKDraftStore.shared.totalExportCount) 条"
     }
 
     // MARK: - 打开草稿
