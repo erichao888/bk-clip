@@ -141,10 +141,14 @@ final class BKVideoPickerViewController: UIViewController {
     // MARK: - 素材库
 
     private func loadLibrary() {
-        // 避开 .readWrite（PHAccessLevel / iOS 16+）— 否则 iOS 15 设备上 + 打不开页面
-        let status = PHPhotoLibrary.authorizationStatus()
+        // iOS 16+ 用现代 authorizationStatus(for: .readWrite)，老式无参回调在 iOS 26 不触发
+        let status: PHAuthorizationStatus = {
+            if #available(iOS 16.0, *) { return PHPhotoLibrary.authorizationStatus(for: .readWrite) }
+            return PHPhotoLibrary.authorizationStatus()
+        }()
         guard status == .authorized || status == .limited else {
-            showDenied()
+            // 没权限：自己再拉一次授权（双保险，防根页的拉授权在某些系统上没生效）
+            requestAccessThenLoad()
             return
         }
         allIDs = BKVideoLibrary.videoLocalIDs()
@@ -153,6 +157,25 @@ final class BKVideoPickerViewController: UIViewController {
             showEmpty()
         }
         BKLog.shared.i("勾选页载入 \(allIDs.count) 条视频")
+    }
+
+    /// 没权限时拉授权，回调触发后再决定是否载入（现代 API，确保 iOS 26 上回调会来）
+    private func requestAccessThenLoad() {
+        let decide: (PHAuthorizationStatus) -> Void = { [weak self] s in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if s == .authorized || s == .limited {
+                    self.loadLibrary()
+                } else {
+                    self.showDenied()
+                }
+            }
+        }
+        if #available(iOS 16.0, *) {
+            PHPhotoLibrary.requestAuthorization(for: .readWrite) { decide($0) }
+        } else {
+            PHPhotoLibrary.requestAuthorization { decide($0) }
+        }
     }
 
     private func showDenied() {

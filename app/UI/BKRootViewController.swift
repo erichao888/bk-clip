@@ -183,27 +183,44 @@ final class BKRootViewController: UIViewController {
     // MARK: - 导入
 
     @objc private func importTapped() {
-        // ⚠️ 用基础 API（无参），别用 authorizationStatus(for: .readWrite)：
-        // .readWrite 是 PHAccessLevel，iOS 16 才有的类型。本 App 部署目标 15.0，
-        // 写在 iOS 15 真机上 = 未识别选择器，一点 + 就崩（v1.2.6 修的 + 打不开）。
-        // 无参 authorizationStatus() 自 iOS 8 就在，返回的 PHAuthorizationStatus
-        // 同样含 .limited，逻辑不变。
-        let status = PHPhotoLibrary.authorizationStatus()
+        // 真因（v1.2.7）：16 Pro 上 +「完全没反应」—— 15PM 早授权过走 authorized 直开页，
+        // 16 Pro 首次走 notDetermined，而老式无参 requestAuthorization 的回调在
+        // iOS 26 上不触发（v1.2.6 的「无参」改法反而没修好）。
+        // 必须用现代 requestAuthorization(for: .readWrite)（iOS 16+，两台真机都是），
+        // 用 @available 包一层保 15 编译。
+        let status = Self.photoAuthStatus()
         switch status {
         case .authorized, .limited:
             presentPicker()
         case .notDetermined:
-            PHPhotoLibrary.requestAuthorization { [weak self] newStatus in
-                DispatchQueue.main.async {
-                    if newStatus == .authorized || newStatus == .limited {
-                        self?.presentPicker()
-                    } else {
-                        self?.showPermissionDenied()
-                    }
-                }
+            Self.requestPhotoAccess { [weak self] granted in
+                if granted { self?.presentPicker() } else { self?.showPermissionDenied() }
             }
         default:
             showPermissionDenied()
+        }
+    }
+
+    // MARK: - 相册权限（iOS 16+ 用现代 API，老式无参回调在 iOS 26 上不触发）
+
+    private static func photoAuthStatus() -> PHAuthorizationStatus {
+        if #available(iOS 16.0, *) {
+            return PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        } else {
+            return PHPhotoLibrary.authorizationStatus()
+        }
+    }
+
+    private static func requestPhotoAccess(then: @escaping (Bool) -> Void) {
+        let decide: (PHAuthorizationStatus) -> Void = { s in then(s == .authorized || s == .limited) }
+        if #available(iOS 16.0, *) {
+            PHPhotoLibrary.requestAuthorization(for: .readWrite) { st in
+                DispatchQueue.main.async { decide(st) }
+            }
+        } else {
+            PHPhotoLibrary.requestAuthorization { st in
+                DispatchQueue.main.async { decide(st) }
+            }
         }
     }
 
@@ -570,12 +587,14 @@ extension BKRootViewController {
             }
         }
 
-        // 同样避开 .addOnly（PHAccessLevel / iOS 16+），用无参基础 API，15/16 通吃
-        switch PHPhotoLibrary.authorizationStatus() {
+        // 用现代 API（#available iOS16 包住，15 回落无参），避免 iOS 26 上回调不触发
+        switch Self.photoAuthStatus() {
         case .authorized, .limited:
             work()
         case .notDetermined:
-            PHPhotoLibrary.requestAuthorization { _ in DispatchQueue.main.async { work() } }
+            Self.requestPhotoAccess { granted in
+                if granted { work() } else { completion(false) }
+            }
         default:
             completion(false)
         }
