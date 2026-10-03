@@ -226,10 +226,12 @@ final class BKVideoPreviewViewController: UIViewController, BKPreviewStopping {
             self.player.replaceCurrentItem(with: item)
             self.player.play()
             self.slider.value = 0
-            // UISlider.value 是 Float，CMTimeGetSeconds 给的是 Double —— 必须转，
-            // 否则 "cannot assign Float64 to Float"
-            let totalSec = CMTimeGetSeconds(item.asset.duration)
-            self.slider.maximumValue = totalSec.isFinite ? Float(totalSec) : 1
+            // 滑条刻度统一用「比例 0…1」，三处必须同一套单位：
+            // 进度回调写 slider.value = cur/total（比例）、拖动回调读 t = slider.value*total（反推秒）、这里定刻度。
+            // 之前刻度设成总秒数（0…7）、进度却写比例 —— 5s/7s=0.71 落在 0…7 刻度上只走 10%，
+            // 滑块永远贴着左端（v1.2.14 修，时间码不走滑条所以一直是对的）
+            self.slider.minimumValue = 0
+            self.slider.maximumValue = 1
             self.playIcon.isHidden = true
             self.installPeriodicTime()
         }
