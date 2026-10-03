@@ -32,8 +32,5 @@ Thumbs.db
 # 日志文件
 *.log
 
-# 例外：未签名 ipa 经皓哥明确要求进仓库，方便随时 `git pull` 拉取安装
-# （云上 Actions artifact 也能下，但进仓库更省事；单包 ~300KB，体积可接受）
-# 只放行 releases/ 下的 ipa，build/ 仍按上面的规则忽略
-!releases/
-!releases/*.ipa
+# ipa 二进制绝不进 git（v1.2.8 踩坑：进 git 后 push 触发代理 408 超时）。
+# 未签名 ipa 只作为 GitHub Release 附件分发，不入库；release/ 目录下的其余说明文档照常跟踪。

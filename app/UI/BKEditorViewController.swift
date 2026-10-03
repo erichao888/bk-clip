@@ -446,16 +446,18 @@ final class BKEditorViewController: UIViewController {
         spinner.hidesWhenStopped = true
         spinner.color = BKTheme.Color.gold
 
-        let statusRow = UIStackView(arrangedSubviews: [statusLabel, spinner])
-        statusRow.axis = .horizontal
-        statusRow.spacing = BKTheme.Space.sm
-        statusRow.alignment = .center
+        // 导出/进度提示做成一条独立状态栏，固定贴在工具栏正上方，不再放进可压缩的内容栈。
+        // 这样无论上方内容多高，提示区永远不会被底部工具栏遮住（16/16 Pro 小屏最容易触发遮挡）。
+        let statusBar = UIStackView(arrangedSubviews: [statusLabel, spinner])
+        statusBar.axis = .horizontal
+        statusBar.spacing = BKTheme.Space.sm
+        statusBar.alignment = .center
 
-        // 顺序照定稿第 4 节：列表 → 画面 → 数字行 → 主轨道 → 概览 → 阈值 → 状态
+        // 顺序照定稿第 4 节：列表 → 画面 → 数字行 → 主轨道 → 概览 → 阈值
         let filler = UIView()
         let stack = UIStackView(arrangedSubviews: [
             listPanel, previewContainer, statsRow, trackContainer,
-            overview, thresholdRow, statusRow, filler
+            overview, thresholdRow, filler
         ])
         stack.axis = .vertical
         stack.spacing = BKTheme.Space.lg
@@ -463,14 +465,23 @@ final class BKEditorViewController: UIViewController {
 
         view.addSubview(stack)
         view.addSubview(toolbar)
+        view.addSubview(statusBar)
         stack.translatesAutoresizingMaskIntoConstraints = false
         toolbar.translatesAutoresizingMaskIntoConstraints = false
+        statusBar.translatesAutoresizingMaskIntoConstraints = false
+        // 提示文案必须完整显示，竖直方向不可被压缩
+        statusLabel.setContentCompressionResistancePriority(.required, for: .vertical)
 
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: BKTheme.Space.lg),
             stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -BKTheme.Space.lg),
             stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: BKTheme.Space.sm),
-            stack.bottomAnchor.constraint(equalTo: toolbar.topAnchor, constant: -BKTheme.Space.md),
+            // 内容栈底部接到状态栏顶部，把状态栏「顶」在工具栏上方，二者互不重叠
+            stack.bottomAnchor.constraint(equalTo: statusBar.topAnchor, constant: -BKTheme.Space.md),
+
+            statusBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: BKTheme.Space.lg),
+            statusBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -BKTheme.Space.lg),
+            statusBar.bottomAnchor.constraint(equalTo: toolbar.topAnchor, constant: -BKTheme.Space.md),
 
             previewContainer.heightAnchor.constraint(equalToConstant: previewH),
             trackContainer.heightAnchor.constraint(equalToConstant: trackH),
@@ -512,6 +523,8 @@ final class BKEditorViewController: UIViewController {
         row1.axis = .horizontal
         row1.spacing = BKTheme.Space.sm
         row1.alignment = .center
+        // 均分可用宽度：7 个按钮在任何屏宽下都平分 row1 内部空间，永不溢出挤压
+        row1.distribution = .fillEqually
         // 组间 16 = 默认 8 再补 8
         row1.setCustomSpacing(BKTheme.Space.lg, after: redoButton)
         row1.setCustomSpacing(BKTheme.Space.lg, after: playButton)
@@ -557,9 +570,11 @@ final class BKEditorViewController: UIViewController {
         button.layer.borderColor = BKTheme.Color.line.cgColor
         button.clipsToBounds = true
         button.addTarget(self, action: action, for: .touchUpInside)
+        // 正方形靠「高 = 宽」保持正圆；宽度不写死，交给 row1 的 fillEqually 按可用宽度均分。
+        // 这样 7 个按钮在 15 PM(430pt) 上仍是 44pt，在 16/16 Pro(390/402pt) 上自动缩到
+        // 约 38/40pt，不会被 UIStackView 挤成一团（定稿要求窄屏按钮也不能挤压变形）。
         NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: BKTheme.Button.size),
-            button.heightAnchor.constraint(equalToConstant: BKTheme.Button.size)
+            button.heightAnchor.constraint(equalTo: button.widthAnchor)
         ])
     }
 
