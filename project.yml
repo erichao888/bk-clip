@@ -75,7 +75,7 @@ targets:
         # 不参与文件路径，中文随便用
         PRODUCT_NAME: BKClip
         CFBundleName: BKClip
-        MARKETING_VERSION: "1.2.3"
+        MARKETING_VERSION: "1.2.4"
         CURRENT_PROJECT_VERSION: "1"
         CODE_SIGN_STYLE: Automatic
         # 换成你自己的 Team ID 更稳；留 AUTO 就让 Xcode 自己去猜有时会挑错证书
@@ -88,6 +88,11 @@ targets:
       path: app/Info.plist
       properties:
         CFBundleDisplayName: "bk剪辑"
+        # 版本号必须走变量：XcodeGen 生成 Info.plist 时默认写字面量 "1.0"，
+        # 物理 plist 一旦存在，settings 里的 MARKETING_VERSION 就不生效（v1.2.3 踩坑）。
+        # 用 $(...) 变量让 xcodebuild 编译时解析成 project.yml settings 的真值
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleName: BKClip
 
         # ---- App 图标 ----
