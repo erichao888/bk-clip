@@ -188,13 +188,30 @@ final class BKRootViewController: UIViewController {
         // iOS 26 上不触发（v1.2.6 的「无参」改法反而没修好）。
         // 必须用现代 requestAuthorization(for: .readWrite)（iOS 16+，两台真机都是），
         // 用 @available 包一层保 15 编译。
+        // v1.2.8：16Pro/iOS26.6 上 v1.2.7 依旧没反应——整条链路埋 BKLog + 看门狗兜底。
+        BKLog.shared.i("+ 点击：进入 importTapped，photoAuthStatus=\(Self.photoAuthStatus().rawValue)")
         let status = Self.photoAuthStatus()
         switch status {
         case .authorized, .limited:
+            BKLog.shared.i("+ 点击：已授权，直接开勾选页")
             presentPicker()
         case .notDetermined:
+            BKLog.shared.i("+ 点击：notDetermined，发起系统授权请求")
             Self.requestPhotoAccess { [weak self] granted in
+                BKLog.shared.i("+ 授权：回调触发 granted=\(granted)")
                 if granted { self?.presentPicker() } else { self?.showPermissionDenied() }
+            }
+            // 看门狗：3 秒后回调没来、系统也没弹任何窗（比如授权对话框挂着就不算），
+            // 主动弹「去设置」指路 —— iOS 26 上系统授权弹窗偶发不弹，别让用户干等
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let self = self else { return }
+                let now = Self.photoAuthStatus()
+                let systemShowing = self.presentedViewController != nil
+                BKLog.shared.i("+ 看门狗：3s后 status=\(now.rawValue) 系统有弹窗=\(systemShowing)")
+                if now == .notDetermined && !systemShowing {
+                    BKLog.shared.w("+ 看门狗：授权请求 3 秒无回调且系统未弹窗，走手动指路")
+                    self.showPermissionDenied()
+                }
             }
         default:
             showPermissionDenied()
@@ -225,6 +242,7 @@ final class BKRootViewController: UIViewController {
     }
 
     private func presentPicker() {
+        BKLog.shared.i("presentPicker：开始构建勾选页")
         // 自建勾选页，不走系统 PHPicker（定稿 6.1）：
         // 系统选择器没有「点圈选 / 点圈外当场预览」这套手势，挑素材时
         // 看不到片段对不对，只能选完再退出去看一遍。
@@ -232,7 +250,10 @@ final class BKRootViewController: UIViewController {
         picker.onDone = { [weak self] ids in
             self?.dismiss(animated: true) { self?.handleImported(ids: ids) }
         }
-        present(picker, animated: true)
+        present(picker, animated: true) {
+            BKLog.shared.i("presentPicker：present 动画完成，勾选页已上台")
+        }
+        BKLog.shared.i("presentPicker：present 已发出")
     }
 
     /// 一次导入 = 建一个批。批里每条先把时长和名字记下来，

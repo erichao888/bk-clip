@@ -58,6 +58,7 @@ final class BKVideoPickerViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        BKLog.shared.i("勾选页：viewDidLoad 进来")
         view.backgroundColor = BKTheme.Color.page
         title = "选视频"
         setupUI()
@@ -148,10 +149,13 @@ final class BKVideoPickerViewController: UIViewController {
         }()
         guard status == .authorized || status == .limited else {
             // 没权限：自己再拉一次授权（双保险，防根页的拉授权在某些系统上没生效）
+            BKLog.shared.i("勾选页 loadLibrary：status=\(status.rawValue) 未授权，发起授权请求")
             requestAccessThenLoad()
             return
         }
+        BKLog.shared.i("勾选页 loadLibrary：status=\(status.rawValue)，开始取视频列表")
         allIDs = BKVideoLibrary.videoLocalIDs()
+        BKLog.shared.i("勾选页 loadLibrary：拿到 \(allIDs.count) 条")
         grid.reloadData()
         if allIDs.isEmpty {
             showEmpty()
