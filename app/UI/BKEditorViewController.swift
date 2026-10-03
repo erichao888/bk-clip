@@ -360,10 +360,9 @@ final class BKEditorViewController: UIViewController {
     // MARK: - 布局
 
     private func setupUI() {
-        // ---- 预览画面：高度按素材横竖自适应（定稿 4.3）----
-        let previewH = BKConfig.Layout.previewHeight(displayW: probeInfo.displayWidth,
-                                                     displayH: probeInfo.displayHeight)
-        let trackH = BKConfig.Layout.trackHeight(previewH: previewH)
+        // ---- 预览画面：固定高度框，横竖屏都 letterbox 进这个区域（定稿 4.3 修订）----
+        let previewH = BKConfig.Layout.previewFixedH
+        let trackH = BKConfig.Layout.trackFixedH
 
         previewContainer.backgroundColor = BKTheme.Color.preview
         previewContainer.layer.cornerRadius = BKTheme.Radius.card
@@ -413,6 +412,8 @@ final class BKEditorViewController: UIViewController {
         statsRow.axis = .horizontal
         statsRow.spacing = BKTheme.Space.md
         statsRow.alignment = .center
+        // 时间码数字行必须完整显示：竖直方向设为最高抗压，内容超高时让阈值行/留白去吸收，而不是压没它
+        statsRow.setContentCompressionResistancePriority(.required, for: .vertical)
 
         // ---- 阈值行 + 恢复自动按钮（定稿 4.7.1）----
         thresholdTitle.font = BKTheme.Font.mono
@@ -460,7 +461,8 @@ final class BKEditorViewController: UIViewController {
             overview, thresholdRow, filler
         ])
         stack.axis = .vertical
-        stack.spacing = BKTheme.Space.lg
+        // 紧凑：相邻控件统一 8pt（空白1=画面↔数字行↔主轨道、空白2=主轨道↔概览 都收到 8pt）
+        stack.spacing = BKTheme.Space.sm
         stack.alignment = .fill
 
         view.addSubview(stack)
@@ -547,11 +549,10 @@ final class BKEditorViewController: UIViewController {
         toolbar.axis = .vertical
         toolbar.spacing = BKTheme.Space.sm
         toolbar.alignment = .fill
-        toolbar.backgroundColor = BKTheme.Color.bar
-        toolbar.layer.cornerRadius = BKTheme.Radius.card
-        toolbar.isLayoutMarginsRelativeArrangement = true
-        // 上 10 / 下 10 / 左右 13 → 10 + 44 + 8 + 28 + 10 = 100，正好是定稿里的高度
-        toolbar.layoutMargins = UIEdgeInsets(top: 10, left: 13, bottom: 10, right: 13)
+        // 不要灰色底框：透明背景、无圆角，按钮直接贴内容区左右边(16pt)，更紧凑
+        toolbar.backgroundColor = .clear
+        toolbar.layer.cornerRadius = 0
+        toolbar.isLayoutMarginsRelativeArrangement = false
         return toolbar
     }
 

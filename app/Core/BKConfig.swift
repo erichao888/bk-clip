@@ -213,38 +213,18 @@ enum BKConfig {
         static let redoLimit = 1
     }
 
-    // MARK: - 编辑页几何（定稿 4.3 / 4.5.3）
+    // MARK: - 编辑页几何（定稿 4.3 / 4.5.3 修订：预览与主轨道改为固定高度）
     //
-    // 预览区和主轨道是此消彼长的一对：画面矮了省出来的空间全部补给轨道，
-    // 这样屏幕上不会留一块难看的空白。改任何一个数都要重跑
-    // tools/render_layout_preview.py 验三种比例。
+    // 预览区、主轨道都锁成固定值：横屏 / 竖屏素材都进同一个固定框里 letterbox 显示
+    //（AVPlayerLayer 用 .resizeAspect），不再随素材比例拉伸、挤压下方区域、或压没时间码。
 
     enum Layout {
-        /// 内容区宽（定稿里的 398 = 屏宽 430 − 左右各 16）
-        static let contentWidth: CGFloat = 398
-        /// 预览区高度下限：横版素材再扁也不许低于它
-        static let previewMinH: CGFloat = 200
-        /// 预览区高度上限：竖版素材再长也不许超过它 ——
-        /// 这就是皓哥说的「不许挤压下面的区域太多」
-        static let previewMaxH: CGFloat = 350
-        /// 主轨道基准高度：预览区正好 310 时轨道就是这个数
-        static let trackBaseH: CGFloat = 170
-        static let trackRefH: CGFloat = 310
-        static let trackMinH: CGFloat = 130
-        static let trackMaxH: CGFloat = 300
-
-        /// 预览区高度。比例必须来自 BKAssetProbe 的**显示尺寸**
-        static func previewHeight(displayW: Double, displayH: Double) -> CGFloat {
-            guard displayW > 0, displayH > 0 else { return previewMinH }
-            let raw = contentWidth / CGFloat(displayW / displayH)
-            return min(max(raw, previewMinH), previewMaxH)
-        }
-
-        /// 主轨道高度：预览区省出来的空间全给它
-        static func trackHeight(previewH: CGFloat) -> CGFloat {
-            let raw = trackBaseH + (trackRefH - previewH)
-            return min(max(raw, trackMinH), trackMaxH)
-        }
+        /// 预览区固定高度。取自皓哥截图上的实际大小（原 previewMaxH=350），
+        /// 横竖屏都进这个框，多余部分黑边留白。
+        static let previewFixedH: CGFloat = 350
+        /// 主轨道固定高度。与预览区一起锁死，配合 8pt 紧凑间距，
+        /// 在 16(844pt 高) / 16 Pro(874pt 高) 上都能放下，数字行（时间码）不再被压没。
+        static let trackFixedH: CGFloat = 140
 
         /// 轨道拖到头之后再拽多少 pt 才换素材（定稿 4.5.3）
         static let siblingPullThreshold: CGFloat = 60
