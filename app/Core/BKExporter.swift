@@ -330,21 +330,19 @@ enum BKExporter {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
 
         // 视频必须重编码：MP4 容器不接受原始比特流直通（nil 会被 canAdd 拒掉）
-        // ⚠️ v1.4.7 崩溃防御：H.264 编码器对**尺寸与 transform 不匹配**是直接崩的
-        // （不是 canAdd 返回 false，是进程死掉）。这里下断言式检查，
-        // 不匹配就退回「关掉 transform」的保守写法 —— 宁可方向不对，也不能崩。
-        let transformSwapsAxes = abs(compTransform.b) > 0.001 || abs(compTransform.c) > 0.001
-        let writeIsLandscape = finalPlan.writeSize.width > finalPlan.writeSize.height
-        let transformMismatch = transformSwapsAxes == writeIsLandscape
-        let appliedTransform: CGAffineTransform = transformMismatch
-            ? CGAffineTransform.identity
-            : compTransform
-        if transformMismatch {
-            BKLog.shared.w(String(format:
-                "⚠️ 尺寸与 transform 不匹配（写入 %d×%d，transform %@）→ 本次不套 transform，成品朝向可能不正",
-                Int(finalPlan.writeSize.width), Int(finalPlan.writeSize.height),
-                transformSwapsAxes ? "旋转90°" : "无旋转"))
-        }
+        // ✅ v1.4.7 写反了判断，v1.4.8 删掉。
+        //
+        // v1.4.7 我以为「写入 1920×1080 + transform 旋转 90°」是矛盾，
+        // 于是「安全降级」成不套 transform —— **判断反了**。
+        //
+        // 竖拍素材的**正确**组合恰恰就是：
+        //     存储尺寸 1920×1080（横，传感器原生）+ transform 旋转 90° → 显示 1080×1920（竖）
+        // 这就是项目铁律「**存的横着，看的竖着，transform 一次都不能少**」。
+        //
+        // 真机日志（21:11:56）证明：加了那个「防御」之后照样崩 ——
+        // 因为不套 transform 反而让像素与朝向真的对不上了。
+        // **防御不能建立在错误的判断上**，宁可不做。
+        let appliedTransform = compTransform
 
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
@@ -353,14 +351,35 @@ enum BKExporter {
             AVVideoHeightKey: Int(finalPlan.writeSize.height),
             AVVideoCompressionPropertiesKey: [
                 AVVideoAverageBitRateKey: bitrate,
+                // ⚠️⚠️ **v1.4.8 崩溃真凶之二**（21:11:56 真机日志）
+                //
+                // 成功的两次（18:29 / 18:47）：源 30fps → outFps **30**（整数）
+                // 崩溃的这次：源 59.95fps，规格选 60 → outFps = **59.95**（非整数）
+                //
+                // `AVVideoExpectedSourceFrameRateKey` 传非整数 + `AVVideoAllowFrameReorderingKey: true`
+                // （开 B 帧）这个组合，H.264 编码器在 iOS 26.x 上**直接崩进程**。
+                //
+                // 正解：**一律传整数**。iPhone 拍摄常见 59.94/59.96（29.97 的倍数），
+                // 归到最近的整数档（60）即可 —— 差 0.05fps 肉眼与播放器都无感。
                 AVVideoMaxKeyFrameIntervalKey: max(1, Int(round(finalPlan.fps))),
-                AVVideoExpectedSourceFrameRateKey: finalPlan.fps,
+                AVVideoExpectedSourceFrameRateKey: max(1, Int(round(finalPlan.fps))),
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                // B 帧重排序：v1.2.x 曾因它导致「画面滞后于声音」，
+                // 但那是实时模式的问题；离线精确模式下开着是安全的。
                 AVVideoAllowFrameReorderingKey: true
             ] as [String: Any]
         ]
 
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+
+        // ⚠️ v1.4.8 加诊断：崩溃都发生在这几行之后（初始化/加入/启动）。
+        // 把关键参数全打出来，下次万一还崩，看日志最后一条就知道卡在哪一步。
+        BKLog.shared.i(String(format:
+            "导出诊断：transform=(%.2f,%.2f,%.2f,%.2f,%.2f,%.2f) 写入 %dx%d 帧率 %.3f→%d 码率 %d bps",
+            compTransform.a, compTransform.b, compTransform.c,
+            compTransform.d, compTransform.tx, compTransform.ty,
+            Int(finalPlan.writeSize.width), Int(finalPlan.writeSize.height),
+            finalPlan.fps, max(1, Int(round(finalPlan.fps))), bitrate))
         // 铁律②：transform 必须显式赋值，漏了成品必躺下。
         // v1.3.4：取 **composition 的**轨道的 transform（拼接时已把源素材的抄过去）。
         // 分辨率怎么改，transform 都是源素材那一个 —— 定稿 4.9.2
