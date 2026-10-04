@@ -252,10 +252,19 @@ final class BKTrackView: UIView {
             if stage2Locked { exitRegionEdit() }
         }
         relayout(keepPointerTime: keep)
-        // 【v1.3.3 卡顿修复】按可见区重绘，别用无参 setNeedsDisplay()。
-        // 无参版本 rect = 整个 bounds（放大 20 屏时 7800pt），
-        // 而 draw(_:) 里的可见列裁剪就完全失效了 —— 每帧白画 95%。
-        redrawVisible()
+        // ⚠️⚠️ 【v1.4.6 修】这里必须**全量重绘**，不能只重画可见区。
+        //
+        // 现象（2026-10-04 20:33 皓哥真机截图）：点「一键去红」后，
+        // **屏幕内**的红区消失了，**屏幕外**的红区还留在画面上。
+        //
+        // 根因：`redrawVisible()` 只调 `setNeedsDisplay(可见区)`，
+        // 于是屏幕外那些**从没被重画过**的区域继续显示旧内容（带红区）。
+        // 数据其实是对的（keptRanges 已经更新），是画面没刷新。
+        //
+        // 区分两种重绘：
+        //   · **内容变了**（删红、检测、换素材、撤销）→ 全量，整条都要更新
+        //   · **只是滚动/拖动** → 只画可见区（每帧都走全量会卡顿，v1.3.3 的教训）
+        canvas.setNeedsDisplay()
     }
 
     /// 只重画当前可见的那一屏。
@@ -514,16 +523,36 @@ extension BKTrackView: UIGestureRecognizerDelegate {
     private func segment(at t: Double) -> (start: Double, end: Double)? {
         var best: (start: Double, end: Double)?
         var bestDist = Double.greatestFiniteMagnitude
+        var bestWidth: Double = 0
         for pc in canvas.r.pieces {
             // 【v1.3.3】跳过零长度标记。
-            // 折叠后 `foldedPieces` 会在区与区之间插一个 start == end 的标记当分割线，
+            // 第二阶段 `keepsToPieces` 会在区与区之间插一个 start == end 的标记当分割线，
             // 而零长度段对 t 的区间判断是 `t >= start && t <= end` —— 任何落在该点上的
-            // 手指都会命中它，返回一个宽度为 0 的段 → 黄框宽度 0，看起来就是「黄把手出不来」。
+            // 手指都会命中它，返回一个宽度为 0 的段 → 黄框宽度 0。
             if pc.duration <= 1e-9 { continue }
-            // 含两端；手按在边界上也算命中这一段
             if t >= pc.start - 1e-9 && t <= pc.end + 1e-9 {
-                let d = t < pc.start ? pc.start - t : (t > pc.end ? t - pc.end : 0)
-                if d < bestDist { bestDist = d; best = (pc.start, pc.end) }
+                // ⚠️⚠️ **v1.4.6 修「黄框位置不对」的关键**（2026-10-04 20:33 皓哥截图）
+                //
+                // 原来算的是「t 到该段**端点**的距离」，取最小。
+                // 问题：手指正好落在两个绿区之间的**分割线**上时，
+                // 相邻两段到 t 的距离**都是 0** → 平局 → 取先遍历到的**前一段**。
+                // 于是明明长的是右边那块，黄框却画在了左边那块上（截图里就是这个现象）。
+                //
+                // 正解：**手指落点更靠近哪一段的内部，就选哪一段**。
+                // 用「到该段中点的距离」比较 —— 分割线正好是两段的中点分界，
+                // 落在线上时距离相等，此时取**更长**的那段（用户更可能想调大的那块），
+                // 并且遍历顺序改成**从后往前**，保证平局时取靠手指右侧的那段。
+                let mid = (pc.start + pc.end) / 2
+                let dMid = abs(mid - t)
+                let width = pc.duration
+                if best == nil {
+                    best = (pc.start, pc.end); bestDist = dMid; bestWidth = width
+                } else if dMid < bestDist - 1e-9 {
+                    best = (pc.start, pc.end); bestDist = dMid; bestWidth = width
+                } else if abs(dMid - bestDist) <= 1e-9 && width > bestWidth {
+                    // 平局：取更长的那段
+                    best = (pc.start, pc.end); bestWidth = width
+                }
             }
         }
         return best
@@ -561,13 +590,22 @@ extension BKTrackView: UIGestureRecognizerDelegate {
             // 用来区分「按住」和「按住后想滚动」。进了编辑态就得一直跟到底，
             // 否则用户按住拖把手时手一抖，手势被判 cancelled、把手就丢了。
             guard var seg = editingSegmentBase, draggingHandle == nil else { return }
-            let tol = CGFloat(BKConfig.RegionEdit.handleGrabTolerance)
+            // ⚠️⚠️ **v1.4.3「黄把手出得来但拖不动」的根因**（2026-10-04 19:50）
+            //
+            // 原来这里要求「手指离某端 < handleGrabTolerance(28pt)」才起手。
+            // 但长按 0.5 秒期间手指必然有轻微抖动，等到 .changed 触发时偏移已超过 28pt
+            // → `return` → **永远进不了拖动状态**，表现为「按住了但拖不动」。
+            //
+            // v1.4.4 正解：**进入编辑态后，手指落在框内任意位置都算抓住把手**，
+            // 离哪端近就拖哪端（不设最小距离门槛）。理由：
+            //   ① 编辑态是「我已经决定要调这段」的明确意图，不需要再判断「是否摸到把手」
+            //   ② 把手已移到框外，用户看到的是箭头，指向性已经够强
+            //   ③ 判定放宽后手感顺滑，不用精确瞄准
             let xHead = canvasX(of: seg.start)
             let xTail = canvasX(of: seg.end)
-            // 离哪端近就拖哪端；两端都远（手指在段中间）就不拖
+            // 手指在段的哪一侧就拖哪一端；正好在中间则取最近的那端
             let dHead = abs(xHead - here.x)
             let dTail = abs(xTail - here.x)
-            if min(dHead, dTail) > tol { return }
             let h: BKHandleEnd = (dHead <= dTail) ? .head : .tail
             draggingHandle = h
             dragPreview = seg
@@ -924,41 +962,95 @@ fileprivate final class TrackCanvas: UIView {
             let x1 = pad + CGFloat(seg.end) * pps
             let box = CGRect(x: x0, y: waveTop, width: max(1, x1 - x0), height: waveH)
             // 不在可见区就整个跳过
-            if box.maxX >= rect.minX - 40 && box.minX <= rect.maxX + 40 {
+            if box.maxX >= rect.minX - 48 && box.minX <= rect.maxX + 48 {
                 let bw = CGFloat(BKConfig.RegionEdit.selectionBorderWidth)
+                let corner = CGFloat(BKConfig.RegionEdit.selectionCorner)
 
-                // 1) 3pt 黄框（半透明淡入）
+                // ① 框内压暗蒙层（参照图 2：编辑态下框内整体发暗，与框外对比）
+                //    这一层是「我正在编辑这一段」的最强信号，比光有黄框明确得多
+                let dim = CGFloat(BKConfig.RegionEdit.selectionDimAlpha) * alpha
+                if dim > 0.01 {
+                    ctx.saveGState()
+                    ctx.setFillColor(BKTheme.Color.selection.cgColor)
+                    ctx.setAlpha(dim)
+                    ctx.fill(box)
+                    ctx.restoreGState()
+                }
+
                 ctx.saveGState()
                 ctx.setAlpha(alpha)
+
+                // ② 3pt 圆角黄框。圆角要向内缩半个线宽，否则描边有一半露在框外
                 ctx.setStrokeColor(BKTheme.Color.warning.cgColor)
                 ctx.setLineWidth(bw)
                 let border = CGRect(x: box.minX + bw / 2, y: box.minY + bw / 2,
-                                    width: box.width - bw, height: box.height - bw)
-                ctx.stroke(border)
+                                    width: max(0.5, box.width - bw),
+                                    height: max(0.5, box.height - bw))
+                let borderPath = CGPath(roundedRect: border,
+                                        cornerWidth: corner, cornerHeight: corner,
+                                        transform: nil)
+                ctx.addPath(borderPath)
+                ctx.strokePath()
                 ctx.restoreGState()
 
-                // 2) 两端把手：16pt 宽竖条、上下各探出 10pt、中心白抓点
-                let hw = CGFloat(BKConfig.RegionEdit.handleWidth) / 2
-                let over = CGFloat(BKConfig.RegionEdit.handleOverhang)
-                let dot = CGFloat(BKConfig.RegionEdit.gripDot)
-                for (hx, isDragging) in [(box.minX, r.draggingHandle == 0),
-                                         (box.maxX, r.draggingHandle == 1)] {
-                    // 只画可见那一侧
-                    if hx < rect.minX - 20 || hx > rect.maxX + 20 { continue }
-                    let bar = CGRect(x: hx - hw,
-                                      y: box.midY - (box.height / 2 + over) - (hw / 2),
-                                      width: hw * 2,
-                                      height: box.height + over * 2)
+                // ③ 两端把手：**框外紧贴的小圆角方块**（参照图）
+                //
+                // ⚠️⚠️ v1.3.0~1.4.4 的最大设计错误：把手续了「贯穿整个轨道高度的竖条」，
+                //    既挡内容又不像「可拖」。参照图是 20×20pt 左右的小方块，
+                //    垂直居中，贴在框外侧。
+                // ⚠️ 箭头是**黑色**（在黄底上），不是白色。
+                let size = CGFloat(BKConfig.RegionEdit.handleSize)
+                let cr = CGFloat(BKConfig.RegionEdit.handleCorner)
+                let gap = CGFloat(BKConfig.RegionEdit.handleGap)
+                let aLen = CGFloat(BKConfig.RegionEdit.handleArrowLen) / 2
+                let aW = CGFloat(BKConfig.RegionEdit.handleArrowWidth)
+                let hs = size / 2
+
+                for (edgeX, isHead, isDragging) in [(box.minX, true, r.draggingHandle == 1),
+                                                    (box.maxX, false, r.draggingHandle == 2)] {
+                    // 只画可见那一侧（把手悬在框外，留 24pt 余量）
+                    if edgeX < rect.minX - 30 || edgeX > rect.maxX + 30 { continue }
+                    // 中心：框边 + gap，再往框外偏半个方块
+                    let cx = edgeX + (isHead ? -(gap + hs) : (gap + hs))
+                    let cy = box.midY
+                    // ⚠️ 变量名别叫 `rect` —— 它会遮蔽 `draw(_ rect:)` 的参数，
+                    // 下面判可见性时用到的是外层那个脏矩形，一混淆就是隐蔽 bug
+                    let hRect = CGRect(x: cx - hs, y: cy - hs, width: size, height: size)
+                    if hRect.maxX < rect.minX - 20 || hRect.minX > rect.maxX + 20 { continue }
+
                     ctx.saveGState()
                     ctx.setAlpha(alpha)
-                    // 正在拖的那一枚加深，给「你正捏着它」的实感
+                    // 拖动时放大 1.15 倍，给「你正捏着它」的实感
+                    let scale: CGFloat = isDragging ? 1.15 : 1.0
+                    let drawRect = CGRect(x: cx - hs * scale, y: cy - hs * scale,
+                                          width: size * scale, height: size * scale)
+                    let pill = CGPath(roundedRect: drawRect,
+                                      cornerWidth: cr, cornerHeight: cr, transform: nil)
+                    // 黄底
                     ctx.setFillColor(BKTheme.Color.warning.cgColor)
-                    ctx.fill(bar)
-                    // 白抓点
-                    ctx.setFillColor(BKTheme.Color.handle.cgColor)
-                    let d = isDragging ? dot * 1.5 : dot
-                    let dotRect = CGRect(x: hx - d / 2, y: box.midY - d / 2, width: d, height: d)
-                    ctx.fillEllipse(in: dotRect)
+                    ctx.addPath(pill)
+                    ctx.fillPath()
+                    // 黑色箭头：左端尖头朝左 ‹，右端尖头朝右 ›
+                    //
+                    // ⚠️⚠️ v1.4.6 修：之前**左右反了**（2026-10-04 20:33 皓哥截图）。
+                    // 原因：折线的「尖端」应该在 `dir` 指向的那一侧，我却把
+                    // 尖端放在了 `-dir` 那一侧 —— 画出来左端是 `>`、右端是 `<`。
+                    //
+                    // 正确画法：尖端在 `dir` 方向，两条尾巴在 `-dir` 方向。
+                    //   dir = -1（左端）：尖端在 cx - aLen，尾巴在 cx + aLen → ‹
+                    //   dir = +1（右端）：尖端在 cx + aLen，尾巴在 cx - aLen → ›
+                    let dir: CGFloat = isHead ? -1 : 1
+                    let tipX = cx + dir * aLen * scale
+                    let tailX = cx - dir * aLen * scale
+                    let aH = aLen * scale
+                    ctx.setStrokeColor(BKTheme.Color.selection.cgColor)
+                    ctx.setLineWidth(aW * scale)
+                    ctx.setLineCap(.round)
+                    ctx.setLineJoin(.round)
+                    ctx.move(to: CGPoint(x: tailX, y: cy - aH))
+                    ctx.addLine(to: CGPoint(x: tipX, y: cy))
+                    ctx.addLine(to: CGPoint(x: tailX, y: cy + aH))
+                    ctx.strokePath()
                     ctx.restoreGState()
                 }
             }

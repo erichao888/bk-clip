@@ -205,17 +205,29 @@ enum BKConfig {
         /// 长按多久进编辑态。0.5s 是「不像误触、又不难等」的经验值
         static let longPressSec: Double = 0.5
 
-        /// 把手竖条的宽度（pt）
-        static let handleWidth: Double = 16
-        /// 把手上下各探出轨道多少（pt）
-        static let handleOverhang: Double = 10
-        /// 把手中心白抓点的直径（pt）
-        static let gripDot: Double = 5
+        /// 把手的边长（pt）。**小圆角方块**，不是竖条 ——
+        /// 参照剪映（2026-10-04 19:56 皓哥给的对比图）：把手约 20×20pt，
+        /// 垂直居中贴在选区框外侧，**只占轨道高度的一小段**。
+        /// ⚠️ 之前做成「贯穿整个轨道高度的竖条」是把手的最大设计错误。
+        static let handleSize: Double = 20
+        /// 把手圆角半径（pt）。取一半就是胶囊形
+        static let handleCorner: Double = 6
+        /// 把手与选区框的间距（pt）。负值 = 压在框上，正值 = 悬在框外
+        static let handleGap: Double = 1
+        /// 把手内箭头的长度（pt）
+        static let handleArrowLen: Double = 9
+        /// 把手内箭头的线宽（pt）
+        static let handleArrowWidth: Double = 2
         /// 把手触控区边长（pt）。Apple 建议 ≥44，这里取 44
         static let handleTouchTarget: Double = 44
 
         /// 选中区黄边线宽（pt）
         static let selectionBorderWidth: Double = 3
+        /// 选中区圆角半径（pt）。参照图里黄框四角是圆的
+        static let selectionCorner: Double = 4
+        /// 选中态蒙层不透明度（0~1）。框内压暗用 ——
+        /// 参照图 2：进入编辑态后框内整体发暗，与框外形成对比
+        static let selectionDimAlpha: Double = 0.28
         /// 编辑态淡入淡出时长（秒）
         static let fadeSec: Double = 0.18
 

@@ -952,8 +952,22 @@ final class BKEditorViewController: UIViewController {
         commit(p)
 
         let total = keeps.reduce(0.0) { $0 + $1.duration }
-        statusLabel.text = String(format: "已删 %d 段气口，剩 %d 段绿区 · 成品 %.1fs · 长按可调长短",
-                                  cuts.count, keeps.count, total)
+        // ⚠️ 诊断（v1.4.7）：红区贴着素材首尾时，红红红 的排布会「少一段绿区」
+        // （开头是红区就没有绿区可留，这是数学正确的）。
+        // 但用户看到的是「界面上 N 个红区，删完只有 M-1 道分割线」，
+        // 容易误判成没删干净。**把真实区间全打出来**，一眼能核对。
+        let keepDesc = keeps.map { String(format: "%.2f→%.2f", $0.start, $0.end) }
+        BKLog.shared.i(String(format:
+            "一键去红：删 %d 段 → 留 %d 段绿区，成品 %.2fs（原片 %.2fs）| 绿区区间: %@",
+            cuts.count, keeps.count, total, item.duration, keepDesc.joined(separator: " ")))
+        BKLog.shared.i(String(format:
+            "红区区间: %@", cuts.map { String(format: "%.2f→%.2f", $0.0, $0.1) }
+                .joined(separator: " ")))
+
+        let edgeNote = (keeps.first?.start ?? 0) < 0.01
+            ? "（首段贴素材开头，其前无绿区）" : ""
+        statusLabel.text = String(format: "已删 %d 段气口，剩 %d 段绿区 · 成品 %.1fs · 长按可调长短%@",
+                                  cuts.count, keeps.count, total, edgeNote)
         BKLog.shared.i(String(format: "一键去红：删 %d 段 → 留 %d 段绿区，成品 %.2fs（原片 %.2fs）",
                               cuts.count, keeps.count, total, item.duration))
     }

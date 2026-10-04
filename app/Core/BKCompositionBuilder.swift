@@ -61,48 +61,82 @@ enum BKCompositionBuilder {
         // 必须把源素材的 preferredTransform 抄过去，否则画面横躺。
         dstVideo.preferredTransform = srcVideo.preferredTransform
 
-        var cursor = CMTime.zero
-        var table: [(out: Double, src: Double, dur: Double)] = []
+        // ⚠️⚠️ **v1.4.3 闪退的真病根在这里**（2026-10-04 19:50 皓哥真机报障）
+        //
+        // 原来视频轨和音频轨是**各自独立**循环、各自 `continue`：
+        //   某段视频 insert 成功、音频 insert 失败（或反之）→ 两轨段数/长度不一致
+        //   → AVAssetWriter 收尾阶段报错 → **finishWriting 的 completion 不触发**
+        //   → 调用方 `sem.wait()` 永等 → 主线程卡死 → iOS 杀进程 = 「闪退」
+        //
+        // ⚠️ 关键难点：`AVMutableComposition` **没有「删除已插入区间」的 API**。
+        // 所以一旦某轨插进去、另一轨失败，就没法回退，composition 会多出一段
+        // 只有画面没有声音的内容。
+        //
+        // 正解：**先用「探测」确定这一段两轨都能插，再真正插**。
+        // 探测用 `sourceTrack.hasMediaDuration` 之类不可靠，改用最稳的：
+        // **按素材真实时长夹一遍**（`AVAsset.duration`）—— 越界的段在夹完后必然可插，
+        // 剩下插不进去的段是素材本身的空洞，两轨会**同时**失败 → 整段跳过，
+        // 保证两轨永远成对。
+        let assetDur = CMTimeGetSeconds(asset.duration)
+        var dstAudioRef: AVMutableCompositionTrack?
+        if let sa = asset.tracks(withMediaType: .audio).first,
+           let da = comp.addMutableTrack(withMediaType: .audio,
+                                         preferredTrackID: kCMPersistentTrackID_Invalid) {
+            dstAudioRef = da
+            _ = sa
+        }
 
-        for (a, b) in keeps {
+        var cursor = CMTime.zero
+        var audioCursor = CMTime.zero
+        var table: [(out: Double, src: Double, dur: Double)] = []
+        var skipped = 0
+
+        for (a0, b0) in keeps {
+            // ① 先按素材真实时长夹取。越界的段（第二阶段拖把手拖过了头）在这里被夹住，
+            //    后面两轨就都能插 —— 不会造成两轨不一致
+            let a = max(0, min(a0, assetDur))
+            let b = max(a, min(b0, assetDur))
             let len = b - a
-            guard len > 0.01 else { continue }
+            guard len > 0.01 else { skipped += 1; continue }
             let start = CMTime(seconds: a, preferredTimescale: 600)
             let dur = CMTime(seconds: len, preferredTimescale: 600)
             let range = CMTimeRange(start: start, duration: dur)
+
+            // ② 音频先试（音频更容易失败：有的片段根本没采样）
+            var audioOK = true
+            if let da = dstAudioRef, let sa = asset.tracks(withMediaType: .audio).first {
+                do {
+                    try da.insertTimeRange(range, of: sa, at: audioCursor)
+                } catch {
+                    BKLog.shared.w("拼音频段失败 [\(BKDiag.s(a))→\(BKDiag.s(b))]：\(error.localizedDescription)")
+                    audioOK = false
+                }
+            }
+            if !audioOK {
+                // 音频没插进去，视频也**不要**插 —— 两轨必须成对
+                skipped += 1
+                continue
+            }
+
+            // ③ 视频后试。理论上此时必然成功（已经夹过时长）；
+            //    万一失败，这段视频缺失但音频已在 —— 记进日志，成品会有一小段无声
             do {
                 try dstVideo.insertTimeRange(range, of: srcVideo, at: cursor)
             } catch {
-                // 插不进去就跳过这一段，**不要静默吞掉** —— 用户会看到成品比预期短
                 BKLog.shared.w("拼视频段失败 [\(BKDiag.s(a))→\(BKDiag.s(b))]：\(error.localizedDescription)")
+                skipped += 1
+                cursor = cursor + dur
+                audioCursor = audioCursor + dur
                 continue
             }
+
             table.append((out: cursor.seconds, src: a, dur: dur.seconds))
             cursor = cursor + dur
+            audioCursor = audioCursor + dur
         }
         guard !table.isEmpty else { return nil }
-
-        // ---- 音频轨（可选淡入淡出）----
-        if let srcAudio = asset.tracks(withMediaType: .audio).first,
-           let dstAudio = comp.addMutableTrack(withMediaType: .audio,
-                                               preferredTrackID: kCMPersistentTrackID_Invalid) {
-            var audioCursor = CMTime.zero
-            for (a, b) in keeps {
-                let len = b - a
-                guard len > 0.01 else { continue }
-                let start = CMTime(seconds: a, preferredTimescale: 600)
-                let dur = CMTime(seconds: len, preferredTimescale: 600)
-                let range = CMTimeRange(start: start, duration: dur)
-                do {
-                    try dstAudio.insertTimeRange(range, of: srcAudio, at: audioCursor)
-                } catch {
-                    // 音频插失败比视频更严重（会真的丢内容），必须报出来
-                    BKLog.shared.w("拼音频段失败 [\(BKDiag.s(a))→\(BKDiag.s(b))]：\(error.localizedDescription)")
-                    audioCursor = audioCursor + dur
-                    continue
-                }
-                audioCursor = audioCursor + dur
-            }
+        if skipped > 0 {
+            BKLog.shared.w("拼接跳过 \(skipped)/\(keeps.count) 段（音视频成对，不留半个）")
         }
 
         return BKCompositionBuild(comp: comp, table: table)

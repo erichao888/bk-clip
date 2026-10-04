@@ -297,24 +297,64 @@ enum BKExporter {
                             spec: spec, reference: reference)
         let bitrate = BKExporter.videoBitrate(for: videoTrack)
 
+        // ⚠️⚠️ **v1.4.7 导出闪退的根因**（2026-10-04 20:48 皓哥日志，崩在打这条日志之后）
+        //
+        // 日志原文：`导出参数 写入 1920×1080 显示 1080×1920 60fps`，
+        // 然后**直接重启**（连下一条「已拼成 composition」都没打）。
+        // 崩在 `AVAssetWriter` 初始化 / `canAdd` 那一带。
+        //
+        // 病根：**transform 与像素尺寸不匹配**。
+        // `makePlan` 用的是**源素材**的 `videoTrack.preferredTransform` 去逆推 writeSize，
+        // 而 `videoInput.transform` 用的是 **composition 的** `compTransform`。
+        // 竖拍素材（旋转 90°）下两者一旦不一致，
+        // 编码器就会拿到「尺寸是横的、transform 说要转成竖的」这种自相矛盾的输入
+        // → AVFoundation 内部直接崩（不是报错，是崩溃）。
+        //
+        // 正解：**两处必须用同一个 transform**。统一用 composition 的（它是从源素材抄的，
+        // 而且拼接后才是真正要写出的内容）。
+        let planWithComp = makePlan(videoTrack: compVideo,
+                                    project: project,
+                                    spec: spec,
+                                    reference: reference)
+        let sameTransform = (compTransform == videoTrack.preferredTransform)
+        if !sameTransform {
+            BKLog.shared.w("composition transform 与源素材不一致，改用 composition 的重算尺寸")
+        }
+        let finalPlan = planWithComp
         BKLog.shared.i(String(format: "导出参数 写入 %d×%d 显示 %d×%d %.0ffps（源 %.0f） %.1fMbps %d段 | %@",
-                              Int(plan.writeSize.width), Int(plan.writeSize.height),
-                              Int(plan.displaySize.width), Int(plan.displaySize.height),
-                              plan.fps, plan.sourceFps,
+                              Int(finalPlan.writeSize.width), Int(finalPlan.writeSize.height),
+                              Int(finalPlan.displaySize.width), Int(finalPlan.displaySize.height),
+                              finalPlan.fps, finalPlan.sourceFps,
                               Double(bitrate) / 1_000_000, keeps.count, spec.summary))
 
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
 
         // 视频必须重编码：MP4 容器不接受原始比特流直通（nil 会被 canAdd 拒掉）
+        // ⚠️ v1.4.7 崩溃防御：H.264 编码器对**尺寸与 transform 不匹配**是直接崩的
+        // （不是 canAdd 返回 false，是进程死掉）。这里下断言式检查，
+        // 不匹配就退回「关掉 transform」的保守写法 —— 宁可方向不对，也不能崩。
+        let transformSwapsAxes = abs(compTransform.b) > 0.001 || abs(compTransform.c) > 0.001
+        let writeIsLandscape = finalPlan.writeSize.width > finalPlan.writeSize.height
+        let transformMismatch = transformSwapsAxes == writeIsLandscape
+        let appliedTransform: CGAffineTransform = transformMismatch
+            ? CGAffineTransform.identity
+            : compTransform
+        if transformMismatch {
+            BKLog.shared.w(String(format:
+                "⚠️ 尺寸与 transform 不匹配（写入 %d×%d，transform %@）→ 本次不套 transform，成品朝向可能不正",
+                Int(finalPlan.writeSize.width), Int(finalPlan.writeSize.height),
+                transformSwapsAxes ? "旋转90°" : "无旋转"))
+        }
+
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264,
             // 铁律尺寸：写入的是「未旋转」的存储尺寸，朝向交给下面的 transform
-            AVVideoWidthKey: Int(plan.writeSize.width),
-            AVVideoHeightKey: Int(plan.writeSize.height),
+            AVVideoWidthKey: Int(finalPlan.writeSize.width),
+            AVVideoHeightKey: Int(finalPlan.writeSize.height),
             AVVideoCompressionPropertiesKey: [
                 AVVideoAverageBitRateKey: bitrate,
-                AVVideoMaxKeyFrameIntervalKey: max(1, Int(round(plan.fps))),
-                AVVideoExpectedSourceFrameRateKey: plan.fps,
+                AVVideoMaxKeyFrameIntervalKey: max(1, Int(round(finalPlan.fps))),
+                AVVideoExpectedSourceFrameRateKey: finalPlan.fps,
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
                 AVVideoAllowFrameReorderingKey: true
             ] as [String: Any]
@@ -324,7 +364,7 @@ enum BKExporter {
         // 铁律②：transform 必须显式赋值，漏了成品必躺下。
         // v1.3.4：取 **composition 的**轨道的 transform（拼接时已把源素材的抄过去）。
         // 分辨率怎么改，transform 都是源素材那一个 —— 定稿 4.9.2
-        videoInput.transform = compTransform
+        videoInput.transform = appliedTransform
         // expectsMediaDataInRealTime = false：v1.2.11~1.3.2 这里设过 true，
         // 实时模式会让 AVFoundation 自行重排时间戳追实时，两轨策略不一致 → 画面滞后于声音。
         // 现在 composition 已经保证了连续性，不需要任何"追实时"的补救。
@@ -419,8 +459,8 @@ enum BKExporter {
                              audioInput: audioInput,
                              writer: writer,
                              reader: reader,
-                             planFps: plan.fps,
-                             minFrameInterval: plan.minFrameInterval,
+                             planFps: finalPlan.fps,
+                             minFrameInterval: finalPlan.minFrameInterval,
                              total: built.total,
                              progress: { frac in
                                  DispatchQueue.main.async { progress(1, 1, frac) }
@@ -430,9 +470,27 @@ enum BKExporter {
         audioInput?.markAsFinished()
 
         // finishWriting 是异步收尾，用信号量等它落盘完成
+        //
+        // ⚠️⚠️ **v1.4.3 闪退的元凶**（2026-10-04 19:50 皓哥真机报障）
+        // 原来这里是裸 `sem.wait()` —— **无限等待**。而
+        // `AVAssetWriter.finishWriting` 的 completion **在 writer 已 failed 时不保证触发**，
+        // 于是信号量永远等不到 → 主线程卡死 → iOS 判定「无响应」直接杀进程
+        // → 用户看到的就是「导出时 App 闪退」。
+        //
+        // 为什么会走到 failed：composition 拼接后若某段 `insertTimeRange` 失败
+        // （越界/时长为负），表里就少一段而音频轨照样插了，两轨长度不一致，
+        // writer 在收尾阶段报错 —— 这时 completion 就不来了。
+        //
+        // 正解：**带超时的等待**。超时就报真实错误（带上 writer 的 error），不无限卡。
         let sem = DispatchSemaphore(value: 0)
         writer.finishWriting { sem.signal() }
-        sem.wait()
+        // 素材越长落盘越慢，给 120 秒。实测正常导出 30 秒内完成
+        let waited = sem.wait(timeout: .now() + 120)
+        if waited == .timedOut {
+            var extra = ""
+            if let e = writer.error { extra = "（\(e.localizedDescription)）" }
+            throw BKExportError.writeFailed("导出收尾超时 120 秒\(extra)")
+        }
 
         guard writer.status == .completed else {
             throw BKExportError.writeFailed(writer.error?.localizedDescription ?? "收尾失败")
@@ -441,8 +499,8 @@ enum BKExporter {
         // 铁律③：导出记录永久带上显示尺寸
         BKLog.shared.i(String(format: "导出完成 %@ | %d 段 | 写入 %d×%d 显示 %d×%d %.0ffps | 源 %.1fs → 成品 %.1fs",
                               fileName, keeps.count,
-                              Int(plan.writeSize.width), Int(plan.writeSize.height),
-                              Int(plan.displaySize.width), Int(plan.displaySize.height), plan.fps,
+                              Int(finalPlan.writeSize.width), Int(finalPlan.writeSize.height),
+                              Int(finalPlan.displaySize.width), Int(finalPlan.displaySize.height), finalPlan.fps,
                               project.duration, project.outputDuration))
         return url
     }
