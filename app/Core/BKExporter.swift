@@ -475,7 +475,9 @@ enum BKExporter {
     /// 【降帧还在】源 60fps 选 30fps 时要按 `minFrameInterval` 丢帧，
     /// 但**只丢帧、不动时间戳**（丢掉的帧不写，PTS 自然就稀疏了）。
     ///
-    /// - Parameter progress: 已写出的时长占比 0~1，用于回传 UI 进度
+    /// - Parameter progress: 已写出的时长占比 0~1，用于回传 UI 进度。
+    ///   ⚠️ 必须标 `@escaping` —— 它被存进下面的 `tick` 闭包里，
+    ///   而闭包默认是非 escaping 的（CI 报 "escaping closure captures non-escaping parameter"）。
     private static func drainComposition(video: AVAssetReaderTrackOutput,
                                          videoInput: AVAssetWriterInput,
                                          audio: AVAssetReaderTrackOutput?,
@@ -485,7 +487,7 @@ enum BKExporter {
                                          planFps: Double,
                                          minFrameInterval: Double?,
                                          total: Double,
-                                         progress: (Double) -> Void) throws {
+                                         progress: @escaping (Double) -> Void) throws {
         var videoDone = false
         var audioDone = (audio == nil || audioInput == nil)
         var idleRounds = 0
