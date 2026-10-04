@@ -32,17 +32,8 @@ import UIKit
 private let dbLo: Double = -70
 private let dbHi: Double = -5
 
-/// v1.3.0 拖拽把手的哪一端。
-///
-/// ⚠️ **必须放在 BKTrackView 之外、协议之前**。
-/// 协议 `BKTrackViewDelegate` 的方法签名里要用 `BKHandleEnd`，
-/// 如果 enum 嵌在 class 内部，解析协议那一刻它还没定义 → 整个协议解析失败，
-/// 报出来的是「cannot find 'didBeginRegionEdit' in scope」这种**指向错误位置的错**。
-/// 这个坑很隐蔽：错在协议声明，报在调用处。
-enum BKHandleEnd {
-    case head
-    case tail
-}
+// 注：`BKHandleEnd` 已移到 Core 层（app/Core/BKModels.swift）——
+// `BKTimeline.resizeKeeps`（第二阶段核心算法）也要用它，Core 不该反向依赖 UI。
 
 protocol BKTrackViewDelegate: AnyObject {
     /// 内容被滚动了。time 是当前指针所指的时间
@@ -59,9 +50,18 @@ protocol BKTrackViewDelegate: AnyObject {
     /// 已经在片尾，松手时还被往左拽过 60pt → 该换下一条了
     func trackDidPullBeyondTail(_ view: BKTrackView)
 
-    // MARK: v1.3.0 区域编辑态
+    // MARK: v1.3.4 第一阶段（拖红区边缘调气口大小）
 
-    /// 长按进入了编辑态。VC 收到后可以给轻震反馈 / 记撤销起点
+    /// 按下红区边缘开始拖。VC 收到就开「合并提交」
+    func track(_ view: BKTrackView, didBeginRedEdgeDragNear time: Double)
+    /// 拖红区边缘。near 是起手时的旧位置，newTime 是要挪到的新位置（**原片时间**）
+    func track(_ view: BKTrackView, didDragRedEdgeNear near: Double, to newTime: Double)
+    /// 松手，结束这次拖动
+    func trackDidEndRedEdgeDrag(_ view: BKTrackView)
+
+    // MARK: v1.3.4 第二阶段（长按绿区 → 黄把手 → 调这块的长短）
+
+    /// 长按进入了编辑态
     func track(_ view: BKTrackView, didBeginRegionEditFrom start: Double, to end: Double)
     /// 拖动编辑态某一端的把手。`handle` 是哪一端，newTime 是要挪到的新位置（画布时间）
     func track(_ view: BKTrackView, didDragRegionEdge handle: BKHandleEnd, to newTime: Double)

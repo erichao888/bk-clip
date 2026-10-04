@@ -1627,12 +1627,16 @@ extension BKEditorViewController: BKTrackViewDelegate {
     /// 拖把手中。**不落盘** —— 每帧重建+落盘会卡死。只更新状态行，松手才提交
     func track(_ view: BKTrackView, didDragRegionEdge handle: BKHandleEnd, to newTime: Double) {
         guard let seg = view.editingSegment else { return }
-        let s = handle == .head ? newTime : seg.start
-        let e = handle == .tail ? newTime : seg.end
+        // ⚠️ 变量别叫 `s` / `e` —— 编译器把 `e - s` 里的 `e` 一度推成 `Duration`，
+        // 报 "argument type 'Duration' does not conform to 'CVarArg'"。
+        // 用明确的 `newStart` / `newEnd` 最省事。
+        let newStart = (handle == .head) ? newTime : seg.start
+        let newEnd = (handle == .tail) ? newTime : seg.end
         let verb = (handle == .head) ? (newTime < seg.start ? "开头缩短" : "开头延长")
                                       : (newTime > seg.end ? "结尾延长" : "结尾缩短")
+        let span = newEnd - newStart
         statusLabel.text = String(format: "%s → %.2f~%.2fs（长 %.2fs）· 松手生效",
-                                  verb, s, e, e - s)
+                                  verb, newStart, newEnd, span)
     }
 
     /// 拖把手松手，提交。**直接改记录B**（不反推 cuts、不换算坐标系）
@@ -1672,10 +1676,13 @@ extension BKEditorViewController: BKTrackViewDelegate {
         q.updatedAt = Date()
         commit(q)
 
-        let grew = next[idx].duration - p.keptRanges[idx].duration
+        // ⚠️ 显式 Double(...)：`Segment.duration` 与 Swift 内置的同名类型会撞，
+        // 推断出来的类型不满足 String(format:) 要的 CVarArg。
+        let grew = Double(next[idx].duration) - Double(p.keptRanges[idx].duration)
+        let totalNow = Double(q.outputDuration)
         statusLabel.text = grew >= 0
-            ? String(format: "这段变长 %.2fs · 成品共 %.1fs", grew, q.outputDuration)
-            : String(format: "这段变短 %.2fs · 成品共 %.1fs", -grew, q.outputDuration)
+            ? String(format: "这段变长 %.2fs · 成品共 %.1fs", grew, totalNow)
+            : String(format: "这段变短 %.2fs · 成品共 %.1fs", -grew, totalNow)
         BKLog.shared.i(String(format: "绿区 %d 拖动提交 [%.2f,%.2f] → [%.2f,%.2f]",
                               idx, base.start, base.end, next[idx].start, next[idx].end))
         // 提交后退出编辑态：一次拖动 = 一步撤销 = 一个明确的结束

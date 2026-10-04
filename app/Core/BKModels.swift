@@ -291,6 +291,11 @@ extension BKProject {
         case sourceApplicable, marks, createdAt, updatedAt, exportHistory, splits
         case playheadTime
         case keptRanges
+        /// ⚠️ v1.3.0~1.3.4 的字段，**只读不写**。
+        /// 保留在 CodingKeys 里是为了能读回那批旧草稿：`redFolded == true`
+        /// 说明当时已折叠过 → 迁移时把绿区从 marks 推导出来填进 keptRanges。
+        /// 新写出的草稿不含这个 key（它不是存储属性）。
+        case redFolded
     }
 
     init(from decoder: Decoder) throws {
