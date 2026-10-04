@@ -550,7 +550,7 @@ extension BKTrackView: UIGestureRecognizerDelegate {
                        options: [.beginFromCurrentState, .allowUserInteraction]) {
             self.editFade = target
             self.syncEditState()
-            redrawVisible()
+            self.redrawVisible()
         }
     }
 
