@@ -134,14 +134,16 @@ final class BKOverviewBar: UIView {
     /// 画布时间（成品时间）→ 波形包络该查的原片时间。
     /// 与 BKTrackView.TrackRender.sourceTime 同一套逻辑，折叠时才需要映射。
     private func sourceTime(_ t: Double) -> Double {
+        // ⚠️ 下面两处必须用 `map`（guard 已解包）而不是 `foldMap`（还是 Optional）——
+        // 写成 foldMap.first 会报 "must be unwrapped to refer to member 'first'"
         guard let map = foldMap, !map.isEmpty else { return t }
         for seg in map {
             if t >= seg.out && t <= seg.out + seg.dur {
                 return seg.src + (t - seg.out)
             }
         }
-        if let first = foldMap.first, t < first.out { return first.src }
-        if let last = foldMap.last { return last.src + last.dur }
+        if let first = map.first, t < first.out { return first.src }
+        if let last = map.last { return last.src + last.dur }
         return t
     }
 

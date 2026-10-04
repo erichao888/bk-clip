@@ -32,6 +32,18 @@ import UIKit
 private let dbLo: Double = -70
 private let dbHi: Double = -5
 
+/// v1.3.0 拖拽把手的哪一端。
+///
+/// ⚠️ **必须放在 BKTrackView 之外、协议之前**。
+/// 协议 `BKTrackViewDelegate` 的方法签名里要用 `BKHandleEnd`，
+/// 如果 enum 嵌在 class 内部，解析协议那一刻它还没定义 → 整个协议解析失败，
+/// 报出来的是「cannot find 'didBeginRegionEdit' in scope」这种**指向错误位置的错**。
+/// 这个坑很隐蔽：错在协议声明，报在调用处。
+enum BKHandleEnd {
+    case head
+    case tail
+}
+
 protocol BKTrackViewDelegate: AnyObject {
     /// 内容被滚动了。time 是当前指针所指的时间
     func track(_ view: BKTrackView, didScrollTo time: Double)
@@ -57,11 +69,11 @@ protocol BKTrackViewDelegate: AnyObject {
     // MARK: v1.3.0 区域编辑态
 
     /// 长按进入了编辑态。VC 收到后可以给轻震反馈 / 记撤销起点
-    func track(_ view: BKTrackView, didBeginRegionEdit from: Double, to end: Double)
+    func track(_ view: BKTrackView, didBeginRegionEditFrom start: Double, to end: Double)
     /// 拖动编辑态某一端的把手。`handle` 是哪一端，newTime 是要挪到的新位置（画布时间）
-    func track(_ view: BKTrackView, didDragRegionEdge handle: BKTrackView.DragHandle, to newTime: Double)
+    func track(_ view: BKTrackView, didDragRegionEdge handle: BKHandleEnd, to newTime: Double)
     /// 拖把手松手，提交最终区间。VC 在这里把区间换算成 cuts 并落一次撤销
-    func track(_ view: BKTrackView, didCommitRegionEdit from: Double, to end: Double)
+    func track(_ view: BKTrackView, didCommitRegionEditFrom start: Double, to end: Double)
 }
 
 final class BKTrackView: UIView {
@@ -94,9 +106,7 @@ final class BKTrackView: UIView {
     private(set) var editingSegmentBase: (start: Double, end: Double)?
     /// 编辑态淡入进度 0~1。做成渐变而不是硬切，符合 iOS 观感
     private(set) var editFade: Double = 0
-    /// 正在拖的把手：nil = 没拖，.head = 开头端，.tail = 结尾端
-    enum DragHandle { case head, tail }
-    private(set) var draggingHandle: DragHandle?
+    private(set) var draggingHandle: BKHandleEnd?
     /// 拖把手时**松手前**的临时区间。拖动中不能直接改 marks（每帧重建太贵、
     /// 撤销栈也扛不住），只记在这里，松手才提交给 VC。
     private(set) var dragPreview: (start: Double, end: Double)?
@@ -365,8 +375,13 @@ extension BKTrackView: UIGestureRecognizerDelegate {
     /// 长按 → tap 的顺序由 UIKit 自动处理：长按先 recognized，tap 就自动 fail。
     /// 这里真正要挡的是「长按和 pan 同时起手」——
     /// 现有 pan 已经靠 `gestureRecognizerShouldBegin` 挡了（编辑态里 return false）。
-    override func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                                    shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+    ///
+    /// ⚠️ **这里不能加 `override`**：上面那个 `gestureRecognizerShouldBegin` 是
+    /// UIView **自带**的方法（要 override），而这个是 `UIGestureRecognizerDelegate` 的
+    /// **协议方法**（加了 override 就报 "does not override any method from its superclass"）。
+    /// 两者长得像但性质不同，混淆过一次。
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         // 双指捏合缩放要能和滚动同时进行
         if gestureRecognizer === pinch || other === pinch { return true }
         // 编辑态里，长按（=拖把手）与 pan 允许共存：
@@ -451,7 +466,7 @@ extension BKTrackView: UIGestureRecognizerDelegate {
             fb.impactOccurred()
             syncEditState()
             animateEditFade(to: 1)
-            delegate?.track(self, didBeginRegionEdit(from: seg.start, to: seg.end))
+            delegate?.track(self, didBeginRegionEditFrom: seg.start, to: seg.end)
 
         case .changed:
             // 编辑态里继续按住并左右挪 = 直接进入拖把手（省一次抬手再按）。
@@ -466,7 +481,7 @@ extension BKTrackView: UIGestureRecognizerDelegate {
             let dHead = abs(xHead - here.x)
             let dTail = abs(xTail - here.x)
             if min(dHead, dTail) > tol { return }
-            let h: DragHandle = (dHead <= dTail) ? .head : .tail
+            let h: BKHandleEnd = (dHead <= dTail) ? .head : .tail
             draggingHandle = h
             dragPreview = seg
             scroll.isScrollEnabled = false
@@ -496,7 +511,7 @@ extension BKTrackView: UIGestureRecognizerDelegate {
             // 抬手：结束拖动（如果拖过），否则就只是退出/保持编辑态
             if draggingHandle != nil {
                 if let prev = dragPreview {
-                    delegate?.track(self, didCommitRegionEdit(from: prev.start, to: prev.end))
+                    delegate?.track(self, didCommitRegionEditFrom: prev.start, to: prev.end)
                 }
                 draggingHandle = nil
                 dragPreview = nil
@@ -627,6 +642,9 @@ fileprivate struct TrackRender {
 
     // MARK: v1.3.0 区域编辑态（由 BKTrackView 每帧同步进来）
 
+    /// 拖动中的临时区间。**拖动中不改 marks**，只改这里（松手才提交）。
+    /// nil = 没在拖。`editing` 优先用它。
+    var dragPreview: (start: Double, end: Double)?
     /// 当前编辑中的区间。拖动中用 `dragPreview`（拖动中不改 marks，只改这里）
     var editing: (start: Double, end: Double)? { dragPreview ?? editingBase }
     /// 进入编辑态时那段（拖动中不变，作为回退）
@@ -784,14 +802,16 @@ fileprivate final class TrackCanvas: UIView {
         // 黄边包住选中区 + 两端各一个黄色拖拽把手（定稿 4.3 / 拖拽把手样式.svg）
         // 尺寸全部从 BKConfig.RegionEdit 读，规格只在那一处改。
         if let seg = r.editing, r.editFade > 0.01 {
-            let cfg = BKConfig.RegionEdit
+            // ⚠️ 不能写 `let cfg = BKConfig.RegionEdit` —— 那是嵌套 **类型**不是值，
+            // Swift 会报 "expected member name or initializer call after type name"。
+            // 直接用全限定名取它的静态常量。
             let alpha = CGFloat(max(0, min(1, r.editFade)))
             let x0 = pad + CGFloat(seg.start) * pps
             let x1 = pad + CGFloat(seg.end) * pps
             let box = CGRect(x: x0, y: waveTop, width: max(1, x1 - x0), height: waveH)
             // 不在可见区就整个跳过
             if box.maxX >= rect.minX - 40 && box.minX <= rect.maxX + 40 {
-                let bw = CGFloat(cfg.selectionBorderWidth)
+                let bw = CGFloat(BKConfig.RegionEdit.selectionBorderWidth)
 
                 // 1) 3pt 黄框（半透明淡入）
                 ctx.saveGState()
@@ -804,9 +824,9 @@ fileprivate final class TrackCanvas: UIView {
                 ctx.restoreGState()
 
                 // 2) 两端把手：16pt 宽竖条、上下各探出 10pt、中心白抓点
-                let hw = CGFloat(cfg.handleWidth) / 2
-                let over = CGFloat(cfg.handleOverhang)
-                let dot = CGFloat(cfg.gripDot)
+                let hw = CGFloat(BKConfig.RegionEdit.handleWidth) / 2
+                let over = CGFloat(BKConfig.RegionEdit.handleOverhang)
+                let dot = CGFloat(BKConfig.RegionEdit.gripDot)
                 for (hx, isDragging) in [(box.minX, r.draggingHandle == 0),
                                          (box.maxX, r.draggingHandle == 1)] {
                     // 只画可见那一侧

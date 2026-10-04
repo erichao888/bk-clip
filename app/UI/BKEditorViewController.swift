@@ -1595,7 +1595,7 @@ extension BKEditorViewController: BKTrackViewDelegate {
 
     /// 长按进了编辑态。折叠状态下先取消折叠 —— 编辑态是给「原片时间轴上的段」用的，
     /// 折叠后轨道已经是成品时间轴，两者对不上
-    func track(_ view: BKTrackView, didBeginRegionEdit from: Double, to end: Double) {
+    func track(_ view: BKTrackView, didBeginRegionEditFrom start: Double, to end: Double) {
         if item.redFolded {
             view.exitRegionEdit()
             var q = item
@@ -1608,13 +1608,13 @@ extension BKEditorViewController: BKTrackViewDelegate {
         // 编辑期间拖动要合并成一步撤销，不能每帧入一次栈
         boundaryDragging = true
         statusLabel.text = String(format: "编辑 %.2f~%.2fs · 拖两端黄把手改边界，点别处退出",
-                                   from, end)
-        BKLog.shared.d(String(format: "进入区域编辑态 [%.2f, %.2f]", from, end))
+                                   start, end)
+        BKLog.shared.d(String(format: "进入区域编辑态 [%.2f, %.2f]", start, end))
     }
 
     /// 拖把手中。**不落盘** —— 拖动中每帧 build+normalize+落盘会卡死，
     /// 只更新状态行告诉用户当前区间，松手才真正提交
-    func track(_ view: BKTrackView, didDragRegionEdge handle: BKTrackView.DragHandle, to newTime: Double) {
+    func track(_ view: BKTrackView, didDragRegionEdge handle: BKHandleEnd, to newTime: Double) {
         guard let seg = view.editingSegment else { return }
         let end = handle == .head ? seg.end : newTime
         let start = handle == .tail ? seg.start : newTime
@@ -1623,7 +1623,7 @@ extension BKEditorViewController: BKTrackViewDelegate {
     }
 
     /// 拖把手松手，提交。这一步才真正改 cuts 并落一次撤销
-    func track(_ view: BKTrackView, didCommitRegionEdit from: Double, to end: Double) {
+    func track(_ view: BKTrackView, didCommitRegionEditFrom start: Double, to end: Double) {
         boundaryDragging = false
         regionEditing = false
         guard let base = view.editingSegment else { return }
@@ -1634,25 +1634,25 @@ extension BKEditorViewController: BKTrackViewDelegate {
         let shown = BKTimeline.pieces(duration: p.duration, cuts: p.cutRanges, splits: p.splits)
         // 按坐标找那一段（不能用 index：index 会随显示粒度变 —— 现有代码的教训）
         var target: (start: Double, end: Double)?
-        for pc in shown where abs(pc.start - from) < 1e-6 && abs(pc.end - to) < 1e-6 {
-            target = (from, to)
+        for pc in shown where abs(pc.start - start) < 1e-6 && abs(pc.end - end) < 1e-6 {
+            target = (start, end)
             break
         }
         guard let seg = target else {
-            BKLog.shared.w("提交拖动：找不到原区间 [\(from), \(to)]，放弃")
+            BKLog.shared.w("提交拖动：找不到原区间 [\(start), \(end)]，放弃")
             return
         }
 
         let newCuts = BKTimeline.cutsAfterResize(cuts: p.cutRanges,
                                                  duration: p.duration,
                                                  oldRange: (seg.start, seg.end),
-                                                 newRange: (from, end))
+                                                 newRange: (start, end))
         applyMarks(BKTimeline.build(duration: p.duration, cuts: newCuts))
-        let grew = (end - seg.end) - (seg.start - from)
+        let grew = (end - seg.end) - (seg.start - start)
         statusLabel.text = grew > 0
-            ? String(format: "边界已拖到 %.2f~%.2fs（多留 %.2fs）", from, end, grew)
-            : String(format: "边界已拖到 %.2f~%.2fs（少留 %.2fs）", from, end, -grew)
-        BKLog.shared.i(String(format: "拖动提交 [%.2f,%.2f] → [%.2f,%.2f]", seg.start, seg.end, from, end))
+            ? String(format: "边界已拖到 %.2f~%.2fs（多留 %.2fs）", start, end, grew)
+            : String(format: "边界已拖到 %.2f~%.2fs（少留 %.2fs）", start, end, -grew)
+        BKLog.shared.i(String(format: "拖动提交 [%.2f,%.2f] → [%.2f,%.2f]", seg.start, seg.end, start, end))
         // 提交后退出编辑态：一次拖动 = 一步撤销 = 一个明确的结束
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             self?.track.exitRegionEdit()
