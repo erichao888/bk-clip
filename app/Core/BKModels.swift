@@ -727,4 +727,73 @@ enum BKTimeline {
         if newTail < segEnd { return segEnd }
         return min(max(newTail, lowerBound), upperBound)
     }
+
+    /// v1.3.0 把手拖拽：**三重夹取**的区间版本（定稿 4.3）。
+    ///
+    /// 初版只写了「整段不短于 minSeg」，实测抓到两个 bug（tools/diag_handle_drag.py）：
+    ///   ① 拖到 0 之前没夹住
+    ///   ② 本来就 < minSeg 的末段，公式从「放大」出发压根没生效
+    /// 正确顺序：**先按素材边界夹，再用「若仍不足则平移补足」**。
+    static func clampRegion(_ start: Double,
+                            _ end: Double,
+                            duration: Double,
+                            minSeg: Double) -> (start: Double, end: Double) {
+        let lo: Double = 0
+        let hi: Double = max(duration, 0)
+        var s = min(max(start, lo), hi)
+        var e = min(max(end, lo), hi)
+        if e - s < minSeg {
+            if hi - lo < minSeg { return (lo, hi) }        // 素材本身短于最短段，没救了
+            let mid = (s + e) / 2
+            s = mid - minSeg / 2
+            e = mid + minSeg / 2
+            if s < lo { s = lo; e = lo + minSeg }
+            if e > hi { s = hi - minSeg; e = hi }
+        }
+        return (s, e)
+    }
+
+    /// 拖动某一段后，**cuts 该怎么改**（N4 的数据流核心）。
+    ///
+    /// 【为什么不能直接改 marks 再 normalize】
+    /// marks 是「显示粒度」（含 splits 切口）且严丝合缝覆盖全长。直接拖边界会把
+    /// 相邻段一起搅乱。正解是**把新边界翻译成 cuts 的增删**，再走 build() 重建。
+    ///
+    /// 规则由「这段本来是 keep 还是 cut」决定 —— 也就是**扫过的区域继承该段同色**：
+    ///   · 原来是 keep：扫过的地方要变 keep → 从 cuts 里**挖掉**
+    ///   · 原来是 cut ：扫过的地方要变 cut  → 往 cuts 里**补上**，旧的挖掉
+    ///
+    /// 验证：tools/diag_handle_drag.py，8 个场景全绿（含越界、拖到不足最短段、keep/cut 双向）。
+    static func cutsAfterResize(cuts: [(Double, Double)],
+                                duration: Double,
+                                oldRange: (Double, Double),
+                                newRange: (Double, Double)) -> [(Double, Double)] {
+        let (os_, oe) = oldRange
+        let (ns, ne) = newRange
+        if abs(ns - os_) < 1e-9 && abs(ne - oe) < 1e-9 { return cuts }
+
+        // 这段本来是不是一个 cut 段
+        var wasCut = false
+        for (a, b) in cuts where a - 1e-9 <= os_ && oe <= b + 1e-9 { wasCut = true; break }
+
+        if wasCut {
+            // 整段要变 cut：先从 cuts 里挖掉旧的，再补上新的
+            var out = cuts
+            out.removeAll { $0.0 - 1e-9 <= os_ && oe <= $0.1 + 1e-9 }
+            out.append((ns, ne))
+            return merge(out, duration: duration)
+        }
+
+        // 整段要变 keep：把新范围从所有 cut 里挖掉
+        var out: [(Double, Double)] = []
+        for (a, b) in cuts {
+            if ne <= a || b <= ns {          // 不相交，原样保留
+                out.append((a, b))
+                continue
+            }
+            if a < ns { out.append((a, ns)) }   // 交集左侧残段
+            if ne < b { out.append((ne, b)) }   // 交集右侧残段
+        }
+        return merge(out, duration: duration)
+    }
 }

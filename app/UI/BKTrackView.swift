@@ -53,6 +53,15 @@ protocol BKTrackViewDelegate: AnyObject {
     func trackDidPullBeyondHead(_ view: BKTrackView)
     /// 已经在片尾，松手时还被往左拽过 60pt → 该换下一条了
     func trackDidPullBeyondTail(_ view: BKTrackView)
+
+    // MARK: v1.3.0 区域编辑态
+
+    /// 长按进入了编辑态。VC 收到后可以给轻震反馈 / 记撤销起点
+    func track(_ view: BKTrackView, didBeginRegionEdit from: Double, to end: Double)
+    /// 拖动编辑态某一端的把手。`handle` 是哪一端，newTime 是要挪到的新位置（画布时间）
+    func track(_ view: BKTrackView, didDragRegionEdge handle: BKTrackView.DragHandle, to newTime: Double)
+    /// 拖把手松手，提交最终区间。VC 在这里把区间换算成 cuts 并落一次撤销
+    func track(_ view: BKTrackView, didCommitRegionEdit from: Double, to end: Double)
 }
 
 final class BKTrackView: UIView {
@@ -65,6 +74,8 @@ final class BKTrackView: UIView {
     private var pan: UIPanGestureRecognizer!
     private var tap: UITapGestureRecognizer!
     private var pinch: UIPinchGestureRecognizer!
+    /// v1.3.0 长按：进入区域编辑态（定稿 4.3）
+    private var longPress: UILongPressGestureRecognizer!
 
     private var duration: Double = 0
     private var pps: CGFloat = 60
@@ -76,6 +87,19 @@ final class BKTrackView: UIView {
     /// 捏合时钉住的那一点：手指中点底下对应的时间，以及它在屏幕上的横坐标
     private var pinchAnchorTime: Double = 0
     private var pinchAnchorX: CGFloat = 0
+
+    // MARK: - v1.3.0 区域编辑态
+
+    /// 当前进入编辑态的那一段（画布时间）。private(set)：只有视图自己能改
+    private(set) var editingSegmentBase: (start: Double, end: Double)?
+    /// 编辑态淡入进度 0~1。做成渐变而不是硬切，符合 iOS 观感
+    private(set) var editFade: Double = 0
+    /// 正在拖的把手：nil = 没拖，.head = 开头端，.tail = 结尾端
+    enum DragHandle { case head, tail }
+    private(set) var draggingHandle: DragHandle?
+    /// 拖把手时**松手前**的临时区间。拖动中不能直接改 marks（每帧重建太贵、
+    /// 撤销栈也扛不住），只记在这里，松手才提交给 VC。
+    private(set) var dragPreview: (start: Double, end: Double)?
 
     /// 整条素材摊成几屏宽。默认 6 屏：再密手指抹不开，再松就看不见气口
     private(set) var zoomScreens: CGFloat = 6
@@ -137,7 +161,53 @@ final class BKTrackView: UIView {
         pinch = UIPinchGestureRecognizer(target: self, action: #selector(onPinch(_:)))
         pinch.delegate = self
         canvas.addGestureRecognizer(pinch)
+
+        // v1.3.0 长按进区域编辑态。0.5s，位移容忍 10pt（按住时手会抖，
+        // 容忍太小会被判定为移动而取消长按）。按住不放时 pan/tap 都让它先走 ——
+        // 三个手势的仲裁见 gestureRecognizer(_:shouldRecognizeSimultaneouslyWith:)。
+        longPress = UILongPressGestureRecognizer(target: self, action: #selector(onLongPress(_:)))
+        longPress.minimumPressDuration = BKConfig.RegionEdit.longPressSec
+        longPress.allowableMovement = 10
+        longPress.delegate = self
+        canvas.addGestureRecognizer(longPress)
     }
+
+    // MARK: - v1.3.0 区域编辑态对外接口
+
+    /// 把编辑态状态同步进画布渲染层。
+    /// 状态在 BKTrackView 上、画在 canvas 上，中间必须过一道 —— 散着写迟早漏。
+    private func syncEditState() {
+        canvas.r.editingBase = editingSegmentBase
+        canvas.r.dragPreview = dragPreview
+        canvas.r.editFade = editFade
+        switch draggingHandle {
+        case .head: canvas.r.draggingHandle = 1
+        case .tail: canvas.r.draggingHandle = 2
+        case nil: canvas.r.draggingHandle = 0
+        }
+    }
+
+    /// 退出编辑态。VC 在切换素材、点别处、提交拖动之后调它
+    func exitRegionEdit() {
+        guard editingSegmentBase != nil || draggingHandle != nil else { return }
+        editingSegmentBase = nil
+        draggingHandle = nil
+        dragPreview = nil
+        editFade = 0
+        // ⚠️ 必须把 allowableMovement 复位 —— 进场时放开了，不复位的话
+        // 下次长按就少了「手抖不算移动」这层保护
+        longPress.allowableMovement = 10
+        scroll.isScrollEnabled = true
+        syncEditState()
+        canvas.setNeedsDisplay()
+    }
+
+    /// 当前是不是在拖把手（VC 用它决定要不要把拖动合并成一步撤销）
+    var isDraggingHandle: Bool { draggingHandle != nil }
+
+    /// 拖把手松手时 VC 要拿「拖动前的原区间」去算 cuts 怎么改 ——
+    /// 所以这个得对外暴露。（`dragPreview` 是拖动中的预览，松手时已经清掉了）
+    var editingSegment: (start: Double, end: Double)? { editingSegmentBase }
 
     // MARK: - 对外接口
 
@@ -277,9 +347,32 @@ extension BKTrackView: UIGestureRecognizerDelegate {
     /// "overriding declaration requires an 'override' keyword"
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard gestureRecognizer === pan else { return true }
+        // 编辑态里 pan 一律不起手：这时手指属于把手，滚动会让画面漂走
+        if editingSegmentBase != nil { return false }
         let x = gestureRecognizer.location(in: canvas).x
         guard let edge = nearestBoundary(to: timeAt(canvasX: x)) else { return false }
         return abs(canvasX(of: edge) - x) <= BKTrackView.handleGrabTolerance
+    }
+
+    /// v1.3.0 手势仲裁（三方互不干扰）：
+    ///
+    /// | 手势 | 什么时候能起手 |
+    /// |---|---|
+    /// | 长按 | 一直可以（它是「按住不动」的唯一候选） |
+    /// | 拖边界 pan | 只在**没进编辑态**且手指确实摸到接缝时 |
+    /// | tap | 正常，长按已失败（=.failed）后才轮到它 |
+    ///
+    /// 长按 → tap 的顺序由 UIKit 自动处理：长按先 recognized，tap 就自动 fail。
+    /// 这里真正要挡的是「长按和 pan 同时起手」——
+    /// 现有 pan 已经靠 `gestureRecognizerShouldBegin` 挡了（编辑态里 return false）。
+    override func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                                    shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        // 双指捏合缩放要能和滚动同时进行
+        if gestureRecognizer === pinch || other === pinch { return true }
+        // 编辑态里，长按（=拖把手）与 pan 允许共存：
+        // pan 在编辑态里本来就不起手，这里放行是为了让「拖把手时 UIScrollView 的减速惯性停掉」
+        if editingSegmentBase != nil && (gestureRecognizer === longPress || other == longPress) { return true }
+        return false
     }
 
     @objc private func onPan(_ g: UIPanGestureRecognizer) {
@@ -307,9 +400,127 @@ extension BKTrackView: UIGestureRecognizerDelegate {
     }
 
     @objc private func onTap(_ g: UITapGestureRecognizer) {
+        // 编辑态里点别处 = 退出编辑态，不该顺手把那一段 toggle 了
+        if editingSegmentBase != nil {
+            exitRegionEdit()
+            return
+        }
         let t = timeAt(canvasX: g.location(in: canvas).x)
         guard t >= 0, t <= duration else { return }
         delegate?.track(self, didTogglePieceAt: t)
+    }
+
+    // MARK: - v1.3.0 长按 → 区域编辑态
+
+    /// 找离触点最近的一段（编辑态的对象）。
+    /// 折叠状态下轨道画布是成品时间轴，直接用 `pieces` 即可（渲染的本来就是它）。
+    private func segment(at t: Double) -> (start: Double, end: Double)? {
+        var best: (start: Double, end: Double)?
+        var bestDist = Double.greatestFiniteMagnitude
+        for pc in canvas.r.pieces {
+            // 含两端；手按在边界上也算命中这一段
+            if t >= pc.start - 1e-9 && t <= pc.end + 1e-9 {
+                let d = t < pc.start ? pc.start - t : (t > pc.end ? t - pc.end : 0)
+                if d < bestDist { bestDist = d; best = (pc.start, pc.end) }
+            }
+        }
+        return best
+    }
+
+    @objc private func onLongPress(_ g: UILongPressGestureRecognizer) {
+        let here = g.location(in: canvas)
+        let t = timeAt(canvasX: here.x)
+
+        switch g.state {
+        case .began:
+            // 编辑态里再长按 = 退出（给用户一个反悔的机会）
+            if editingSegmentBase != nil {
+                exitRegionEdit()
+                return
+            }
+            guard let seg = segment(at: t) else { return }
+            editingSegmentBase = seg
+            editFade = 0
+            // ⚠️ 进编辑态后把 allowableMovement 放开到无限。
+            // 它默认 10pt 的作用是「按住时手抖别误判成滚动」；但进了编辑态就该一直跟到底 ——
+            // 保持 10pt 的话，用户按住把手一抖就会被判 cancelled，把手凭空消失。
+            longPress.allowableMovement = .greatestFiniteMagnitude
+            // 轻震：确认「进编辑态了」这一步被系统接收到
+            let fb = UIImpactFeedbackGenerator(style: .light)
+            fb.prepare()
+            fb.impactOccurred()
+            syncEditState()
+            animateEditFade(to: 1)
+            delegate?.track(self, didBeginRegionEdit(from: seg.start, to: seg.end))
+
+        case .changed:
+            // 编辑态里继续按住并左右挪 = 直接进入拖把手（省一次抬手再按）。
+            // ⚠️ 必须允许长按在手抖超限后继续跟随：allowableMovement 只在**未进入编辑态前**
+            // 用来区分「按住」和「按住后想滚动」。进了编辑态就得一直跟到底，
+            // 否则用户按住拖把手时手一抖，手势被判 cancelled、把手就丢了。
+            guard var seg = editingSegmentBase, draggingHandle == nil else { return }
+            let tol = CGFloat(BKConfig.RegionEdit.handleGrabTolerance)
+            let xHead = canvasX(of: seg.start)
+            let xTail = canvasX(of: seg.end)
+            // 离哪端近就拖哪端；两端都远（手指在段中间）就不拖
+            let dHead = abs(xHead - here.x)
+            let dTail = abs(xTail - here.x)
+            if min(dHead, dTail) > tol { return }
+            let h: DragHandle = (dHead <= dTail) ? .head : .tail
+            draggingHandle = h
+            dragPreview = seg
+            scroll.isScrollEnabled = false
+            syncEditState()
+            delegate?.track(self, didDragRegionEdge: h, to: t)
+            _ = seg
+
+        case .changed where draggingHandle != nil:
+            // 已经在拖某端了：持续更新预览区间（不松手就一直跟）
+            guard var prev = dragPreview else { return }
+            // ⚠️ 先夹取再更新：拖出 [0, duration] 要挡住，
+            // 压到比 minSegmentSec 还短也要挡住 —— 不然拖到边界外再拖回来，
+            // 中间会经历「非法区间」，松手时提交出一个越界的段
+            let wantStart = (draggingHandle == .head) ? t : prev.start
+            let wantEnd = (draggingHandle == .tail) ? t : prev.end
+            let clamped = BKTimeline.clampRegion(wantStart, wantEnd,
+                                                 duration: duration,
+                                                 minSeg: BKConfig.RegionEdit.minSegmentSec)
+            prev.start = clamped.start
+            prev.end = clamped.end
+            dragPreview = prev
+            syncEditState()
+            canvas.setNeedsDisplay()
+            delegate?.track(self, didDragRegionEdge: draggingHandle!, to: t)
+
+        case .ended, .cancelled, .failed:
+            // 抬手：结束拖动（如果拖过），否则就只是退出/保持编辑态
+            if draggingHandle != nil {
+                if let prev = dragPreview {
+                    delegate?.track(self, didCommitRegionEdit(from: prev.start, to: prev.end))
+                }
+                draggingHandle = nil
+                dragPreview = nil
+                scroll.isScrollEnabled = true
+                syncEditState()
+            } else if editingSegmentBase != nil {
+                // 纯长按没拖 → 松手后**保持**编辑态，方便继续拖把手
+                syncEditState()
+            }
+
+        default:
+            break
+        }
+    }
+
+    /// 编辑态淡入淡出。用 UIView.animate 但不带视图，只驱动一个数值，
+    /// 每步 setNeedsDisplay 重画画布那一层
+    private func animateEditFade(to target: Double) {
+        UIView.animate(withDuration: BKConfig.RegionEdit.fadeSec,
+                       delay: 0,
+                       options: [.beginFromCurrentState, .allowUserInteraction]) {
+            self.editFade = target
+            self.canvas.setNeedsDisplay()
+        }
     }
 
     /// 双指捏合缩放。刻度是「整条素材摊成几屏宽」，1 屏 = 全览，20 屏 = 贴脸。
@@ -413,6 +624,17 @@ fileprivate struct TrackRender {
         if let last = map.last { return last.src + last.dur }
         return t
     }
+
+    // MARK: v1.3.0 区域编辑态（由 BKTrackView 每帧同步进来）
+
+    /// 当前编辑中的区间。拖动中用 `dragPreview`（拖动中不改 marks，只改这里）
+    var editing: (start: Double, end: Double)? { dragPreview ?? editingBase }
+    /// 进入编辑态时那段（拖动中不变，作为回退）
+    var editingBase: (start: Double, end: Double)?
+    /// 淡入进度 0~1
+    var editFade: Double = 0
+    /// 正在拖哪一端：0 = 无，1 = 开头，2 = 结尾
+    var draggingHandle: Int = 0
 }
 
 fileprivate final class TrackCanvas: UIView {
@@ -556,6 +778,56 @@ fileprivate final class TrackCanvas: UIView {
                 t += 5
             }
             ctx.strokePath()
+        }
+
+        // ── v1.3.0 区域编辑态 ──────────────────────────────
+        // 黄边包住选中区 + 两端各一个黄色拖拽把手（定稿 4.3 / 拖拽把手样式.svg）
+        // 尺寸全部从 BKConfig.RegionEdit 读，规格只在那一处改。
+        if let seg = r.editing, r.editFade > 0.01 {
+            let cfg = BKConfig.RegionEdit
+            let alpha = CGFloat(max(0, min(1, r.editFade)))
+            let x0 = pad + CGFloat(seg.start) * pps
+            let x1 = pad + CGFloat(seg.end) * pps
+            let box = CGRect(x: x0, y: waveTop, width: max(1, x1 - x0), height: waveH)
+            // 不在可见区就整个跳过
+            if box.maxX >= rect.minX - 40 && box.minX <= rect.maxX + 40 {
+                let bw = CGFloat(cfg.selectionBorderWidth)
+
+                // 1) 3pt 黄框（半透明淡入）
+                ctx.saveGState()
+                ctx.setAlpha(alpha)
+                ctx.setStrokeColor(BKTheme.Color.warning.cgColor)
+                ctx.setLineWidth(bw)
+                let border = CGRect(x: box.minX + bw / 2, y: box.minY + bw / 2,
+                                    width: box.width - bw, height: box.height - bw)
+                ctx.stroke(border)
+                ctx.restoreGState()
+
+                // 2) 两端把手：16pt 宽竖条、上下各探出 10pt、中心白抓点
+                let hw = CGFloat(cfg.handleWidth) / 2
+                let over = CGFloat(cfg.handleOverhang)
+                let dot = CGFloat(cfg.gripDot)
+                for (hx, isDragging) in [(box.minX, r.draggingHandle == 0),
+                                         (box.maxX, r.draggingHandle == 1)] {
+                    // 只画可见那一侧
+                    if hx < rect.minX - 20 || hx > rect.maxX + 20 { continue }
+                    let bar = CGRect(x: hx - hw,
+                                      y: box.midY - (box.height / 2 + over) - (hw / 2),
+                                      width: hw * 2,
+                                      height: box.height + over * 2)
+                    ctx.saveGState()
+                    ctx.setAlpha(alpha)
+                    // 正在拖的那一枚加深，给「你正捏着它」的实感
+                    ctx.setFillColor(BKTheme.Color.warning.cgColor)
+                    ctx.fill(bar)
+                    // 白抓点
+                    ctx.setFillColor(BKTheme.Color.handle.cgColor)
+                    let d = isDragging ? dot * 1.5 : dot
+                    let dotRect = CGRect(x: hx - d / 2, y: box.midY - d / 2, width: d, height: d)
+                    ctx.fillEllipse(in: dotRect)
+                    ctx.restoreGState()
+                }
+            }
         }
     }
 }

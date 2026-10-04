@@ -193,6 +193,40 @@ enum BKConfig {
         static let crossFadeSec: Double = 0.015
     }
 
+    /// v1.3.0 区域编辑态（长按进入的「黄边 + 两端黄把手」）
+    ///
+    /// 数值全部来自定稿 `docs/轨道删除与拖拽定稿.md` 4.3 / 4.3.1 与 `docs/拖拽把手样式.svg`，
+    /// 实现时**只从这里读**，别在 UI 里散落魔法数字 —— 改规格只改这一处。
+    ///
+    /// ⚠️ 尺寸一律用 Double 不用 CGFloat：这个文件只 import Foundation，
+    /// CGFloat 靠 Foundation 间接带进来的 CoreGraphics，依赖它不稳。
+    /// UI 层用的时候 `CGFloat(RegionEdit.handleWidth)` 转一下就行。
+    enum RegionEdit {
+        /// 长按多久进编辑态。0.5s 是「不像误触、又不难等」的经验值
+        static let longPressSec: Double = 0.5
+
+        /// 把手竖条的宽度（pt）
+        static let handleWidth: Double = 16
+        /// 把手上下各探出轨道多少（pt）
+        static let handleOverhang: Double = 10
+        /// 把手中心白抓点的直径（pt）
+        static let gripDot: Double = 5
+        /// 把手触控区边长（pt）。Apple 建议 ≥44，这里取 44
+        static let handleTouchTarget: Double = 44
+
+        /// 选中区黄边线宽（pt）
+        static let selectionBorderWidth: Double = 3
+        /// 编辑态淡入淡出时长（秒）
+        static let fadeSec: Double = 0.18
+
+        /// 一段最短多少秒。拖把手夹到这里就停，防碎成无数小段
+        static let minSegmentSec: Double = 0.1
+
+        /// 手指离把手多近才算摸到了。把手本身只有 16pt 宽，
+        /// 但手指不是鼠标 —— 按 16pt 判定基本抓不住
+        static let handleGrabTolerance: Double = 28
+    }
+
     // MARK: - 自动保存
 
     enum Draft {
