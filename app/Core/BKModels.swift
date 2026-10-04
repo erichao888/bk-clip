@@ -631,24 +631,38 @@ enum BKTimeline {
         case cut       // 红区：导出后不保留
     }
 
-    /// 素材是否被「删红键」折叠过。折叠是真折叠：绿区 ripple 拼接、时间轴变短，
-    /// 但 **.cut 段的源区间永远保留**（这就是皓哥说的「缓存」）——
-    /// 折叠只影响渲染与播放，不销毁源时间，日后拖接缝能把已删素材拖回来。
-    /// ⚠️ 这个标志存在 `marks` 之外（`BKProject.redFolded`），因为它是「整条素材」级别的状态，
-    /// 不是某一段的属性。
+    /// 素材是否被「一键去红」处理过（v1.3.3 起界面上叫「已删除」，代码里仍叫 redFolded）。
+    ///
+    /// 【v1.3.3 语义澄清 —— 皓哥 18:01 定】
+    /// 用户感知是「**删掉**」：红区听不到、看不见、导出没有，界面上不出现「折叠」二字。
+    /// 但**数据必须留着**（`cuts` 一个都不动）—— 否则长按绿区拖把手时，
+    /// 程序不知道原来哪里是红区、往哪扩就找不回被删掉的素材。
+    /// 所以它是「显示模式开关 + 保留范围记录」，不是「数据已删除」的记录。
+    ///
+    /// ⚠️ 这个标志存在 `marks` 之外（`BKProject.redFolded`），因为它是「整条素材」级别的状态。
     static func foldedPieces(duration: Double,
                              cuts: [(Double, Double)],
                              splits: [Double],
                              redFolded: Bool) -> [BKMark] {
         let base = pieces(duration: duration, cuts: cuts, splits: splits)
         guard redFolded else { return base }
-        // 折叠 = 只留 keep 段，按原顺序首尾相接拼成一条连续的绿轨。
+        // 已删除 = 只留 keep 段，按原顺序首尾相接拼成一条连续的绿轨。
         // 相邻两个 keep 之间原本夹着 cut，拼接后中间的空洞就合上了 —— 这就是 ripple。
         let kept = base.filter { $0.kind == .keep }
         guard !kept.isEmpty else { return base }
         var out: [BKMark] = []
         var cursor: Double = 0
-        for m in kept {
+        for (i, m) in kept.enumerated() {
+            // 【v1.3.3】区与区之间插一个**零长度标记**表示「这里有一条分割线」。
+            // 为什么必须有：分割线是「区的分隔」不是「删除的痕迹」——
+            // 每个绿区仍是一个独立可编辑单元，要能长按它进编辑态。
+            // v1.3.2 把绿段拼成一条、边界全丢，折叠后退化成「一整条不可分割的音频」，没法编辑。
+            //
+            // 零长度标记不污染时长计算：keepRanges / outputDuration 只累加 .keep 的
+            // (end - start)，零长度加 0 等于没加。
+            if i > 0 {
+                out.append(BKMark(start: cursor, end: cursor, kind: .keep))
+            }
             let len = m.end - m.start
             out.append(BKMark(start: cursor, end: cursor + len, kind: .keep))
             cursor += len

@@ -49,13 +49,6 @@ protocol BKTrackViewDelegate: AnyObject {
     func track(_ view: BKTrackView, didScrollTo time: Double)
     /// 点了一下一个片段
     func track(_ view: BKTrackView, didTogglePieceAt time: Double)
-    /// 手指摸上了一条边界，拖动开始。VC 收到它就该开「合并提交」，
-    /// 否则拖动过程中每一帧都入一次撤销栈，撤一次只退一帧
-    func track(_ view: BKTrackView, didBeginBoundaryDragNear time: Double)
-    /// 拖某条分界线。near 是起手时的旧位置，newTime 是要挪到的新位置
-    func track(_ view: BKTrackView, didDragBoundaryNear near: Double, to newTime: Double)
-    /// 手指离开，拖动结束
-    func trackDidEndBoundaryDrag(_ view: BKTrackView)
     /// 缩放变了（滑杆或双指捏合）。screens 是「整条素材摊成几屏宽」
     func track(_ view: BKTrackView, didChangeZoomTo screens: CGFloat)
     /// 手指一碰轨道。**正在播放时收到它就该立刻 pause**（定稿 4.5.1），
@@ -94,7 +87,6 @@ final class BKTrackView: UIView {
     private var lastWidth: CGFloat = 0
     /// 程序滚动的标志：播放时是代码在推 contentOffset，别再回调给外部去 seek
     private var programmatic = false
-    private var draggedEdge: Double?
     private var pinchBaseZoom: CGFloat = 6
     /// 捏合时钉住的那一点：手指中点底下对应的时间，以及它在屏幕上的横坐标
     private var pinchAnchorTime: Double = 0
@@ -121,9 +113,6 @@ final class BKTrackView: UIView {
     static let zoomMin: CGFloat = 1
     static let zoomMax: CGFloat = 20
 
-    /// 手指离边界多近才算「摸到了把手」。把手本身只有 4pt 宽，
-    /// 但手指不是鼠标 —— 按 4pt 判定基本抓不住
-    private static let handleGrabTolerance: CGFloat = 20
 
     // MARK: - 初始化
 
@@ -209,7 +198,7 @@ final class BKTrackView: UIView {
         longPress.allowableMovement = 10
         scroll.isScrollEnabled = true
         syncEditState()
-        canvas.setNeedsDisplay()
+        redrawVisible()
     }
 
     /// 当前是不是在拖把手（VC 用它决定要不要把拖动合并成一步撤销）
@@ -226,7 +215,8 @@ final class BKTrackView: UIView {
                     splits: [Double],
                     duration: Double,
                     thresholdDb: Double,
-                    foldMap: [(out: Double, src: Double, dur: Double)]? = nil) {
+                    foldMap: [(out: Double, src: Double, dur: Double)]? = nil,
+                    redFolded: Bool = false) {
         let keep = currentTime
         self.duration = duration
         canvas.r.envelope = envelope
@@ -235,8 +225,40 @@ final class BKTrackView: UIView {
         canvas.r.duration = duration
         canvas.r.thresholdDb = thresholdDb
         canvas.r.foldMap = foldMap
+        canvas.r.redFolded = redFolded
         relayout(keepPointerTime: keep)
-        canvas.setNeedsDisplay()
+        // 【v1.3.3 卡顿修复】按可见区重绘，别用无参 setNeedsDisplay()。
+        // 无参版本 rect = 整个 bounds（放大 20 屏时 7800pt），
+        // 而 draw(_:) 里的可见列裁剪就完全失效了 —— 每帧白画 95%。
+        redrawVisible()
+    }
+
+    /// 只重画当前可见的那一屏。
+    ///
+    /// 【为什么必须显式传 rect】`UIView.setNeedsDisplay()` 无参时，
+    /// 系统给的脏矩形是整个 bounds。而我们这个 canvas 在 UIScrollView 里、
+    /// 宽可达 7800pt，`draw(_:)` 里的列裁剪（c0/c1）就白算了。
+    /// 拖动时每帧走一遍 refreshTrack → setContent，无参调用 = 每帧全量重画 = 卡顿。
+    ///
+    /// 可见区怎么算：canvas 局部坐标 = 内容时间 × pps + pad，
+    /// 而当前指针时间两侧各半屏（pad = 宽/2，这个巧合是刻意的，见文件头几何约定）。
+    private func redrawVisible() {
+        guard pps > 0, bounds.width > 1, duration > 0 else {
+            canvas.setNeedsDisplay()
+            return
+        }
+        let vis = viewport
+        // 上下留一点余量，避免边界处出现 1px 缝
+        let padY: CGFloat = 4
+        let x0 = canvas.r.pad + CGFloat(vis.start) * pps - 2
+        let x1 = canvas.r.pad + CGFloat(vis.end) * pps + 2
+        let r = CGRect(x: x0, y: 0, width: max(1, x1 - x0), height: canvas.bounds.height)
+            .intersection(canvas.bounds.insetBy(dx: 0, dy: -padY))
+        if r.isNull || r.width < 1 {
+            canvas.setNeedsDisplay()
+        } else {
+            canvas.setNeedsDisplay(r)
+        }
     }
 
     /// 当前指针所指时间
@@ -289,7 +311,7 @@ final class BKTrackView: UIView {
             scroll.contentOffset = CGPoint(x: min(max(target, 0), maxOffset), y: 0)
             DispatchQueue.main.async { self.programmatic = false }
         }
-        canvas.setNeedsDisplay()
+        redrawVisible()
     }
 
     // MARK: - 布局
@@ -300,7 +322,7 @@ final class BKTrackView: UIView {
         if abs(bounds.width - lastWidth) > 0.5 {
             lastWidth = bounds.width
             relayout(keepPointerTime: currentTime)
-            canvas.setNeedsDisplay()
+            redrawVisible()
         }
     }
 
@@ -333,35 +355,35 @@ final class BKTrackView: UIView {
         return Double((x - canvas.r.pad) / canvas.r.pps)
     }
 
-    /// 找离 t 最近的一条内部边界（素材首尾不算）
-    private func nearestBoundary(to t: Double) -> Double? {
-        var best: Double?
-        // 超过 0.6 秒就不算摸到：不然手指一放下去就抓住远处的刀
-        var bestDist = 0.6
-        for pc in canvas.r.pieces {
-            for edge in [pc.start, pc.end] where edge > 0.001 && edge < duration - 0.001 {
-                let d = abs(edge - t)
-                if d < bestDist { bestDist = d; best = edge }
-            }
-        }
-        return best
-    }
 }
 
 // MARK: - 手势
 
 extension BKTrackView: UIGestureRecognizerDelegate {
 
-    /// 只有真的摸到分界线，自定义 pan 才接管；否则一律放行给 UIScrollView 去滚。
+    /// 【v1.3.3 手势统一 —— 拖接缝 pan 已取消】
+    ///
+    /// 原来这里判断「手指是否摸到分界线」，摸到就抢下 pan 自己去拖接缝。
+    /// 现在**一律放行给 UIScrollView 去滚**，拖边界只走「长按 → 黄把手」这一条路。
+    ///
+    /// 【为什么取消】方案甲（皓哥 17:41 定）：两套拖拽逻辑在数学上不等价 ——
+    ///   拖接缝（moveBoundary）：改接缝位置，左右两段**同时**变
+    ///   黄把手（cutsAfterResize）：改**这一段**，邻居**被动让位**
+    /// 并存 = 同一件事两种做法，行为取决于手指落在哪儿 —— 这是原方案最含糊的地方。
+    /// 统一后只有一条语义：**拖哪一段的哪一端，那一段变长/变短，扫过区域继承该段颜色。**
+    /// 红区绿区完全对等。
+    ///
+    /// 代价：微调刀口前多一次长按（0.5s）。取舍理由是这个 App 的核心竞争力是「精度可控」，
+    /// **行为唯一 > 少一次长按**。剪映本身也是长按才出精确调节手柄。
+    ///
+    /// ⚠️ 这里恒返回 true：v1.3.3 起「拖接缝」这条路彻底取消，pan 只服务滚动。
+    ///    保留这个 override 是因为它是 UIScrollView 拖动与 canvas 手势仲裁的入口，
+    ///    未来若要恢复某种接管行为，从这里下手。
+    ///
     /// 注意这是 UIView 自带的方法，必须 override —— 直接写 func 会报
     /// "overriding declaration requires an 'override' keyword"
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard gestureRecognizer === pan else { return true }
-        // 编辑态里 pan 一律不起手：这时手指属于把手，滚动会让画面漂走
-        if editingSegmentBase != nil { return false }
-        let x = gestureRecognizer.location(in: canvas).x
-        guard let edge = nearestBoundary(to: timeAt(canvasX: x)) else { return false }
-        return abs(canvasX(of: edge) - x) <= BKTrackView.handleGrabTolerance
+        true
     }
 
     /// v1.3.0 手势仲裁（三方互不干扰）：
@@ -390,28 +412,11 @@ extension BKTrackView: UIGestureRecognizerDelegate {
         return false
     }
 
+    /// pan 现在**只服务滚动**，不拖任何东西（v1.3.3 取消拖接缝）。
+    /// 这个 handler 保留是为了让 pan 在 canvas 上正常起手
+    /// （否则 UIScrollView 的 pan 可能被子视图手势截胡），但不抢滚动、也不编辑。
     @objc private func onPan(_ g: UIPanGestureRecognizer) {
-        let here = g.location(in: canvas)
-        switch g.state {
-        case .began:
-            // 关掉滚动，否则拖拉的同时整条内容会跟着漂走
-            scroll.isScrollEnabled = false
-            draggedEdge = nearestBoundary(to: timeAt(canvasX: here.x))
-            if let edge = draggedEdge {
-                delegate?.track(self, didBeginBoundaryDragNear: edge)
-            }
-        case .changed:
-            guard let from = draggedEdge else { return }
-            delegate?.track(self, didDragBoundaryNear: from, to: timeAt(canvasX: here.x))
-        case .ended, .cancelled, .failed:
-            if draggedEdge != nil {
-                delegate?.trackDidEndBoundaryDrag(self)
-            }
-            draggedEdge = nil
-            scroll.isScrollEnabled = true
-        default:
-            break
-        }
+        // 滚动交给 UIScrollView 自己处理，这里什么都不做
     }
 
     @objc private func onTap(_ g: UITapGestureRecognizer) {
@@ -433,6 +438,11 @@ extension BKTrackView: UIGestureRecognizerDelegate {
         var best: (start: Double, end: Double)?
         var bestDist = Double.greatestFiniteMagnitude
         for pc in canvas.r.pieces {
+            // 【v1.3.3】跳过零长度标记。
+            // 折叠后 `foldedPieces` 会在区与区之间插一个 start == end 的标记当分割线，
+            // 而零长度段对 t 的区间判断是 `t >= start && t <= end` —— 任何落在该点上的
+            // 手指都会命中它，返回一个宽度为 0 的段 → 黄框宽度 0，看起来就是「黄把手出不来」。
+            if pc.duration <= 1e-9 { continue }
             // 含两端；手按在边界上也算命中这一段
             if t >= pc.start - 1e-9 && t <= pc.end + 1e-9 {
                 let d = t < pc.start ? pc.start - t : (t > pc.end ? t - pc.end : 0)
@@ -504,7 +514,7 @@ extension BKTrackView: UIGestureRecognizerDelegate {
             prev.end = clamped.end
             dragPreview = prev
             syncEditState()
-            canvas.setNeedsDisplay()
+            redrawVisible()
             delegate?.track(self, didDragRegionEdge: draggingHandle!, to: t)
 
         case .ended, .cancelled, .failed:
@@ -528,13 +538,19 @@ extension BKTrackView: UIGestureRecognizerDelegate {
     }
 
     /// 编辑态淡入淡出。用 UIView.animate 但不带视图，只驱动一个数值，
-    /// 每步 setNeedsDisplay 重画画布那一层
+    /// 每步 setNeedsDisplay 重画画布那一层。
+    ///
+    /// ⚠️ **这里必须调 syncEditState()**（v1.3.2 漏了，导致黄框黄把手完全出不来）：
+    /// 状态同步在 `canvas.r` 上，光改 `self.editFade` 画布并不知道；
+    /// 而 `draw` 里的判断是 `r.editFade > 0.01`，不同步就永远是 0 → 整个编辑态被跳过。
+    /// 凡是改完会影响画布的状态，都要用这一处出口，别散着写。
     private func animateEditFade(to target: Double) {
         UIView.animate(withDuration: BKConfig.RegionEdit.fadeSec,
                        delay: 0,
                        options: [.beginFromCurrentState, .allowUserInteraction]) {
             self.editFade = target
-            self.canvas.setNeedsDisplay()
+            self.syncEditState()
+            redrawVisible()
         }
     }
 
@@ -653,6 +669,10 @@ fileprivate struct TrackRender {
     var editFade: Double = 0
     /// 正在拖哪一端：0 = 无，1 = 开头，2 = 结尾
     var draggingHandle: Int = 0
+    /// 【v1.3.3】是否处于「一键去红已应用」状态。
+    /// 折叠后波形连成一片，但**区与区的分割线要保留**（每个绿区仍可长按编辑），
+    /// 靠 `pieces` 里插的零长度标记（start == end）来定位分割线。
+    var redFolded: Bool = false
 }
 
 fileprivate final class TrackCanvas: UIView {
@@ -762,23 +782,40 @@ fileprivate final class TrackCanvas: UIView {
         }
         ctx.setLineDash(phase: 0, lengths: [])
 
-        // 边界把手：粉红块两端各一枚小白条（定稿：#FFFFFF 4×8pt）
-        // 白压在浅绿上边界会糊，加一道极淡的灰边把它提出来
-        for pc in r.pieces where pc.kind == .cut {
-            for edge in [pc.start, pc.end] {
-                let x = pad + CGFloat(edge) * pps
-                if x < rect.minX - 4 || x > rect.maxX + 4 { continue }
-                let box = CGRect(x: x - handleW / 2,
-                                 y: mid - handleH / 2,
-                                 width: handleW,
-                                 height: handleH)
-                let rounded = CGPath(roundedRect: box, cornerWidth: 1.5, cornerHeight: 1.5,
-                                     transform: nil)
-                ctx.setFillColor(BKTheme.Color.handle.cgColor)
-                ctx.setStrokeColor(BKTheme.Color.handleLine.cgColor)
-                ctx.setLineWidth(0.5)
-                ctx.addPath(rounded)
-                ctx.drawPath(using: .fillStroke)
+        // 边界把手：粉红块两端各一枚小白条
+        //
+        // 【v1.3.3 删除】原来这里给红区两端画白色小把手（4×8pt）。
+        // 去掉的原因（皓哥 18:41 定）：
+        //   ① 视觉上有**两套把手**（白色小条 + 长按出现的黄把手），用户要分辨「哪个能拖」
+        //   ② 红绿区待遇不平等（红区有把手、绿区没有）—— 而实际上两者都该长按进编辑态
+        // 现在统一成一套：**长按任意段 → 黄框 + 两端黄把手**（见文件末尾的编辑态绘制）。
+        // 「被切开」这件事改由**分割线**表达（见下面 foldedSeams 的绘制）。
+
+        // 【v1.3.3】已删除状态下的区分割线。
+        //
+        // 分割线是「区的分隔」不是「删除的痕迹」：红区删掉后波形连成一片，
+        // 但每个绿区仍是独立可编辑单元（要能长按它），所以要画出边界。
+        // 画法沿用手动切口那套「挖成页面底色 + 两侧描边」——「被切开」必须看得见。
+        //
+        // 缝宽随缩放自适应：折叠后段很密（样片 29 段 / 成品 10.5s），
+        // 1 屏时每段只 22px，固定 4px 缝会占 18%、轨道碎成筛子。
+        if r.redFolded {
+            let ppsRef = pps
+            // 每 px 代表多少秒 → 缝宽取「不超过该段宽度 1/6」，并夹在 1...4pt
+            let segTypical = max(1.0 / max(ppsRef, 0.001), 0.001)
+            let gap = min(max(CGFloat(segTypical * ppsRef) / 6.0, 1), 4)
+            for seg in r.pieces where seg.duration <= 1e-9 {
+                let x = pad + CGFloat(seg.start) * pps
+                if x < rect.minX - 8 || x > rect.maxX + 8 { continue }
+                ctx.setFillColor(BKTheme.Color.page.cgColor)
+                ctx.fill(CGRect(x: x - gap / 2, y: waveTop, width: gap, height: waveH))
+                ctx.setStrokeColor(BKTheme.Color.selection.cgColor)
+                ctx.setLineWidth(1)
+                ctx.move(to: CGPoint(x: x - gap / 2, y: waveTop))
+                ctx.addLine(to: CGPoint(x: x - gap / 2, y: waveTop + waveH))
+                ctx.move(to: CGPoint(x: x + gap / 2, y: waveTop))
+                ctx.addLine(to: CGPoint(x: x + gap / 2, y: waveTop + waveH))
+                ctx.strokePath()
             }
         }
 

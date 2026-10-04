@@ -28,6 +28,13 @@ files = sys.argv[1:]
 # π 在几何语境下是正常记号，放行。
 WHITELIST = set("π")
 
+# ⚠️ 必须单独查 U+FFFD（REPLACEMENT CHARACTER �）。
+# 起因：v1.3.3 修 bug 时 Edit 工具往注释里塞进了 `不��步`（两个 U+FFFD），
+# 而扫描脚本**漏报了** —— 因为 U+FFFD 落在「替换字符」区，不在原来那几个
+# 外国文字区里。后果是真乱码混进了提交。
+# 这类字符**绝不可能**是有意写进代码的，一律算乱码。
+REPLACEMENT = "�"
+
 bad = 0
 for f in files:
     try:
@@ -36,6 +43,11 @@ for f in files:
         print("读取失败", f, e)
         continue
     for i, line in enumerate(lines, 1):
+        # U+FFFD 单独判定
+        if REPLACEMENT in line:
+            print("%s:%d: [U+FFFD 替换字符] :: %s" % (f, i, line.strip()[:80]))
+            bad += 1
+            continue
         m = [c for c in PAT.findall(line) if c not in WHITELIST]
         if m:
             # 过滤掉明显是项目自用排版符号的（· × ② ⟳ − 等不在上述范围，天然排除）

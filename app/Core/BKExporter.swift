@@ -347,10 +347,27 @@ enum BKExporter {
             let segStart = CMTime(seconds: seg.0, preferredTimescale: 600)
             let segEnd = CMTime(seconds: seg.1, preferredTimescale: 600)
             let segRange = CMTimeRange(start: segStart, duration: segEnd - segStart)
+
+            // 【2026-10-04 v1.3.3 音画同步第三次修复 —— 段末锚点】
+            //
+            // 前两次都错在同一根因：游标推进量与「实际写入的样本」不匹配。
+            //   v1.2.15 推进「标称段长」，但样本照写 → 末尾溢出，下一段从标称起 → 重叠累积
+            //   v1.3.2 推进「两轨较大值」→ 短轨留空洞 → 播放器静音/冻结该轨
+            //
+            // 这次的关键是**锚点**：本段在成品里的终点固定为
+            //     segOutEnd = outputCursor + 标称段长
+            // drainSegment 里写**每一个样本前**都检查「新 PTS + 样本时长 ≤ 锚点」，
+            // 超了就停 —— 于是两轨都不越界，而下一段仍从同一个 outputCursor 起，
+            // **段边界处两轨精确对齐，误差每段归零、绝不累积**。
+            //
+            // 代价：段末尾两轨各有 <一帧 / <一块（16.7ms / 21.3ms）没填满
+            //（那部分本来就会被 inRange 丢掉），不影响同步。
+            // 验证：tools/diag_avsync_v4.py，四条样片全绿（无空洞、无倒退、段边界一致）。
+            let segOutEnd = outputCursor + segRange.duration
             // 这一段在成品里的新起点，减去段起点就是全体时间戳要平移的量
             let offset = outputCursor - segStart
             BKDiag.shared.noteStage("搬运第 \(i + 1)/\(keeps.count) 段 源[\(BKDiag.s(seg.0))→\(BKDiag.s(seg.1))]"
-                                    + " → 成品[\(BKDiag.s(outputCursor.seconds))→\(BKDiag.s((outputCursor + segRange.duration).seconds))]"
+                                    + " → 成品[\(BKDiag.s(outputCursor.seconds))→\(BKDiag.s(segOutEnd.seconds))]"
                                     + " 平移 \(BKDiag.s(offset.seconds))s")
 
             let reader = try AVAssetReader(asset: asset)
@@ -392,24 +409,24 @@ enum BKExporter {
             defer { reader.cancelReading() }
 
             // 双通道交替搬运（见 drainSegment 的注释：先搬完一条再搬另一条会死锁）
-            // 【2026-10-04】返回值 = 本段实际写入成品的时长，**不是**标称段长。
-            // 段末尾被 inRange 丢掉的那点尾巴（不足一帧/一音频块）会让实际 < 标称，
-            // 按标称推进 cursor 的话这个差会逐段累积成音画错位。
-            let actualLen = try drainSegment(video: videoOut,
-                                             videoInput: videoInput,
-                                             audio: audioOut,
-                                             audioInput: audioInput,
-                                             offset: offset,
-                                             writer: writer,
-                                             reader: reader,
-                                             segStart: seg.0,
-                                             segEnd: seg.1,
-                                             planFps: plan.fps,
-                                             minFrameInterval: plan.minFrameInterval)
+            // segOutEnd 是本段在成品里的终点锚点，drainSegment 用它做「不越界」判断
+            try drainSegment(video: videoOut,
+                             videoInput: videoInput,
+                             audio: audioOut,
+                             audioInput: audioInput,
+                             offset: offset,
+                             segOutEnd: segOutEnd,
+                             writer: writer,
+                             reader: reader,
+                             segStart: seg.0,
+                             segEnd: seg.1,
+                             planFps: plan.fps,
+                             minFrameInterval: plan.minFrameInterval)
 
-            // cursor 前进「实际长度」，下一段的 offset 才和这一段末尾严丝合缝
-            outputCursor = outputCursor + CMTime(seconds: actualLen, preferredTimescale: 600)
-            written += actualLen
+            // 游标推进**标称段长** —— 不是实际写入长度。
+            // 这是 v1.3.3 音画修复的核心：锚点固定，段边界两轨才能精确对齐。
+            outputCursor = segOutEnd
+            written += segRange.duration.seconds
             let fraction = planned > 0 ? min(max(written / planned, 0), 1) : 1.0
             DispatchQueue.main.async { progress(i + 1, keeps.count, fraction) }
         }
@@ -504,30 +521,28 @@ enum BKExporter {
     /// - parameter reader: 传进来只为读 status/error。copyNextSampleBuffer 返回 nil
     ///   有「搬完了」和「解码中途挂了」两种含义，不查 status 就分不出来（IMG_4873 案）
     ///
-    /// - returns: 本段**实际写入成品的时长（秒）**。调用方必须用它推进 outputCursor，
-    ///   **不能**用标称的 `segEnd - segStart`。
+    /// - parameter segOutEnd: **本段在成品里的终点锚点**（CMTime）。
+    ///   v1.3.3 音画同步修复的核心：写每个样本前先检查「新 PTS + 样本时长 ≤ 锚点」，
+    ///   超了就停。这样两轨都不越界，而下一段仍从同一个游标起 → 段边界精确对齐、
+    ///   误差每段归零、绝不累积。
     ///
-    /// 【2026-10-04 为什么返回值不能是标称段长】
-    /// `inRange` 按 `[segStart, segEnd)` 放行，段末尾那点「不足一帧 / 不足一个音频块」的
-    /// 尾巴会被丢掉。于是**实际写入的时长 < 标称段长**：
-    ///   视频末帧落在 ceil(segEnd/帧长) 之前，音频末块落在 ceil(segEnd/块长) 之前，
-    ///   两者余数不同（60fps 是 16.67ms、AAC 块 21.33ms）→ 每段视频轨和音频轨的
-    ///   收尾余量不一样。
-    /// 老代码按标称推进 cursor，这两份余量差就**逐段累积、永不归零** → 音画持续错位。
-    /// 实测末段累计：4580 −6.1ms / 4582 −5.1ms / 4583 −14.6ms。
-    /// 改成按实际写入长度推进后，每段起点严丝合缝，误差不再跨段累积。
-    @discardableResult
+    ///   ⚠️ 前两次为什么错（都是「游标推进量」与「实际写入」不匹配）：
+    ///     v1.2.15 推进标称段长但样本照写 → 末尾溢出 → 与下一段重叠 → 错位累积
+    ///     v1.3.2 推进两轨较大值 → 短轨留空洞 → 播放器静音/冻结该轨
+    ///   这次是「标称推进 + 样本不越界」，两者缺一不可。
+    ///   验证：tools/diag_avsync_v4.py（四条样片全绿）
     private static func drainSegment(video: AVAssetReaderTrackOutput,
                                      videoInput: AVAssetWriterInput,
                                      audio: AVAssetReaderTrackOutput?,
                                      audioInput: AVAssetWriterInput?,
                                      offset: CMTime,
+                                     segOutEnd: CMTime,
                                      writer: AVAssetWriter,
                                      reader: AVAssetReader,
                                      segStart: Double,
                                      segEnd: Double,
                                      planFps: Double,
-                                     minFrameInterval: Double?) throws -> Double {
+                                     minFrameInterval: Double?) throws {
         // 没有音轨（或音频没能加进 writer）时退化成单通道搬运，逻辑同一份
         var videoDone = false
         var audioDone = (audio == nil || audioInput == nil)
@@ -537,10 +552,8 @@ enum BKExporter {
         var droppedFrames = 0
         /// 因越界被丢弃的样本数（诊断用）
         var outOfRangeDrops = 0
-        /// 【2026-10-04】两轨各自「实际写入到成品的哪个时间点」（相对本段起点，即已减掉 offset）
-        /// 取两者的较大值作为本段实际长度 —— 取小的会让另一轨的尾巴越过下一段起点。
-        var videoRealEnd: Double = 0
-        var audioRealEnd: Double = 0
+        /// 因**超过段末锚点**被丢弃的样本数（v1.3.3 音画修复的诊断）
+        var overflowDrops = 0
 
         // 【IMG_4873 死锁案的真正根因，2026-10-03】
         // 现象：多次都恰好卡在 54%，删掉主轨道所有红区（= 只剩一段连续）就导出成功。
@@ -583,17 +596,23 @@ enum BKExporter {
                             droppedFrames += 1
                         }
                         if keep {
-                            let buffer = try retimedBuffer(sb, offset: offset)
-                            guard videoInput.append(buffer) else {
-                                throw BKExportError.writeFailed(
-                                    writer.error?.localizedDescription ?? "视频写入失败")
-                            }
-                            lastVideoPTS = pts
-                            // 这一帧在成品里占到哪 —— 帧长按「实际输出的帧间隔」算：
-                            // 降帧时相邻两帧隔的是 minFrameInterval，不是 1/源帧率
+                            // 【v1.3.3 音画修复】不越界检查：
+                            // 这一帧平移后的 PTS + 帧长 会不会超出本段锚点？
+                            // 超出就停 —— 让两轨都停在锚点内，段边界才能精确对齐。
                             let frameSpan = minFrameInterval ?? (1.0 / planFps)
-                            let writtenEnd = pts - segStart + frameSpan
-                            if writtenEnd > videoRealEnd { videoRealEnd = writtenEnd }
+                            let newPTS = pts + offset.seconds
+                            if newPTS + frameSpan > segOutEnd.seconds + 1e-6 {
+                                CMSampleBufferInvalidate(sb)
+                                overflowDrops += 1
+                                videoDone = true
+                            } else {
+                                let buffer = try retimedBuffer(sb, offset: offset)
+                                guard videoInput.append(buffer) else {
+                                    throw BKExportError.writeFailed(
+                                        writer.error?.localizedDescription ?? "视频写入失败")
+                                }
+                                lastVideoPTS = pts
+                            }
                         } else {
                             // 丢掉的帧也要 Invalidate，否则 CMSampleBuffer 的缓存会一直堆着
                             CMSampleBufferInvalidate(sb)
@@ -621,17 +640,23 @@ enum BKExporter {
                         outOfRangeDrops += 1
                         fedAnything = true
                     } else {
-                        let buffer = try retimedBuffer(sb, offset: offset)
-                        guard audioIn.append(buffer) else {
-                            throw BKExportError.writeFailed(
-                                writer.error?.localizedDescription ?? "音频写入失败")
-                        }
-                        // 音频块的时长用它自己带的 duration（换算成秒）。
-                        // 不写死 1024/48000 —— 源素材的块长可能不是这个值
+                        // 【v1.3.3 音画修复】同视频侧：写之前先看不越界。
+                        // 音频块长用它自己带的 duration（换算成秒）——
+                        // 不写死 1024/48000，源素材的块长可能不是这个值。
                         let blockSpan = CMSampleBufferGetDuration(sb).seconds
-                        let span = blockSpan.isFinite && blockSpan > 0 ? blockSpan : (1024.0 / 48000.0)
-                        let writtenEnd = pts - segStart + span
-                        if writtenEnd > audioRealEnd { audioRealEnd = writtenEnd }
+                        let span = (blockSpan.isFinite && blockSpan > 0) ? blockSpan : (1024.0 / 48000.0)
+                        let newPTS = pts + offset.seconds
+                        if newPTS + span > segOutEnd.seconds + 1e-6 {
+                            CMSampleBufferInvalidate(sb)
+                            overflowDrops += 1
+                            audioDone = true
+                        } else {
+                            let buffer = try retimedBuffer(sb, offset: offset)
+                            guard audioIn.append(buffer) else {
+                                throw BKExportError.writeFailed(
+                                    writer.error?.localizedDescription ?? "音频写入失败")
+                            }
+                        }
                         fedAnything = true
                     }
                 } else {
@@ -670,18 +695,11 @@ enum BKExporter {
             BKLog.shared.d("本段丢弃越界样本 \(outOfRangeDrops) 个（段边界对齐，IMG_4873 案）")
         }
 
-        // 【2026-10-04】返回本段实际写入的长度，取两轨较大值。
-        // 为什么取较大：cursor 是下一段的起点，取小的会让另一轨的尾巴越过它 → 时间戳倒退，
-        // 那是 IMG_4873 死锁的诱因。两轨都空（段太短，一个样本都没放行）时退回标称段长。
-        let nominal = segEnd - segStart
-        let real = max(videoRealEnd, audioRealEnd)
-        let actual = real > 0.001 ? real : nominal
-        // 长串用 + 拼超过 5 段、或者跨行续行 +，Swift 编译器会类型检查超时 / 解析成
-        // String.Stride + String（v1.1.8 连红两轮全是它）。拆成独立变量、一次拼完。
-        let head = "本段实际写入 \(BKDiag.s(actual))s（标称 \(BKDiag.s(nominal))s）"
-        let tails = "视频尾 \(BKDiag.s(videoRealEnd))s 音频尾 \(BKDiag.s(audioRealEnd))s"
-        BKDiag.shared.noteStage(head + tails)
-        return actual
+        // 【v1.3.3】本函数不再返回长度 —— 游标由调用方按**标称段长**推进。
+        // 这里只报诊断：锚点被两轨各填了多少，差值应 < 一帧/一块（音画修复是否生效的直接证据）。
+        if overflowDrops > 0 {
+            BKLog.shared.d("本段有 \(overflowDrops) 个样本因超出段末锚点被丢弃（音画对齐）")
+        }
     }
 }
 

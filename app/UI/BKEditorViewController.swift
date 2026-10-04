@@ -927,8 +927,8 @@ final class BKEditorViewController: UIViewController {
             var p = item
             p.redFolded = false
             commit(p)
-            statusLabel.text = "已取消折叠 —— 红区都回来了"
-            BKLog.shared.i("取消折叠删红")
+            statusLabel.text = "已恢复 —— 红区都回来了"
+            BKLog.shared.i("取消去红")
             return
         }
 
@@ -945,7 +945,7 @@ final class BKEditorViewController: UIViewController {
         let kept = item.keepRanges.count
         let removed = item.foldedOutputDuration
         statusLabel.text = String(format: "已删除 %d 段气口，保留 %d 段 · 成品 %.1fs", cuts.count, kept, removed)
-        BKLog.shared.i(String(format: "折叠删红：删 %d 段留 %d 段，成品 %.2fs（原片 %.2fs）",
+        BKLog.shared.i(String(format: "去红：删 %d 段留 %d 段，成品 %.2fs（原片 %.2fs）",
                               cuts.count, kept, removed, item.duration))
     }
 
@@ -959,7 +959,7 @@ final class BKEditorViewController: UIViewController {
             var q = p
             q.redFolded = false
             commit(q, coalesce: true)
-            statusLabel.text = "已取消折叠 —— 现在可以点段切换了"
+            statusLabel.text = "已恢复 —— 现在可以点段切换了"
             return
         }
         let shown = BKTimeline.pieces(duration: p.duration, cuts: p.cutRanges, splits: p.splits)
@@ -1094,7 +1094,8 @@ final class BKEditorViewController: UIViewController {
                          splits: folded ? [] : p.splits,
                          duration: trackDuration,
                          thresholdDb: p.thresholdDb,
-                         foldMap: map)
+                         foldMap: map,
+                         redFolded: folded)
         overview.setContent(envelope: envelope,
                             pieces: shown,
                             duration: trackDuration,
@@ -1569,22 +1570,9 @@ extension BKEditorViewController: BKTrackViewDelegate {
         togglePiece(at: time)
     }
 
-    func track(_ view: BKTrackView, didBeginBoundaryDragNear time: Double) {
-        boundaryDragging = true
-        boundaryCommitted = false
-    }
-
-    func track(_ view: BKTrackView, didDragBoundaryNear near: Double, to newTime: Double) {
-        // 拖到非法位置（越过邻居）时返回 nil，界面保持原样
-        if let next = BKTimeline.moveBoundary(in: item.marks, near: near, to: newTime) {
-            applyMarks(next, coalesce: true)
-        }
-    }
-
-    func trackDidEndBoundaryDrag(_ view: BKTrackView) {
-        boundaryDragging = false
-        boundaryCommitted = false
-    }
+    // 【v1.3.3 删除】didBeginBoundaryDragNear / didDragBoundaryNear / trackDidEndBoundaryDrag
+    // 「拖接缝」这条路已取消（方案甲：手势统一到「长按 → 黄把手」）。
+    // 拖动合并撤销的逻辑改由 didBeginRegionEdit / didCommitRegionEdit 承担。
 
     func track(_ view: BKTrackView, didChangeZoomTo screens: CGFloat) {
         overview.setViewport(track.viewport)
@@ -1593,17 +1581,14 @@ extension BKEditorViewController: BKTrackViewDelegate {
 
     // MARK: v1.3.0 区域编辑态
 
-    /// 长按进了编辑态。折叠状态下先取消折叠 —— 编辑态是给「原片时间轴上的段」用的，
-    /// 折叠后轨道已经是成品时间轴，两者对不上
+    /// 长按进了编辑态。
+    ///
+    /// 【v1.3.3 变更】v1.3.2 是「折叠状态下先取消折叠才能编辑」——
+    /// 那是错的，因为折叠后轨道显示的就是成品时间轴，两者对不上。
+    /// 现在（方案甲 / 皓哥 18:01 定）**折叠后可以直接长按任意绿区编辑**：
+    /// 波形连续铺满但**区与区的分割线保留**，每个绿区仍是独立可编辑单元。
+    /// 拖把手时用 `foldMap` 把成品时间换算回原片时间再改 cuts。
     func track(_ view: BKTrackView, didBeginRegionEditFrom start: Double, to end: Double) {
-        if item.redFolded {
-            view.exitRegionEdit()
-            var q = item
-            q.redFolded = false
-            commit(q)
-            statusLabel.text = "已取消折叠 —— 现在可以长按编辑片段了"
-            return
-        }
         regionEditing = true
         // 编辑期间拖动要合并成一步撤销，不能每帧入一次栈
         boundaryDragging = true
@@ -1623,40 +1608,80 @@ extension BKEditorViewController: BKTrackViewDelegate {
     }
 
     /// 拖把手松手，提交。这一步才真正改 cuts 并落一次撤销
+    ///
+    /// 【v1.3.3 支持折叠态】折叠后轨道显示的是**成品时间轴**，
+    /// 而 `cuts` 记的是**原片时间**。所以要先换算回去才能改 cuts。
+    /// 换算用 `foldMap`：成品时间 → 原片时间（与波形绘制用的是同一张表）。
+    ///
+    /// 折叠态下的语义（皓哥 18:01 定）：**全是绿区、没有红区概念**。
+    /// 四个方向都成立：往左拖左把手=开头增加（把多切的放出来），
+    /// 往右拖右把手=结尾延长，反向=缩短。「拖短」的部分直接丢弃、界面上什么都不显示。
     func track(_ view: BKTrackView, didCommitRegionEditFrom start: Double, to end: Double) {
         boundaryDragging = false
         regionEditing = false
         guard let base = view.editingSegment else { return }
-        // 折叠状态下画布时间是成品时间，与 cuts（原片时间）对不上 —— 不在这里提交
-        if item.redFolded { return }
 
         let p = item
-        let shown = BKTimeline.pieces(duration: p.duration, cuts: p.cutRanges, splits: p.splits)
-        // 按坐标找那一段（不能用 index：index 会随显示粒度变 —— 现有代码的教训）
-        var target: (start: Double, end: Double)?
-        for pc in shown where abs(pc.start - start) < 1e-6 && abs(pc.end - end) < 1e-6 {
-            target = (start, end)
-            break
-        }
-        guard let seg = target else {
-            BKLog.shared.w("提交拖动：找不到原区间 [\(start), \(end)]，放弃")
-            return
+
+        // 把画布时间换算成原片时间
+        var srcRange = (start, end)
+        var oldSrcRange = base
+        if p.redFolded {
+            let map = BKTimeline.foldMap(duration: p.duration, cuts: p.cutRanges)
+            guard !map.isEmpty else { return }
+            srcRange = (foldSourceTime(map, start), foldSourceTime(map, end))
+            oldSrcRange = (foldSourceTime(map, base.start), foldSourceTime(map, base.end))
+            if srcRange.0 < oldSrcRange.0 { srcRange.0 = oldSrcRange.0 }
+            if srcRange.1 > oldSrcRange.1 { srcRange.1 = oldSrcRange.1 }
+            if srcRange.1 - srcRange.0 < BKConfig.RegionEdit.minSegmentSec { return }
+        } else {
+            // 未折叠：按坐标找那一段（不能用 index：index 会随显示粒度变 —— 现有代码的教训）
+            let shown = BKTimeline.pieces(duration: p.duration, cuts: p.cutRanges, splits: p.splits)
+            var found = false
+            for pc in shown where abs(pc.start - base.start) < 1e-6 && abs(pc.end - base.end) < 1e-6 {
+                oldSrcRange = (pc.start, pc.end)
+                found = true
+                break
+            }
+            if !found {
+                BKLog.shared.w("提交拖动：找不到原区间 [\(base.start), \(base.end)]，放弃")
+                return
+            }
         }
 
         let newCuts = BKTimeline.cutsAfterResize(cuts: p.cutRanges,
                                                  duration: p.duration,
-                                                 oldRange: (seg.start, seg.end),
-                                                 newRange: (start, end))
-        applyMarks(BKTimeline.build(duration: p.duration, cuts: newCuts))
-        let grew = (end - seg.end) - (seg.start - start)
+                                                 oldRange: oldSrcRange,
+                                                 newRange: srcRange)
+        var q = item
+        q.marks = BKTimeline.build(duration: p.duration, cuts: newCuts)
+        q.updatedAt = Date()
+        commit(q)
+
+        let grew = (srcRange.1 - oldSrcRange.1) - (oldSrcRange.0 - srcRange.0)
         statusLabel.text = grew > 0
-            ? String(format: "边界已拖到 %.2f~%.2fs（多留 %.2fs）", start, end, grew)
-            : String(format: "边界已拖到 %.2f~%.2fs（少留 %.2fs）", start, end, -grew)
-        BKLog.shared.i(String(format: "拖动提交 [%.2f,%.2f] → [%.2f,%.2f]", seg.start, seg.end, start, end))
+            ? String(format: "已多留 %.2fs（成品变长）", grew)
+            : String(format: "已少留 %.2fs", -grew)
+        BKLog.shared.i(String(format: "拖动提交 原片[%.2f,%.2f] → [%.2f,%.2f]",
+                              oldSrcRange.0, oldSrcRange.1, srcRange.0, srcRange.1))
         // 提交后退出编辑态：一次拖动 = 一步撤销 = 一个明确的结束
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             self?.track.exitRegionEdit()
         }
+    }
+
+    /// 成品时间 → 原片时间（折叠态换算）。
+    /// 与 `BKTrackView.TrackRender.sourceTime` 同一套逻辑，只是这里不参与绘制。
+    private func foldSourceTime(_ map: [(out: Double, src: Double, dur: Double)], _ t: Double) -> Double {
+        guard !map.isEmpty else { return t }
+        for seg in map {
+            if t >= seg.out - 1e-9 && t <= seg.out + seg.dur + 1e-9 {
+                return seg.src + (t - seg.out)
+            }
+        }
+        if let first = map.first, t < first.out { return first.src }
+        if let last = map.last { return last.src + last.dur }
+        return t
     }
 
     /// 路②：已经在片头，松手时还被往右拽过 60pt → 换上一条
