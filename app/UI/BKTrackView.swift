@@ -933,60 +933,81 @@ fileprivate final class TrackCanvas: UIView {
             let x1 = pad + CGFloat(seg.end) * pps
             let box = CGRect(x: x0, y: waveTop, width: max(1, x1 - x0), height: waveH)
             // 不在可见区就整个跳过
-            if box.maxX >= rect.minX - 40 && box.minX <= rect.maxX + 40 {
+            if box.maxX >= rect.minX - 48 && box.minX <= rect.maxX + 48 {
                 let bw = CGFloat(BKConfig.RegionEdit.selectionBorderWidth)
+                let corner = CGFloat(BKConfig.RegionEdit.selectionCorner)
 
-                // 1) 3pt 黄框（半透明淡入）
+                // ① 框内压暗蒙层（参照图 2：编辑态下框内整体发暗，与框外对比）
+                //    这一层是「我正在编辑这一段」的最强信号，比光有黄框明确得多
+                let dim = CGFloat(BKConfig.RegionEdit.selectionDimAlpha) * alpha
+                if dim > 0.01 {
+                    ctx.saveGState()
+                    ctx.setFillColor(BKTheme.Color.selection.cgColor)
+                    ctx.setAlpha(dim)
+                    ctx.fill(box)
+                    ctx.restoreGState()
+                }
+
                 ctx.saveGState()
                 ctx.setAlpha(alpha)
+
+                // ② 3pt 圆角黄框。圆角要向内缩半个线宽，否则描边有一半露在框外
                 ctx.setStrokeColor(BKTheme.Color.warning.cgColor)
                 ctx.setLineWidth(bw)
                 let border = CGRect(x: box.minX + bw / 2, y: box.minY + bw / 2,
-                                    width: box.width - bw, height: box.height - bw)
-                ctx.stroke(border)
+                                    width: max(0.5, box.width - bw),
+                                    height: max(0.5, box.height - bw))
+                let borderPath = CGPath(roundedRect: border,
+                                        cornerWidth: corner, cornerHeight: corner,
+                                        transform: nil)
+                ctx.addPath(borderPath)
+                ctx.strokePath()
                 ctx.restoreGState()
 
-                // 2) 两端把手 —— **在黄框外侧**，参照剪映（v1.4.4 改，2026-10-04 19:50）
+                // ③ 两端把手：**框外紧贴的小圆角方块**（参照图）
                 //
-                // ⚠️ v1.3.0~1.4.3 的设计是「把手压在框**内侧**」，皓哥指出是错的：
-                //    把手 16pt 宽压在框内，**正好挡住波形内容**，用户看不到框内那段的波形。
-                // 参照图里的做法：**把手在框外、紧贴框边，形状是 `‹` `›` 箭头**。
-                //
-                // 好处：框内完整显示波形（看得清要调的是哪一段），
-                //       把手在框外不挡视线，箭头形状也更像「可拖」的意思。
-                let hw = CGFloat(BKConfig.RegionEdit.handleWidth) / 2
-                let over = CGFloat(BKConfig.RegionEdit.handleOverhang)
-                for (hx, isHead, isDragging) in [(box.minX, true, r.draggingHandle == 1),
-                                                (box.maxX, false, r.draggingHandle == 2)] {
-                    // 只画可见那一侧
-                    if hx < rect.minX - 24 || hx > rect.maxX + 24 { continue }
-                    // ⚠️ 关键：把手中心在框边**外侧** offset 个 pt，不是压在框上
-                    let out = hx + (isHead ? -hw : hw)
-                    let h = box.height + over * 2
-                    let y = box.midY - h / 2
-                    let bar = CGRect(x: out - hw / 2, y: y, width: hw, height: h)
+                // ⚠️⚠️ v1.3.0~1.4.4 的最大设计错误：把手续了「贯穿整个轨道高度的竖条」，
+                //    既挡内容又不像「可拖」。参照图是 20×20pt 左右的小方块，
+                //    垂直居中，贴在框外侧。
+                // ⚠️ 箭头是**黑色**（在黄底上），不是白色。
+                let size = CGFloat(BKConfig.RegionEdit.handleSize)
+                let cr = CGFloat(BKConfig.RegionEdit.handleCorner)
+                let gap = CGFloat(BKConfig.RegionEdit.handleGap)
+                let aLen = CGFloat(BKConfig.RegionEdit.handleArrowLen) / 2
+                let aW = CGFloat(BKConfig.RegionEdit.handleArrowWidth)
+                let hs = size / 2
+
+                for (edgeX, isHead, isDragging) in [(box.minX, true, r.draggingHandle == 1),
+                                                    (box.maxX, false, r.draggingHandle == 2)] {
+                    // 只画可见那一侧（把手悬在框外，留 24pt 余量）
+                    if edgeX < rect.minX - 30 || edgeX > rect.maxX + 30 { continue }
+                    // 中心：框边 + gap，再往框外偏半个方块
+                    let cx = edgeX + (isHead ? -(gap + hs) : (gap + hs))
+                    let cy = box.midY
+                    let rect = CGRect(x: cx - hs, y: cy - hs, width: size, height: size)
+                    if rect.maxX < rect.minX - 20 || rect.minX > rect.maxX + 20 { continue }
+
                     ctx.saveGState()
                     ctx.setAlpha(alpha)
+                    // 拖动时放大 1.15 倍，给「你正捏着它」的实感
+                    let scale: CGFloat = isDragging ? 1.15 : 1.0
+                    let drawRect = CGRect(x: cx - hs * scale, y: cy - hs * scale,
+                                          width: size * scale, height: size * scale)
+                    let pill = CGPath(roundedRect: drawRect,
+                                      cornerWidth: cr, cornerHeight: cr, transform: nil)
+                    // 黄底
                     ctx.setFillColor(BKTheme.Color.warning.cgColor)
-                    // 圆角胶囊
-                    let path = CGPath(roundedRect: bar, cornerWidth: hw / 2,
-                                       cornerHeight: hw / 2, transform: nil)
-                    ctx.addPath(path)
+                    ctx.addPath(pill)
                     ctx.fillPath()
-                    // 箭头：左端朝左 `‹`，右端朝右 `›`
-                    // 拖动时放大 1.25 倍，给「你正捏着它」的实感
-                    let scale: CGFloat = isDragging ? 1.25 : 1.0
-                    let aw: CGFloat = 4 * scale      // 箭头半宽
-                    let ah: CGFloat = 7 * scale      // 箭头半高
-                    let cx = out
-                    let cy = box.midY
+                    // 黑色箭头：左端朝左 ‹，右端朝右 ›
                     let dir: CGFloat = isHead ? -1 : 1
-                    ctx.setStrokeColor(BKTheme.Color.handle.cgColor)   // 白色箭头
-                    ctx.setLineWidth(2 * scale)
+                    ctx.setStrokeColor(BKTheme.Color.selection.cgColor)
+                    ctx.setLineWidth(aW * scale)
                     ctx.setLineCap(.round)
-                    ctx.move(to: CGPoint(x: cx + dir * aw, y: cy - ah))
-                    ctx.addLine(to: CGPoint(x: cx - dir * aw, y: cy))
-                    ctx.addLine(to: CGPoint(x: cx + dir * aw, y: cy + ah))
+                    ctx.setLineJoin(.round)
+                    ctx.move(to: CGPoint(x: cx + dir * aLen * scale, y: cy - aLen * scale))
+                    ctx.addLine(to: CGPoint(x: cx - dir * aLen * scale, y: cy))
+                    ctx.addLine(to: CGPoint(x: cx + dir * aLen * scale, y: cy + aLen * scale))
                     ctx.strokePath()
                     ctx.restoreGState()
                 }
