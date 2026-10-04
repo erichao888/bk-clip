@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="400" viewBox="0 0 680 400" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <!-- 背景 -->
+  <rect x="0" y="0" width="680" height="400" fill="#FFFFFF"/>
+
+  <!-- 标题 -->
+  <text x="34" y="34" font-size="17" font-weight="700" fill="#222222">删红键图标 · 两个重叠交错的红 X（方案 A / B）</text>
+  <text x="34" y="56" font-size="12.5" fill="#666666">红 = 删红动作色（纯红 #FF3B30）；图标为自定义绘制，非系统符号</text>
+  <text x="34" y="76" font-size="12.5" font-weight="700" fill="#FF3B30">✓ 皓哥 2026-10-04 终选：方案 B（错位重叠双 X），红 = #FF3B30</text>
+
+  <!-- 左卡片：方案 A（备选） -->
+  <rect x="40" y="90" width="290" height="240" rx="14" fill="#F7F7F5" stroke="#E2E2DE"/>
+  <text x="58" y="116" font-size="13" font-weight="700" fill="#333333">方案 A · 同心交错双 X</text>
+  <rect x="232" y="98" width="86" height="22" rx="11" fill="#E2E2DE"/>
+  <text x="246" y="113" font-size="11" font-weight="700" fill="#888888">备选</text>
+  <!-- 按钮示意（放大） -->
+  <rect x="120" y="140" width="130" height="130" rx="16" fill="#FFFFFF" stroke="#D8D8D4"/>
+  <!-- 按钮中心 (185,205) -->
+  <!-- X1：0° -->
+  <g stroke="#FF3B30" stroke-width="9" stroke-linecap="round">
+    <line x1="155" y1="175" x2="215" y2="235"/>
+    <line x1="215" y1="175" x2="155" y2="235"/>
+  </g>
+  <!-- X2：旋转 30°（端点按 30° 旋转后缩放） -->
+  <g stroke="#FF3B30" stroke-width="9" stroke-linecap="round">
+    <line x1="174.0" y1="164.0" x2="196.0" y2="246.0"/>
+    <line x1="226.0" y1="194.0" x2="144.0" y2="216.0"/>
+  </g>
+  <text x="58" y="300" font-size="12" fill="#444444">两个 X 共心，第二个旋转 30° 重叠</text>
+  <text x="58" y="320" font-size="12" fill="#444444">→ 八芒星式，强调「删」</text>
+
+  <!-- 右卡片：方案 B（已选） -->
+  <rect x="350" y="90" width="290" height="240" rx="14" fill="#FFF6F5" stroke="#FF3B30" stroke-width="2"/>
+  <text x="368" y="116" font-size="13" font-weight="700" fill="#333333">方案 B · 错位重叠双 X</text>
+  <rect x="540" y="98" width="86" height="22" rx="11" fill="#FF3B30"/>
+  <text x="556" y="113" font-size="11" font-weight="700" fill="#FFFFFF">✓ 已选</text>
+  <!-- 按钮示意（放大） -->
+  <rect x="430" y="140" width="130" height="130" rx="16" fill="#FFFFFF" stroke="#D8D8D4"/>
+  <!-- 按钮中心 (495,205)；两 X 对角偏移 ±14 -->
+  <g stroke="#FF3B30" stroke-width="9" stroke-linecap="round">
+    <!-- X1：中心 (481,191) -->
+    <line x1="459" y1="169" x2="503" y2="213"/>
+    <line x1="503" y1="169" x2="459" y2="213"/>
+    <!-- X2：中心 (509,219) -->
+    <line x1="487" y1="197" x2="531" y2="241"/>
+    <line x1="531" y1="197" x2="487" y2="241"/>
+  </g>
+  <text x="368" y="300" font-size="12" fill="#444444">两个 X 对角错位、中间交叠</text>
+  <text x="368" y="320" font-size="12" fill="#444444">→ 像「✕✕」交叉，更轻盈</text>
+
+  <!-- 图例 -->
+  <text x="34" y="388" font-size="11" fill="#999999">红 #FF3B30（示意色，实现时可换 app 的 danger / 红区粉红）；图标为自定义 UIImage 绘制，非 SF Symbol。</text>
+</svg>

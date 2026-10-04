@@ -409,17 +409,24 @@ fileprivate final class TrackCanvas: UIView {
         let mid = waveTop + waveH / 2
         let amp = waveH / 2 - 3
 
+        // 【2026-10-04 性能：只画脏矩形覆盖的列，别每帧重画整条波形】
+        // 放大 20 屏时画布宽 7800pt，而屏幕只看得见 390pt —— 全量重画 = 95% 白画，
+        // 每根柱还查一次 env.peak(from:to:)，拖接缝时每秒 60 次，卡顿就是这么来的。
+        // rect 是 canvas 的**局部坐标**（draw 的入参），要减掉 pad 才是列下标。
+        // 上下各多留 1 列做保险，避免边界处出现 1px 缝。
+        let c0 = max(0, Int(floor(rect.minX - pad)) - 1)
+        let c1 = min(Int(ceil(rect.maxX - pad)) + 1, Int(contentLen) + 1)
+
         // 轨道底色（浅绿 #C7D8BD）
         if contentLen > 0 {
             ctx.setFillColor(BKTheme.Color.track.cgColor)
             ctx.fill(CGRect(x: pad, y: waveTop, width: contentLen, height: waveH))
         }
 
-        // 波形本体：逐像素列取区间峰值，一遍 O(帧数) 画完
-        if let env = r.envelope, contentLen > 1 {
-            let cols = Int(contentLen)
+        // 波形本体：逐像素列取区间峰值，一遍 O(可见列数) 画完
+        if let env = r.envelope, contentLen > 1, c1 > c0 {
             let path = CGMutablePath()
-            for c in 0 ..< cols {
+            for c in c0 ..< c1 {
                 let t0 = Double(c) / Double(pps)
                 guard t0 < r.duration else { break }
                 let t1 = min(Double(c + 1) / Double(pps), r.duration)
@@ -435,9 +442,11 @@ fileprivate final class TrackCanvas: UIView {
         }
 
         // 待删除区间：粉红半透明覆盖 + 两侧边界线
+        // 【2026-10-04】同样只画与脏矩形相交的那些段 —— 段数多时（几十段）逐段画也不便宜
         for pc in r.pieces where pc.kind == .cut {
             let x0 = pad + CGFloat(pc.start) * pps
             let x1 = pad + CGFloat(pc.end) * pps
+            if x1 < rect.minX || x0 > rect.maxX { continue }
             ctx.setFillColor(BKTheme.Color.cut.cgColor)
             ctx.fill(CGRect(x: x0, y: waveTop, width: max(1, x1 - x0), height: waveH))
 
@@ -454,6 +463,7 @@ fileprivate final class TrackCanvas: UIView {
         // 看上去是真被剪开的一道缝，而不是一条线。视觉上「切开」这件事必须看得见
         for s in r.splits {
             let x = pad + CGFloat(s) * pps
+            if x < rect.minX - 4 || x > rect.maxX + 4 { continue }
             ctx.setFillColor(BKTheme.Color.page.cgColor)
             ctx.fill(CGRect(x: x - 2, y: waveTop, width: 4, height: waveH))
             ctx.setStrokeColor(BKTheme.Color.selection.cgColor)
@@ -471,9 +481,14 @@ fileprivate final class TrackCanvas: UIView {
         ctx.setStrokeColor(BKTheme.Color.warning.cgColor)
         ctx.setLineWidth(1)
         ctx.setLineDash(phase: 0, lengths: [4, 3])
-        ctx.move(to: CGPoint(x: pad, y: ty))
-        ctx.addLine(to: CGPoint(x: pad + contentLen, y: ty))
-        ctx.strokePath()
+        // 虚线只画可见段（画 7800pt 长的虚线本身也贵）
+        let lineX0 = max(pad, rect.minX)
+        let lineX1 = min(pad + contentLen, rect.maxX)
+        if lineX1 > lineX0 {
+            ctx.move(to: CGPoint(x: lineX0, y: ty))
+            ctx.addLine(to: CGPoint(x: lineX1, y: ty))
+            ctx.strokePath()
+        }
         ctx.setLineDash(phase: 0, lengths: [])
 
         // 边界把手：粉红块两端各一枚小白条（定稿：#FFFFFF 4×8pt）
@@ -481,6 +496,7 @@ fileprivate final class TrackCanvas: UIView {
         for pc in r.pieces where pc.kind == .cut {
             for edge in [pc.start, pc.end] {
                 let x = pad + CGFloat(edge) * pps
+                if x < rect.minX - 4 || x > rect.maxX + 4 { continue }
                 let box = CGRect(x: x - handleW / 2,
                                  y: mid - handleH / 2,
                                  width: handleW,
@@ -502,8 +518,10 @@ fileprivate final class TrackCanvas: UIView {
             var t: Double = 0
             while t <= r.duration {
                 let tx = pad + CGFloat(t) * pps
-                ctx.move(to: CGPoint(x: tx, y: h - 6))
-                ctx.addLine(to: CGPoint(x: tx, y: h))
+                if tx >= rect.minX - 4 && tx <= rect.maxX + 4 {
+                    ctx.move(to: CGPoint(x: tx, y: h - 6))
+                    ctx.addLine(to: CGPoint(x: tx, y: h))
+                }
                 t += 5
             }
             ctx.strokePath()

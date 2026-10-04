@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="430" viewBox="0 0 680 430" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <!-- 背景 -->
+  <rect x="0" y="0" width="680" height="430" fill="#FFFFFF"/>
+
+  <!-- 标题 -->
+  <text x="34" y="34" font-size="17" font-weight="700" fill="#222222">主轨道 · 区域编辑态拖拽把手（样式 / 尺寸，提案）</text>
+  <text x="34" y="56" font-size="12.5" fill="#666666">长按区域 → 黄色边框 + 两端黄色把手；拖把手增 / 减该区的开头或结尾</text>
+
+  <!-- 原视频边界（虚线） -->
+  <line x1="40" y1="150" x2="40" y2="290" stroke="#BBBBBB" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <line x1="640" y1="150" x2="640" y2="290" stroke="#BBBBBB" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="40" y="142" font-size="11" fill="#999999" text-anchor="middle">原视频开头</text>
+  <text x="640" y="142" font-size="11" fill="#999999" text-anchor="middle">原视频结尾</text>
+
+  <!-- 时间轴画布 -->
+  <rect x="40" y="170" width="600" height="90" rx="6" fill="#EDEDEA"/>
+
+  <!-- 选中的绿区（保留区） -->
+  <rect x="210" y="170" width="260" height="90" fill="#C7D8BD"/>
+  <!-- 波形纹理（深绿） -->
+  <g stroke="#24430F" stroke-width="3">
+    <line x1="232" y1="188" x2="232" y2="242"/>
+    <line x1="252" y1="184" x2="252" y2="246"/>
+    <line x1="272" y1="190" x2="272" y2="240"/>
+    <line x1="292" y1="186" x2="292" y2="244"/>
+    <line x1="312" y1="192" x2="312" y2="238"/>
+    <line x1="332" y1="184" x2="332" y2="246"/>
+    <line x1="352" y1="190" x2="352" y2="240"/>
+    <line x1="372" y1="186" x2="372" y2="244"/>
+    <line x1="392" y1="192" x2="392" y2="238"/>
+    <line x1="412" y1="184" x2="412" y2="246"/>
+    <line x1="432" y1="190" x2="432" y2="240"/>
+    <line x1="452" y1="186" x2="452" y2="244"/>
+  </g>
+
+  <!-- 黄色选中边框（3pt） -->
+  <rect x="206" y="166" width="268" height="98" rx="5" fill="none" stroke="#EF9F27" stroke-width="3"/>
+
+  <!-- 左把手（竖直黄条，上下探出 10pt） -->
+  <rect x="202" y="160" width="16" height="110" rx="4" fill="#EF9F27"/>
+  <circle cx="210" cy="215" r="5" fill="#FFFFFF"/>
+  <!-- 左把手触控区（≥44×44，虚线） -->
+  <rect x="188" y="193" width="44" height="44" rx="6" fill="none" stroke="#999999" stroke-width="1.2" stroke-dasharray="4 3"/>
+
+  <!-- 右把手 -->
+  <rect x="462" y="160" width="16" height="110" rx="4" fill="#EF9F27"/>
+  <circle cx="470" cy="215" r="5" fill="#FFFFFF"/>
+  <rect x="448" y="193" width="44" height="44" rx="6" fill="none" stroke="#999999" stroke-width="1.2" stroke-dasharray="4 3"/>
+
+  <!-- 左把手标注 -->
+  <text x="20" y="118" font-size="12.5" fill="#333333">← 左把手往左拖：增加开头</text>
+  <text x="20" y="328" font-size="12.5" fill="#333333">左把手往右拖：减小开头 →</text>
+
+  <!-- 右把手标注 -->
+  <text x="486" y="118" font-size="12.5" fill="#333333">右把手往右拖：增加结尾 →</text>
+  <text x="486" y="328" font-size="12.5" fill="#333333">← 右把手往左拖：减小结尾</text>
+
+  <!-- 图例 -->
+  <rect x="34" y="356" width="612" height="62" rx="6" fill="#F7F7F5" stroke="#E2E2DE"/>
+  <text x="48" y="378" font-size="12" fill="#444444">· 黄 = 警告色 #EF9F27（边框 3pt / 把手填充），与阈值虚线、状态行警告色同一套</text>
+  <text x="48" y="398" font-size="12" fill="#444444">· 把手 16pt 宽、上下各探出轨道 10pt、中心白色抓点；触控区 ≥44×44pt（虚线）</text>
+  <text x="48" y="418" font-size="12" fill="#444444">· 区域在原始开头：左把手往左不增加；在原始结尾：右把手往右不增加。区域最短 0.1s</text>
+</svg>

@@ -1092,19 +1092,23 @@ final class BKEditorViewController: UIViewController {
             statusLabel.text = "没有可播放的绿区"
             return
         }
-        // 起点落在红区里 → 往下跳到第一个绿区再开始（定稿 4.5.5）
-        guard let startOut = BKJointBuilder.startKeptTime(for: lastTime, keeps: keeps) else {
-            statusLabel.text = "指针后面没有绿区了"
+        // 【2026-10-04 修】startKeptTime 返回的是**原片时间**，这里必须先换成成品时间。
+        // v1.2.14 直接拿它去 seek，成品时间轴比原片短（只含绿区）→ 错位最大能到 1.3 秒。
+        // 皓哥要的逻辑：指针在绿区就从指针处播，指针在红区就跳下一个绿区。
+        guard let startSrc = BKJointBuilder.startKeptTime(for: lastTime, keeps: keeps) else {
+            statusLabel.text = "没有可播放的绿区"
             return
         }
+        let startOut = built.outputTime(at: startSrc)
 
         guard let jp = jointPlayer else { return }
         joint = built
         jp.replaceCurrentItem(with: built.item)
         jp.seek(to: CMTime(seconds: startOut, preferredTimescale: 600),
                 toleranceBefore: .zero, toleranceAfter: .zero)
-        // 指针跟着挪到对应位置，跳转是瞬间的
-        syncPlayhead(to: built.sourceTime(at: startOut))
+        // 指针跟着挪到对应位置，跳转是瞬间的。
+        // ⚠️ 这里传的是**原片**时间 —— 主轨道画的是原片时间轴，别把上面那个成品时间传下来
+        syncPlayhead(to: startSrc)
 
         playerLayer?.player = jp
         jp.play()
@@ -1112,6 +1116,7 @@ final class BKEditorViewController: UIViewController {
         updatePlayIcons()
         BKLog.shared.i(String(format: "联播 %d 段 · 成品 %.1fs（原片 %.1fs）",
                               built.segments.count, built.total, item.duration))
+        BKLog.shared.d(String(format: "联播起播 原片 %.2fs → 成品 %.2fs", startSrc, startOut))
     }
 
     /// 停止。**指针停原地**（定稿 4.5.2）—— 旧版「停止 = 暂停 + 回 0 秒」已作废
