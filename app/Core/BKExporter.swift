@@ -259,7 +259,39 @@ enum BKExporter {
         guard let videoTrack = asset.tracks(withMediaType: .video).first else {
             throw BKExportError.noVideoTrack
         }
-        let audioTrack = asset.tracks(withMediaType: .audio).first
+        // 注：源音轨不用取 —— v1.3.4 起音频也走 composition（见下面 BKCompositionBuilder），
+        // 那边自己从 asset 取，这里取了会变成未使用变量。
+
+        // ============================================================
+        // 【v1.3.4 音画同步第四次修复 —— 根治】
+        //
+        // 前三次都错在同一个根因：**手算每段的 PTS 偏移**。
+        // 而我用来算的那些值（帧长、块长、样本是否越界）全是我**猜的** ——
+        // 视频有 B 帧（DTS≠PTS）、CMSampleBufferGetDuration 不等于一帧长、
+        // 音频块长也不等于 1024/48000。Python 复刻说「四条样片全绿」，
+        // 但那只是**我的模型绿**，真机照样「越往后面越大」。
+        //
+        // 这次换做法：**先用 AVMutableComposition 把保留段拼成一条**，
+        // 系统保证时间轴连续 + 音视频两轨天然对齐，我们**一个 PTS 都不用算**。
+        // 然后从 composition 读出来写 writer —— 读出来的 PTS 已经是最终值。
+        //
+        // 额外收益：联播（BKJointBuilder）和导出共用同一份拼法，
+        // 「预演听到的」必然等于「导出的」。
+        // ============================================================
+        guard let built = BKCompositionBuilder.make(asset: asset, keeps: keeps) else {
+            throw BKExportError.nothingToExport
+        }
+        let compAsset: AVAsset = built.comp
+        guard let compVideo = compAsset.tracks(withMediaType: .video).first else {
+            throw BKExportError.noVideoTrack
+        }
+        let compAudio = compAsset.tracks(withMediaType: .audio).first
+        BKLog.shared.i(String(format: "导出：已拼成 composition %d 段 / 成品 %.3fs",
+                              built.table.count, built.total))
+
+        // 方向铁律要从 composition 的轨道拿 —— 拼接时已经抄过一遍，这里再确认一次，
+        // 下面的 writerInput.transform 用的就是这个值
+        let compTransform = compVideo.preferredTransform
 
         let plan = makePlan(videoTrack: videoTrack, project: project,
                             spec: spec, reference: reference)
@@ -290,24 +322,12 @@ enum BKExporter {
 
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         // 铁律②：transform 必须显式赋值，漏了成品必躺下。
-        // 分辨率怎么改，transform 都是源素材这一个 —— 定稿 4.9.2
-        videoInput.transform = videoTrack.preferredTransform
-        // 【2026-10-04 删掉 expectsMediaDataInRealTime —— 它是「画面滞后于声音」的元凶】
-        // v1.2.11~1.2.14 这里设过 `videoInput.expectsMediaDataInRealTime = true`，
-        // 是 IMG_4873 死锁案的权宜之计：真机遇到「两条通道永远 isReadyForMoreMediaData = false」
-        // 时它能让 writer 放宽就绪判定。**但它只设在视频轨、音频轨没设**，于是：
-        //
-        //   实时模式下 AVFoundation 不再保证按 append 顺序交织，会**自行重排时间戳来追实时**。
-        //   视频按「实时流」缓冲、音频按「离线精确」写入，两轨处理策略不一致
-        //   → 成品画面比声音滞后（皓哥 2026-10-04 真机实测报障）。
-        //   副作用还有：实时模式可能悄悄丢帧。
-        //
-        // 而 IMG_4873 的**真根因**是「越界样本让时间戳倒退」——那个已经被下面的
-        // `inRange` 过滤治住了（只放行原始 PTS 落在 [segStart, segEnd) 内的样本）。
-        // 所以这个标志属于误用，删掉。死锁的兜底另有三道：
-        //   ① 每轮检查 writer.status，失败立刻抛真实错误
-        //   ② idleRounds > 2000 才判卡死（背压等待是正常的，不该判死刑）
-        //   ③ 超时错误里带上 writer 真实 error，不吞
+        // v1.3.4：取 **composition 的**轨道的 transform（拼接时已把源素材的抄过去）。
+        // 分辨率怎么改，transform 都是源素材那一个 —— 定稿 4.9.2
+        videoInput.transform = compTransform
+        // expectsMediaDataInRealTime = false：v1.2.11~1.3.2 这里设过 true，
+        // 实时模式会让 AVFoundation 自行重排时间戳追实时，两轨策略不一致 → 画面滞后于声音。
+        // 现在 composition 已经保证了连续性，不需要任何"追实时"的补救。
         videoInput.expectsMediaDataInRealTime = false
         guard writer.canAdd(videoInput) else {
             throw BKExportError.writerSetupFailed("视频轨无法加入导出器")
@@ -315,7 +335,7 @@ enum BKExporter {
         writer.add(videoInput)
 
         var audioInput: AVAssetWriterInput?
-        if audioTrack != nil {
+        if compAudio != nil {
             // AAC-LC 192k 是兼容性最好的组合，HE-AAC 有设备不认
             let audioWriterSettings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -337,99 +357,74 @@ enum BKExporter {
         }
         writer.startSession(atSourceTime: .zero)
 
-        var outputCursor = CMTime.zero
-        // 完成度按「已写出的成品时长」算，而不是按段数 ——
-        // 各段长度不一样，按段数报出来的进度会一顿一顿的
+        // ============================================================
+        // 【v1.3.4】搬运：整条 composition 一次读完，不分段、不算偏移
+        //
+        // 关键认知：**PTS 已经是最终值了**。composition 里系统已经把保留段
+        // 首尾相接排好、音视频两轨对齐，我们读出来直接 append 即可。
+        //
+        // 之前那套「每段新建 reader + 手算 offset」的做法必须整段拿掉 ——
+        // 它连错三次（累积错位 / 轨道空洞 / 锚点阈值猜错），
+        // 而那些「不越界检查」的阈值全是猜的：视频有 B 帧、duration 不等于帧长、
+        // 音频块长不等于 1024/48000。真机「越往后面越大」就是这么来的。
+        // ============================================================
+        let planned = built.total
         var written: Double = 0
-        let planned = keeps.reduce(0.0) { $0 + ($1.1 - $1.0) }
+        let reader = try AVAssetReader(asset: compAsset)
 
-        for (i, seg) in keeps.enumerated() {
-            let segStart = CMTime(seconds: seg.0, preferredTimescale: 600)
-            let segEnd = CMTime(seconds: seg.1, preferredTimescale: 600)
-            let segRange = CMTimeRange(start: segStart, duration: segEnd - segStart)
+        // 从 composition 读出「原始帧」交给 writer 压缩：
+        // 视频给 yuv420p 像素缓冲（对应已验证过的 yuv420p 规格），
+        // 音频给交错立体声 PCM（AAC 编码器要的是 PCM 输入）
+        let videoReaderSettings: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8Planar
+        ]
+        let audioReaderSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 48000,
+            AVNumberOfChannelsKey: 2,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsNonInterleaved: false
+        ]
 
-            // 【2026-10-04 v1.3.3 音画同步第三次修复 —— 段末锚点】
-            //
-            // 前两次都错在同一根因：游标推进量与「实际写入的样本」不匹配。
-            //   v1.2.15 推进「标称段长」，但样本照写 → 末尾溢出，下一段从标称起 → 重叠累积
-            //   v1.3.2 推进「两轨较大值」→ 短轨留空洞 → 播放器静音/冻结该轨
-            //
-            // 这次的关键是**锚点**：本段在成品里的终点固定为
-            //     segOutEnd = outputCursor + 标称段长
-            // drainSegment 里写**每一个样本前**都检查「新 PTS + 样本时长 ≤ 锚点」，
-            // 超了就停 —— 于是两轨都不越界，而下一段仍从同一个 outputCursor 起，
-            // **段边界处两轨精确对齐，误差每段归零、绝不累积**。
-            //
-            // 代价：段末尾两轨各有 <一帧 / <一块（16.7ms / 21.3ms）没填满
-            //（那部分本来就会被 inRange 丢掉），不影响同步。
-            // 验证：tools/diag_avsync_v4.py，四条样片全绿（无空洞、无倒退、段边界一致）。
-            let segOutEnd = outputCursor + segRange.duration
-            // 这一段在成品里的新起点，减去段起点就是全体时间戳要平移的量
-            let offset = outputCursor - segStart
-            BKDiag.shared.noteStage("搬运第 \(i + 1)/\(keeps.count) 段 源[\(BKDiag.s(seg.0))→\(BKDiag.s(seg.1))]"
-                                    + " → 成品[\(BKDiag.s(outputCursor.seconds))→\(BKDiag.s(segOutEnd.seconds))]"
-                                    + " 平移 \(BKDiag.s(offset.seconds))s")
+        let videoOut = AVAssetReaderTrackOutput(track: compVideo, outputSettings: videoReaderSettings)
+        guard reader.canAdd(videoOut) else { throw BKExportError.readerSetupFailed }
+        reader.add(videoOut)
 
-            let reader = try AVAssetReader(asset: asset)
-            reader.timeRange = segRange
-
-            // reader 出「原始帧」交给 writer 压缩：
-            // 视频给 yuv420p 像素缓冲（对应已验证过的 yuv420p 规格），
-            // 音频给交错立体声 PCM（AAC 编码器要的是 PCM 输入）
-            let videoReaderSettings: [String: Any] = [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8Planar
-            ]
-            let audioReaderSettings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatLinearPCM,
-                AVSampleRateKey: 48000,
-                AVNumberOfChannelsKey: 2,
-                AVLinearPCMBitDepthKey: 16,
-                AVLinearPCMIsBigEndianKey: false,
-                AVLinearPCMIsFloatKey: false,
-                AVLinearPCMIsNonInterleaved: false
-            ]
-
-            let videoOut = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: videoReaderSettings)
-            guard reader.canAdd(videoOut) else { throw BKExportError.readerSetupFailed }
-            reader.add(videoOut)
-
-            var audioOut: AVAssetReaderTrackOutput?
-            if let track = audioTrack, audioInput != nil {
-                let out = AVAssetReaderTrackOutput(track: track, outputSettings: audioReaderSettings)
-                if reader.canAdd(out) {
-                    reader.add(out)
-                    audioOut = out
-                }
+        var audioOut: AVAssetReaderTrackOutput?
+        if let ca = compAudio, audioInput != nil {
+            let out = AVAssetReaderTrackOutput(track: ca, outputSettings: audioReaderSettings)
+            if reader.canAdd(out) {
+                reader.add(out)
+                audioOut = out
             }
+        }
 
-            guard reader.startReading() else {
-                throw BKExportError.readFailed(reader.error?.localizedDescription ?? "未知原因")
-            }
-            // 搬完就释放解码占地（十几段素材时每个 reader 都留着会很可观）
-            defer { reader.cancelReading() }
+        guard writer.startWriting() else {
+            throw BKExportError.writeFailed(writer.error?.localizedDescription ?? "未知原因")
+        }
+        writer.startSession(atSourceTime: .zero)
 
-            // 双通道交替搬运（见 drainSegment 的注释：先搬完一条再搬另一条会死锁）
-            // segOutEnd 是本段在成品里的终点锚点，drainSegment 用它做「不越界」判断
-            try drainSegment(video: videoOut,
+        guard reader.startReading() else {
+            throw BKExportError.readFailed(reader.error?.localizedDescription ?? "未知原因")
+        }
+        defer { reader.cancelReading() }
+
+        // 双通道交替搬运：writer 的两条 input 共享同一条写入队列，
+        // 先搬完一条再搬另一条会死锁（详见 drainComposition 的注释）。
+        try drainComposition(video: videoOut,
                              videoInput: videoInput,
                              audio: audioOut,
                              audioInput: audioInput,
-                             offset: offset,
-                             segOutEnd: segOutEnd,
                              writer: writer,
                              reader: reader,
-                             segStart: seg.0,
-                             segEnd: seg.1,
                              planFps: plan.fps,
-                             minFrameInterval: plan.minFrameInterval)
-
-            // 游标推进**标称段长** —— 不是实际写入长度。
-            // 这是 v1.3.3 音画修复的核心：锚点固定，段边界两轨才能精确对齐。
-            outputCursor = segOutEnd
-            written += segRange.duration.seconds
-            let fraction = planned > 0 ? min(max(written / planned, 0), 1) : 1.0
-            DispatchQueue.main.async { progress(i + 1, keeps.count, fraction) }
-        }
+                             minFrameInterval: plan.minFrameInterval,
+                             total: built.total,
+                             progress: { frac in
+                                 DispatchQueue.main.async { progress(1, 1, frac) }
+                             })
 
         videoInput.markAsFinished()
         audioInput?.markAsFinished()
@@ -463,116 +458,56 @@ enum BKExporter {
         }
     }
 
-    // MARK: - 搬运一段的所有采样
+    // MARK: - 从 composition 搬运采样（v1.3.4）
 
-    /// 时间戳平移：把采样挪到它在成品里的新位置。
+    /// 把 composition 里的采样**原封不动**写进 writer。
     ///
-    /// DTS 可能是 invalid（无 B 帧的流），invalid 直接原样带过去 ——
-    /// Swift 里 CMTime 只有 .isValid（isInvalid 是 C 宏，不进 Swift）。
-    private static func retimedBuffer(_ sb: CMSampleBuffer,
-                                      offset: CMTime) throws -> CMSampleBuffer {
-        let pts = CMSampleBufferGetPresentationTimeStamp(sb)
-        let dts = CMSampleBufferGetDecodeTimeStamp(sb)
-        let dur = CMSampleBufferGetDuration(sb)
-
-        var timing = CMSampleTimingInfo(
-            duration: dur,
-            presentationTimeStamp: CMTimeAdd(pts, offset),
-            decodeTimeStamp: dts.isValid ? CMTimeAdd(dts, offset) : dts
-        )
-
-        // Swift 导入后的真实标签（不对称，别想当然！）：
-        // allocator: / sampleBuffer: / sampleTimingEntryCount: / sampleTimingArray: / sampleBufferOut:
-        // 计数带 Entry，数组不带 —— 这是 C 声明和 Swift 导入两层改名叠出来的
-        var retimed: CMSampleBuffer?
-        let status = CMSampleBufferCreateCopyWithNewTiming(
-            allocator: nil,
-            sampleBuffer: sb,
-            sampleTimingEntryCount: 1,
-            sampleTimingArray: &timing,
-            sampleBufferOut: &retimed)
-        CMSampleBufferInvalidate(sb)
-
-        guard status == noErr, let out = retimed else {
-            throw BKExportError.retimeFailed(status)
-        }
-        return out
-    }
-
-    /// 交替搬运一段的音视频采样。
+    /// 【为什么没有 offset 参数了】以前每个样本都要 `retimedBuffer(sb, offset:)`
+    /// 手工平移时间戳 —— 那三次音画错位全出在这件事上：
+    /// ① 游标推进量与实际写入不匹配（累积错位）
+    /// ② 取两轨较大值（轨道空洞）
+    /// ③ 标称推进 + 样本不越界（阈值全靠猜：B 帧、duration≠帧长、块长≠21.33ms）
     ///
-    /// 【为什么一定要交替】writer 同时挂着视频、音频两个 input 时，它们共享同一条
-    /// 容器写入队列。视频压缩慢、通道很快就填满，writer 在等音频的包来拼交织
-    /// （interleave）；这时候如果代码还在视频通道上傻等就绪，两边互不相让 ——
-    /// 视频等 writer 排空、writer 等音频数据，死锁。
+    /// 现在 `BKCompositionBuilder` 已经把保留段拼好了，
+    /// **系统保证时间轴连续 + 音视频两轨天然对齐**，
+    /// 读出来的 PTS 就是最终值 —— **一个数都不用算**。
     ///
-    /// 第一版就是「先把整段视频搬完再搬音频」，真机直接报：
-    /// 导出失败：写入失败：输入通道 10 秒不就绪。
-    /// 改成「谁就绪喂谁」之后解开。
+    /// 【降帧还在】源 60fps 选 30fps 时要按 `minFrameInterval` 丢帧，
+    /// 但**只丢帧、不动时间戳**（丢掉的帧不写，PTS 自然就稀疏了）。
     ///
-    /// 顺带一提，10 秒上限的语义也变了：不是「某一条通道久不就绪」就算卡死，
-    /// 而是「一整轮里两条通道谁都没喂进去」持续 10 秒才算真卡死 ——
-    /// 背压等待本身是完全正常的，不该被判死刑。
-    ///
-    /// - parameter minFrameInterval: 降帧率用的最小 PTS 间隔。
-    ///   源 60fps 选 30fps 时，间隔不足 1/30 秒的帧直接丢掉（不写入），
-    ///   这样出来的才是真的 30fps，而不是「标着 30 但帧数没变」
-    ///
-    /// - parameter reader: 传进来只为读 status/error。copyNextSampleBuffer 返回 nil
-    ///   有「搬完了」和「解码中途挂了」两种含义，不查 status 就分不出来（IMG_4873 案）
-    ///
-    /// - parameter segOutEnd: **本段在成品里的终点锚点**（CMTime）。
-    ///   v1.3.3 音画同步修复的核心：写每个样本前先检查「新 PTS + 样本时长 ≤ 锚点」，
-    ///   超了就停。这样两轨都不越界，而下一段仍从同一个游标起 → 段边界精确对齐、
-    ///   误差每段归零、绝不累积。
-    ///
-    ///   ⚠️ 前两次为什么错（都是「游标推进量」与「实际写入」不匹配）：
-    ///     v1.2.15 推进标称段长但样本照写 → 末尾溢出 → 与下一段重叠 → 错位累积
-    ///     v1.3.2 推进两轨较大值 → 短轨留空洞 → 播放器静音/冻结该轨
-    ///   这次是「标称推进 + 样本不越界」，两者缺一不可。
-    ///   验证：tools/diag_avsync_v4.py（四条样片全绿）
-    private static func drainSegment(video: AVAssetReaderTrackOutput,
-                                     videoInput: AVAssetWriterInput,
-                                     audio: AVAssetReaderTrackOutput?,
-                                     audioInput: AVAssetWriterInput?,
-                                     offset: CMTime,
-                                     segOutEnd: CMTime,
-                                     writer: AVAssetWriter,
-                                     reader: AVAssetReader,
-                                     segStart: Double,
-                                     segEnd: Double,
-                                     planFps: Double,
-                                     minFrameInterval: Double?) throws {
-        // 没有音轨（或音频没能加进 writer）时退化成单通道搬运，逻辑同一份
+    /// - Parameter progress: 已写出的时长占比 0~1，用于回传 UI 进度
+    private static func drainComposition(video: AVAssetReaderTrackOutput,
+                                         videoInput: AVAssetWriterInput,
+                                         audio: AVAssetReaderTrackOutput?,
+                                         audioInput: AVAssetWriterInput?,
+                                         writer: AVAssetWriter,
+                                         reader: AVAssetReader,
+                                         planFps: Double,
+                                         minFrameInterval: Double?,
+                                         total: Double,
+                                         progress: (Double) -> Void) throws {
         var videoDone = false
         var audioDone = (audio == nil || audioInput == nil)
         var idleRounds = 0
-        /// 上一帧写进成品的 PTS，用来判「间隔够不够」
-        var lastVideoPTS: Double?
         var droppedFrames = 0
-        /// 因越界被丢弃的样本数（诊断用）
-        var outOfRangeDrops = 0
-        /// 因**超过段末锚点**被丢弃的样本数（v1.3.3 音画修复的诊断）
-        var overflowDrops = 0
+        var lastVideoPTS: Double?
+        var written: Double = 0
+        var lastReported = -1.0
 
-        // 【IMG_4873 死锁案的真正根因，2026-10-03】
-        // 现象：多次都恰好卡在 54%，删掉主轨道所有红区（= 只剩一段连续）就导出成功。
-        // 病因：AVAssetReader 的 timeRange 是「尽力而为」的语义，**会吐出略微越过边界的样本**
-        //   —— 音频一个样本 21ms，段边界几乎不可能落在样本中间；视频为了 GOP 解码也会带回
-        //   边界外的帧。这些越界样本经 offset 平移后，PTS 会和「下一段」的首帧重叠甚至倒退，
-        //   AVAssetWriter 一旦遇到时间戳倒退/交叠就内部卡死，两条通道永远 isReady=false。
-        //   删掉红区后没有任何段边界，样本不越界，所以不卡 —— 完美吻合现象。
-        // 药方：每段只放行「原始 PTS 严格落在 [segStart, segEnd) 内」的样本。
-        //   这样各段平移后的时间戳严格递增、段间严丝合缝，倒退不可能发生。
-        //   容差 1e-4 秒：CMTime 换算有浮点误差，卡太死会误丢边界帧。
-        func inRange(_ seconds: Double) -> Bool {
-            seconds >= segStart - 1e-4 && seconds < segEnd - 1e-4
+        // 进度按「已写出的成品时长」算。composition 是连续的，按段数报会一顿一顿的
+        let tick: (Double) -> Void = { t in
+            guard total > 0 else { return }
+            let frac = min(max(t / total, 0), 1)
+            // 每前进 0.5% 报一次，别每帧都切主线程
+            if frac - lastReported >= 0.005 {
+                lastReported = frac
+                progress(frac)
+            }
         }
 
         while !(videoDone && audioDone) {
-            // writer 中途异步失败后，两条通道的 isReadyForMoreMediaData 会永远返回 false。
-            // 旧代码在这里空转 10 秒报「超时」，把真实错误（磁盘满/编码器中断等）吞掉了。
-            // 每轮先查状态，挂了立刻抛真错误，别让诊断信息只剩一句没用的超时。
+            // writer 中途失败后 isReadyForMoreMediaData 会永远 false，
+            // 每轮先查状态，挂了立刻抛真错误，别让诊断只剩一句「超时」
             if writer.status == .failed {
                 throw BKExportError.writeFailed(
                     writer.error?.localizedDescription ?? "写入器中途失败（无详细信息）")
@@ -582,89 +517,51 @@ enum BKExporter {
 
             if !videoDone, videoInput.isReadyForMoreMediaData {
                 if let sb = video.copyNextSampleBuffer() {
-                    let raw = CMSampleBufferGetPresentationTimeStamp(sb)
-                    let pts = CMTimeGetSeconds(raw)
-                    if !inRange(pts) {
-                        // 越界样本：丢掉，绝不让它带着越界时间戳进 writer
-                        CMSampleBufferInvalidate(sb)
-                        outOfRangeDrops += 1
-                        fedAnything = true
-                    } else {
-                        var keep = true
-                        if let gap = minFrameInterval, let last = lastVideoPTS, (pts - last) < gap - 1e-6 {
-                            keep = false
-                            droppedFrames += 1
-                        }
-                        if keep {
-                            // 【v1.3.3 音画修复】不越界检查：
-                            // 这一帧平移后的 PTS + 帧长 会不会超出本段锚点？
-                            // 超出就停 —— 让两轨都停在锚点内，段边界才能精确对齐。
-                            let frameSpan = minFrameInterval ?? (1.0 / planFps)
-                            let newPTS = pts + offset.seconds
-                            if newPTS + frameSpan > segOutEnd.seconds + 1e-6 {
-                                CMSampleBufferInvalidate(sb)
-                                overflowDrops += 1
-                                videoDone = true
-                            } else {
-                                let buffer = try retimedBuffer(sb, offset: offset)
-                                guard videoInput.append(buffer) else {
-                                    throw BKExportError.writeFailed(
-                                        writer.error?.localizedDescription ?? "视频写入失败")
-                                }
-                                lastVideoPTS = pts
-                            }
-                        } else {
-                            // 丢掉的帧也要 Invalidate，否则 CMSampleBuffer 的缓存会一直堆着
-                            CMSampleBufferInvalidate(sb)
-                        }
-                        fedAnything = true
+                    let pts = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sb))
+                    var drop = false
+                    if let gap = minFrameInterval, let last = lastVideoPTS, (pts - last) < gap - 1e-6 {
+                        drop = true
+                        droppedFrames += 1
                     }
+                    if drop {
+                        // 丢掉的帧也要 Invalidate，否则 CMSampleBuffer 的缓存会一直堆着
+                        CMSampleBufferInvalidate(sb)
+                    } else {
+                        // ⚠️ 直接 append，**不碰时间戳** —— 这是根治音画的关键
+                        guard videoInput.append(sb) else {
+                            throw BKExportError.writeFailed(
+                                writer.error?.localizedDescription ?? "视频写入失败")
+                        }
+                        lastVideoPTS = pts
+                        written = max(written, pts)
+                        tick(pts)
+                    }
+                    fedAnything = true
                 } else {
-                    // nil 有两种含义：这段搬完了 / reader 中途挂了。不查 status 分不出来
+                    // nil 有两种含义：读完了 / 中途挂了。不查 status 分不出来
                     if reader.status == .failed {
                         throw BKExportError.readFailed(
                             reader.error?.localizedDescription ?? "读取器中途失败（无详细信息）")
                     }
-                    videoDone = true   // 这一段视频搬完了
+                    videoDone = true
                     fedAnything = true
                 }
             }
 
-            if !audioDone, let audioOut = audio, let audioIn = audioInput,
-               audioIn.isReadyForMoreMediaData {
-                if let sb = audioOut.copyNextSampleBuffer() {
-                    let raw = CMSampleBufferGetPresentationTimeStamp(sb)
-                    let pts = CMTimeGetSeconds(raw)
-                    if !inRange(pts) {
-                        CMSampleBufferInvalidate(sb)
-                        outOfRangeDrops += 1
-                        fedAnything = true
-                    } else {
-                        // 【v1.3.3 音画修复】同视频侧：写之前先看不越界。
-                        // 音频块长用它自己带的 duration（换算成秒）——
-                        // 不写死 1024/48000，源素材的块长可能不是这个值。
-                        let blockSpan = CMSampleBufferGetDuration(sb).seconds
-                        let span = (blockSpan.isFinite && blockSpan > 0) ? blockSpan : (1024.0 / 48000.0)
-                        let newPTS = pts + offset.seconds
-                        if newPTS + span > segOutEnd.seconds + 1e-6 {
-                            CMSampleBufferInvalidate(sb)
-                            overflowDrops += 1
-                            audioDone = true
-                        } else {
-                            let buffer = try retimedBuffer(sb, offset: offset)
-                            guard audioIn.append(buffer) else {
-                                throw BKExportError.writeFailed(
-                                    writer.error?.localizedDescription ?? "音频写入失败")
-                            }
-                        }
-                        fedAnything = true
+            if !audioDone, let aOut = audio, let aIn = audioInput,
+               aIn.isReadyForMoreMediaData {
+                if let sb = aOut.copyNextSampleBuffer() {
+                    guard aIn.append(sb) else {
+                        throw BKExportError.writeFailed(
+                            writer.error?.localizedDescription ?? "音频写入失败")
                     }
+                    fedAnything = true
                 } else {
                     if reader.status == .failed {
                         throw BKExportError.readFailed(
                             reader.error?.localizedDescription ?? "读取器中途失败（无详细信息）")
                     }
-                    audioDone = true   // 这一段音频搬完了
+                    audioDone = true
                     fedAnything = true
                 }
             }
@@ -672,33 +569,23 @@ enum BKExporter {
             if fedAnything {
                 idleRounds = 0
             } else {
-                // 两条通道都堵着：让出 CPU 等 writer 消化，别让它俩空转抢锁
+                // 两条通道都堵着：让出 CPU 等 writer 消化，别让它俩空转抢锁。
+                // 背压等待本身是正常的，不该判死刑 —— 所以计数上限很宽
                 idleRounds += 1
                 Thread.sleep(forTimeInterval: 0.005)
-                if idleRounds > 2000 {
-                    // 兜底：把 writer 的真实状态写进报错，别再只留一句「超时」
-                    // ⚠️ `Error?` 没有 .map（那是 Optional.map，但 writer.error 是 Error?，
-                    // 用 map 会报 "value of type 'any Error' has no member 'map'"）—— 用 if let
+                if idleRounds > 4000 {
                     var extra = ""
                     if let e = writer.error {
                         extra = "（writer：\(e.localizedDescription)）"
                     }
-                    throw BKExportError.writeFailed("视频/音频通道同时超过 10 秒不就绪\(extra)")
+                    throw BKExportError.writeFailed("视频/音频通道同时超过 20 秒不就绪\(extra)")
                 }
             }
         }
 
+        tick(total)
         if droppedFrames > 0 {
-            BKLog.shared.d("本段降帧：丢掉 \(droppedFrames) 帧")
-        }
-        if outOfRangeDrops > 0 {
-            BKLog.shared.d("本段丢弃越界样本 \(outOfRangeDrops) 个（段边界对齐，IMG_4873 案）")
-        }
-
-        // 【v1.3.3】本函数不再返回长度 —— 游标由调用方按**标称段长**推进。
-        // 这里只报诊断：锚点被两轨各填了多少，差值应 < 一帧/一块（音画修复是否生效的直接证据）。
-        if overflowDrops > 0 {
-            BKLog.shared.d("本段有 \(overflowDrops) 个样本因超出段末锚点被丢弃（音画对齐）")
+            BKLog.shared.d("降帧：丢掉 \(droppedFrames) 帧")
         }
     }
 }

@@ -127,6 +127,26 @@ struct BKExportRecord: Codable, Identifiable {
     }
 }
 
+// MARK: - 保留区间（v1.3.4 两套记录的记录B）
+
+/// v1.3.4 第二阶段里的一段保留区间。
+///
+/// **为什么用 struct 而不是元组** `(Double, Double)`：记录B 要随草稿落盘，
+/// 而 Swift 的元组**不实现 Codable**，存不进去。
+struct Segment: Codable, Equatable {
+    var start: Double
+    var end: Double
+    var duration: Double { end - start }
+
+    init(start: Double, end: Double) {
+        self.start = start
+        self.end = end
+    }
+
+    /// 转成内部到处在用的元组形式，调用点写 `(seg.start, seg.end)` 太啰嗦
+    var pair: (Double, Double) { (start, end) }
+}
+
 // MARK: - 素材项（草稿的第二层）
 //
 // ⚠️ **一个草稿 = 一次导入的一整批，不是一条视频。**
@@ -174,19 +194,53 @@ struct BKProject: Codable, Identifiable {
     /// 单独点掉切开的其中一半 —— 这才是「点切割能从指针处分开」的真意
     var splits: [Double]
 
-    /// v1.3.0 删红键：是否已把红区**折叠**掉。
-    ///
-    /// 折叠 = 真折叠：绿区 ripple 拼接、主轨道渲染成一条连续绿轨、时间轴变短。
-    /// 但 `marks` 里的 cut 段**一个都不删**（源区间永远保留 = 皓哥说的「缓存」），
-    /// 折叠只影响渲染与播放，日后拖接缝能把已删素材拖回来。
-    /// 所以这个标志是「显示模式开关」，不是「数据已删除」的记录。
-    ///
-    /// ⚠️ 旧草稿没有这个字段，必须 decodeIfPresent 兜底成 false（v1.2.x 的老草稿都是未折叠状态）。
-    var redFolded: Bool = false
+    // MARK: - v1.3.4 两套记录（皓哥 2026-10-04 定，替代 v1.3.0 的 redFolded）
 
-    /// 折叠后的**成品时长**（= 总时长 − 被删红区总长）。导出与进度条都用它。
-    var foldedOutputDuration: Double {
-        redFolded ? BKTimeline.foldedOutputDuration(duration: duration, cuts: cutRanges) : outputDuration
+    /// **记录 A · 红区**（第一阶段）
+    ///
+    /// 用户的动作全落在这里：自动识别气口 / 拖红区边缘调大小 / 点绿区转红 / 切割键。
+    /// 语义是「**要删掉哪些**」。
+    ///
+    /// 点「一键去红」后它就**冻结** —— 第二阶段不再参与任何计算。
+    /// 冻结的意义：第二阶段的绿区微调不会污染第一阶段的成果，
+    /// 用户想反悔第一阶段的判断，只有「撤销」一条路（语义清晰）。
+    ///
+    /// 存储上它就等于当前的 `marks` 里的 cut 段 —— **不新增字段**，
+    /// `cutRanges` 直接从 marks 派生即可。列在这里是为了说明两阶段的职责划分。
+    var redRanges: [(Double, Double)] { cutRanges }
+
+    /// **记录 B · 绿区**（第二阶段）
+    ///
+    /// 点「一键去红」时由记录 A 推导生成，之后**只由第二阶段修改**。
+    /// 语义是「**要保留哪些**」，也正是「音频被切割后剩下的那条完整音频」。
+    ///
+    /// ⚠️ **为什么要有它**（v1.3.0~1.3.4 踩的坑）：
+    /// 一套记录（只有 cuts）时，第二阶段在**成品时间轴**上操作，
+    /// 要改 cuts 就必须「成品时间 → 原片时间」来回换算。
+    /// 实测换算会落到别的段上（tools/diag_two_records.py 演示：拖第3段变成改第1段），
+    /// 而且往返误差会累积。两套记录下第二阶段**全程原片时间、零换算**。
+    ///
+    /// 空数组 = 还在第一阶段（没点过一键去红）。
+    var keptRanges: [Segment] = []
+
+    /// 是否已进入第二阶段。判据用「B 有内容」而不是单独标志位 ——
+    /// 少一处可能对不上的状态
+    var isStage2: Bool { !keptRanges.isEmpty }
+
+    /// 当前阶段该显示的片段序列。
+    /// 第一阶段：红绿交替（含红区，可拖边缘）；
+    /// 第二阶段：只有绿区（连续铺满，但每段仍是独立可编辑单元）。
+    var displayPieces: [BKMark] {
+        isStage2
+            ? BKTimeline.keepsToPieces(keptRanges)
+            : BKTimeline.pieces(duration: duration, cuts: cutRanges, splits: splits)
+    }
+
+    /// 成品时长 = 保留段之和。第二阶段直接用 B，第一阶段用 cuts 反推
+    var outputDuration: Double {
+        isStage2
+            ? keptRanges.reduce(0) { $0 + $1.duration }
+            : keepRanges.reduce(0) { $0 + ($1.1 - $1.0) }
     }
 
     /// 橙色指针停在哪儿。换素材 / 退出再进来都要回到这一帧，
@@ -236,7 +290,7 @@ extension BKProject {
         case sourceRotationDegrees, thresholdDb, autoThresholdDb
         case sourceApplicable, marks, createdAt, updatedAt, exportHistory, splits
         case playheadTime
-        case redFolded
+        case keptRanges
     }
 
     init(from decoder: Decoder) throws {
@@ -257,9 +311,18 @@ extension BKProject {
         exportHistory = (try? c.decodeIfPresent([BKExportRecord].self, forKey: .exportHistory)) ?? []
         splits = (try? c.decodeIfPresent([Double].self, forKey: .splits)) ?? []
         playheadTime = (try? c.decodeIfPresent(Double.self, forKey: .playheadTime)) ?? 0
-        // v1.3.0 新增字段。旧草稿没有它 —— 缺 key 必须兜底成 false，
-        // 不兜底的话合成 init 遇到缺 key 直接 throw，皓哥手机上一堆老草稿全得没
-        redFolded = (try? c.decodeIfPresent(Bool.self, forKey: .redFolded)) ?? false
+        // v1.3.4 两套记录的第二阶段数据。旧草稿没有它 —— 缺 key 兜底成空数组，
+        // 空数组 = 还在第一阶段（没点过一键去红），语义天然正确。
+        // 不兜底的话合成 init 遇到缺 key 直接 throw，皓哥手机上一堆老草稿全得没。
+        //
+        // 迁移：v1.3.0~1.3.4 用的是 redFolded: Bool。读回那些旧草稿时，
+        // 若 redFolded 为 true（当时已折叠过）就把绿区从 marks 推导出来填进 B，
+        // 否则用户会发现自己点过删红、重新打开又变回红绿交替的样子。
+        keptRanges = (try? c.decodeIfPresent([Segment].self, forKey: .keptRanges)) ?? []
+        if keptRanges.isEmpty,
+           (try? c.decodeIfPresent(Bool.self, forKey: .redFolded)) == true {
+            keptRanges = BKTimeline.deriveKeeps(duration: duration, cuts: cutRanges)
+        }
         // 老草稿没有名字，回退到相册里查一次，补上之后下次就不用再查了
         if assetName.isEmpty {
             assetName = BKVideoLibrary.assetName(localID: assetLocalID)
@@ -379,14 +442,17 @@ extension BKProject {
         marks.filter { $0.kind == .cut }.map { ($0.start, $0.end) }
     }
 
-    /// 所有保留的区间
+    /// 所有保留的区间 —— **导出的唯一数据源**。
+    ///
+    /// 【v1.3.4 两套记录】按阶段自动取对应的记录：
+    ///   第一阶段：从 `marks` 的 keep 段反推（= 原片时间上没被切掉的区间）
+    ///   第二阶段：直接返回**记录B**（用户最终确认要保留的东西）
+    ///
+    /// 这样一处改动就让导出、联播、时长显示全部走对 —— 不用在每个调用点判阶段。
+    /// 第二阶段尤其重要：那时绿区已被微调过，`marks` 里的 keep 段是**过时的**
+    /// （记录A 已冻结），只有记录B 是最新的。
     var keepRanges: [(Double, Double)] {
-        marks.filter { $0.kind == .keep }.map { ($0.start, $0.end) }
-    }
-
-    /// 成品时长 = 所有保留段之和
-    var outputDuration: Double {
-        keepRanges.reduce(0) { $0 + ($1.1 - $1.0) }
+        isStage2 ? keptRanges.map { $0.pair } : marks.filter { $0.kind == .keep }.map { ($0.start, $0.end) }
     }
 
     /// 删掉的总时长
@@ -415,6 +481,16 @@ extension BKProject {
 //
 // 所有改动统一走这里，保证「相邻严丝合缝」这个不变量不被破坏。
 // 散布在各处的直接改 marks 是一定会出问题的，别图一时方便。
+
+/// 拖拽把手的哪一端。 = 开头端、 = 结尾端。
+///
+/// 【为什么放在 Core 而不是 UI】v1.3.2~1.3.4 它住在 ，
+/// 但 （第二阶段的核心算法）也要用它 ——
+/// Core 不该反向依赖 UI。现在它是纯数据模型的一部分，Core/UI 都能用。
+enum BKHandleEnd {
+    case head
+    case tail
+}
 
 enum BKTimeline {
 
@@ -502,6 +578,81 @@ enum BKTimeline {
         }
         splitKeep(cursor, duration)
         return out
+    }
+
+    // MARK: - v1.3.4 第二阶段（记录B · 绿区）
+
+    /// 由记录A（红区）推导记录B（绿区）。点「一键去红」时调用一次。
+    ///
+    /// 这是两阶段的**唯一一次**坐标系转换：从「原片上有哪些洞」变成「留下哪些段」。
+    /// 转换完就冻结，之后第二阶段只碰 B，不再回头改 A。
+    static func deriveKeeps(duration: Double, cuts: [(Double, Double)]) -> [Segment] {
+        let clean = merge(cuts, duration: duration)
+        var out: [Segment] = []
+        var cursor: Double = 0
+        for (s, e) in clean {
+            if s - cursor > 0.05 { out.append(Segment(start: cursor, end: s)) }
+            cursor = e
+        }
+        if duration - cursor > 0.05 { out.append(Segment(start: cursor, end: duration)) }
+        return out
+    }
+
+    /// 第二阶段的显示序列：**直接用绿区在原片时间轴上的真实位置**，不做任何 ripple 拼接。
+    ///
+    /// ⚠️ 与 v1.3.0~1.3.4 的最大区别，也是「两套记录」的核心收益：
+    /// 那版折叠后把绿区**首尾相接拼成一条成品时间轴**（长度 = 各绿区之和，比原片短），
+    /// 于是长按拿到的是「成品时间」、要改 cuts 就必须换算回原片时间 —— 换算出错就改错段。
+    /// 现在**轨道时间轴始终是原片时间**（`duration` 不变），
+    /// 绿区只是「被切成一块一块的连续绿轨」，位置就是它们本来的位置。
+    /// → 第二阶段全程原片时间，**零换算**。
+    ///
+    /// 段与段之间插一个零长度标记当**分割线**（视觉上「被切开」必须看得见，
+    /// 且每段仍可长按编辑）。零长度不污染时长计算（只累加 end - start）。
+    static func keepsToPieces(_ keeps: [Segment]) -> [BKMark] {
+        var out: [BKMark] = []
+        for (i, k) in keeps.enumerated() {
+            if i > 0 {
+                out.append(BKMark(start: k.start, end: k.start, kind: .keep))
+            }
+            out.append(BKMark(start: k.start, end: k.end, kind: .keep))
+        }
+        return out
+    }
+
+    /// 第二阶段：调整某一段绿区的边界。**全程原片时间，零换算。**
+    ///
+    /// - Parameter edge: `.head` 调开头、`.tail` 调结尾
+    /// - Returns: 新的绿区数组；非法位置返回 nil（界面保持原样）
+    ///
+    /// 约束（定稿 4.3）：
+    ///   ① 不越素材首尾 `[0, duration]`
+    ///   ② 不把这一段压到 `minSeg` 以下
+    ///   ③ **只影响这一段**，邻居不动 —— 这是方案甲的「红绿区对等、扫过区域继承该段同色」
+    ///      在第二阶段的体现：第一阶段是「在原片上排除」，这里是「直接定保留范围」
+    static func resizeKeeps(_ keeps: [Segment],
+                            index: Int,
+                            edge: BKHandleEnd,
+                            to newTime: Double,
+                            duration: Double,
+                            minSeg: Double) -> [Segment]? {
+        guard index >= 0, index < keeps.count else { return nil }
+        let s = keeps[index].start
+        let e = keeps[index].end
+        var next = keeps
+        switch edge {
+        case .head:
+            // 开头：本段起点往后不能超过终点-最短段，也不能小于 0
+            let ns = min(max(newTime, 0), e - minSeg)
+            guard ns >= 0, e - ns >= minSeg else { return nil }
+            next[index].start = ns
+        case .tail:
+            // 结尾：终点往前不能小于起点+最短段，也不能超过素材末尾
+            let ne = max(min(newTime, duration), s + minSeg)
+            guard ne <= duration, ne - s >= minSeg else { return nil }
+            next[index].end = ne
+        }
+        return next
     }
 
     /// 按「最近的边界」拖动，不按 index。
@@ -631,116 +782,8 @@ enum BKTimeline {
         case cut       // 红区：导出后不保留
     }
 
-    /// 素材是否被「一键去红」处理过（v1.3.3 起界面上叫「已删除」，代码里仍叫 redFolded）。
-    ///
-    /// 【v1.3.3 语义澄清 —— 皓哥 18:01 定】
-    /// 用户感知是「**删掉**」：红区听不到、看不见、导出没有，界面上不出现「折叠」二字。
-    /// 但**数据必须留着**（`cuts` 一个都不动）—— 否则长按绿区拖把手时，
-    /// 程序不知道原来哪里是红区、往哪扩就找不回被删掉的素材。
-    /// 所以它是「显示模式开关 + 保留范围记录」，不是「数据已删除」的记录。
-    ///
-    /// ⚠️ 这个标志存在 `marks` 之外（`BKProject.redFolded`），因为它是「整条素材」级别的状态。
-    static func foldedPieces(duration: Double,
-                             cuts: [(Double, Double)],
-                             splits: [Double],
-                             redFolded: Bool) -> [BKMark] {
-        let base = pieces(duration: duration, cuts: cuts, splits: splits)
-        guard redFolded else { return base }
-        // 已删除 = 只留 keep 段，按原顺序首尾相接拼成一条连续的绿轨。
-        // 相邻两个 keep 之间原本夹着 cut，拼接后中间的空洞就合上了 —— 这就是 ripple。
-        let kept = base.filter { $0.kind == .keep }
-        guard !kept.isEmpty else { return base }
-        var out: [BKMark] = []
-        var cursor: Double = 0
-        for (i, m) in kept.enumerated() {
-            // 【v1.3.3】区与区之间插一个**零长度标记**表示「这里有一条分割线」。
-            // 为什么必须有：分割线是「区的分隔」不是「删除的痕迹」——
-            // 每个绿区仍是一个独立可编辑单元，要能长按它进编辑态。
-            // v1.3.2 把绿段拼成一条、边界全丢，折叠后退化成「一整条不可分割的音频」，没法编辑。
-            //
-            // 零长度标记不污染时长计算：keepRanges / outputDuration 只累加 .keep 的
-            // (end - start)，零长度加 0 等于没加。
-            if i > 0 {
-                out.append(BKMark(start: cursor, end: cursor, kind: .keep))
-            }
-            let len = m.end - m.start
-            out.append(BKMark(start: cursor, end: cursor + len, kind: .keep))
-            cursor += len
-        }
-        return out
-    }
 
-    /// 折叠后的成品时长（= 总时长 − 被删红区总长）。
-    /// （原先写成返回「删除总长」，且拿 greatestFiniteMagnitude 当 duration —— 都会出错，直接重写。）
-    static func foldedOutputDuration(duration: Double, cuts: [(Double, Double)]) -> Double {
-        let clean = merge(cuts, duration: duration)
-        let removed = clean.reduce(0.0) { $0 + ($1.1 - $1.0) }
-        return max(0, duration - removed)
-    }
 
-    /// 折叠映射表 [(成品起点, 原片起点, 时长)]。
-    /// 折叠后轨道画布的时间轴是「成品时间」，而波形包络是「原片时间」，
-    /// 两者靠这张表对应起来 —— 不给的话波形会整体画错位置。
-    /// 与 `foldedPieces` 的拼接规则严格一致（都只取 keep 段、首尾相接）。
-    static func foldMap(duration: Double, cuts: [(Double, Double)]) -> [(out: Double, src: Double, dur: Double)] {
-        let base = build(duration: duration, cuts: cuts)
-        var out: [(out: Double, src: Double, dur: Double)] = []
-        var cursor: Double = 0
-        for m in base where m.kind == .keep {
-            let len = m.end - m.start
-            out.append((out: cursor, src: m.start, dur: len))
-            cursor += len
-        }
-        return out
-    }
-
-    /// 段模型里「一个绿区」的定义，供拖把手时夹边界用。
-    /// 返回该时刻所在的 keep 段下标；不在任何 keep 段里返回 nil。
-    static func keepIndex(at time: Double, in marks: [BKMark]) -> Int? {
-        for i in 0 ..< marks.count where marks[i].kind == .keep {
-            if time >= marks[i].start - 1e-9 && time <= marks[i].end + 1e-9 { return i }
-        }
-        return nil
-    }
-
-    /// 拖动某一段的**开头**，做三重夹取（v1.3.0 定稿 4.3）：
-    ///   ① 不越过原视频开头（0 之前没素材）
-    ///   ② 不越过本段终点减最短长度（否则压碎）
-    ///   ③ 不往右拖过原起点（那叫「改段边界」，是另一件事，由 N4 的语义处理）
-    ///
-    /// 段本身的状态（绿/红）不变；扫过的新区域继承该段同色，由调用方拿返回的新区间去改 cuts。
-    static func clampHead(_ newHead: Double,
-                          ofSegmentAt index: Int,
-                          in marks: [BKMark],
-                          minSeg: Double) -> Double? {
-        guard index >= 0, index < marks.count else { return nil }
-        let segStart = marks[index].start
-        let segEnd = marks[index].end
-        // ① 资产开头 0；② 最短段 → 上限是本段终点往前 minSeg
-        let lowerBound = 0.0
-        let upperBound = segEnd - minSeg
-        guard upperBound > lowerBound else { return nil }
-        // ③ 只允许往左拖（扩大本段）。往右拖 = 缩小，交给 moveBoundary 那条路
-        if newHead > segStart { return segStart }
-        return min(max(newHead, lowerBound), upperBound)
-    }
-
-    /// 拖动某一段的**结尾**，三重夹取（对称于 clampHead）
-    static func clampTail(_ newTail: Double,
-                          ofSegmentAt index: Int,
-                          in marks: [BKMark],
-                          minSeg: Double,
-                          duration: Double) -> Double? {
-        guard index >= 0, index < marks.count else { return nil }
-        let segStart = marks[index].start
-        let segEnd = marks[index].end
-        let lowerBound = segStart + minSeg    // 不压碎
-        let upperBound = duration             // 不越过原视频结尾
-        guard upperBound > lowerBound else { return nil }
-        // 只允许往右拖（扩大本段）
-        if newTail < segEnd { return segEnd }
-        return min(max(newTail, lowerBound), upperBound)
-    }
 
     /// v1.3.0 把手拖拽：**三重夹取**的区间版本（定稿 4.3）。
     ///
@@ -767,47 +810,52 @@ enum BKTimeline {
         return (s, e)
     }
 
-    /// 拖动某一段后，**cuts 该怎么改**（N4 的数据流核心）。
+    /// 第一阶段：拖红区边缘调气口大小（v1.3.4）
     ///
-    /// 【为什么不能直接改 marks 再 normalize】
-    /// marks 是「显示粒度」（含 splits 切口）且严丝合缝覆盖全长。直接拖边界会把
-    /// 相邻段一起搅乱。正解是**把新边界翻译成 cuts 的增删**，再走 build() 重建。
+    /// `near` 是起手时那条边缘的原片时间，`newTime` 是要挪到的新位置。
+    /// 命中的红区左右**哪一端**由 `near` 离哪个端点近决定。
     ///
-    /// 规则由「这段本来是 keep 还是 cut」决定 —— 也就是**扫过的区域继承该段同色**：
-    ///   · 原来是 keep：扫过的地方要变 keep → 从 cuts 里**挖掉**
-    ///   · 原来是 cut ：扫过的地方要变 cut  → 往 cuts 里**补上**，旧的挖掉
+    /// 约束（定稿 4.3）：
+    ///   ① 不越素材首尾 `[0, duration]`
+    ///   ② 红区不短于 `minSeg`（防碎成气口碎片）
     ///
-    /// 验证：tools/diag_handle_drag.py，8 个场景全绿（含越界、拖到不足最短段、keep/cut 双向）。
-    static func cutsAfterResize(cuts: [(Double, Double)],
-                                duration: Double,
-                                oldRange: (Double, Double),
-                                newRange: (Double, Double)) -> [(Double, Double)] {
-        let (os_, oe) = oldRange
-        let (ns, ne) = newRange
-        if abs(ns - os_) < 1e-9 && abs(ne - oe) < 1e-9 { return cuts }
-
-        // 这段本来是不是一个 cut 段
-        var wasCut = false
-        for (a, b) in cuts where a - 1e-9 <= os_ && oe <= b + 1e-9 { wasCut = true; break }
-
-        if wasCut {
-            // 整段要变 cut：先从 cuts 里挖掉旧的，再补上新的
-            var out = cuts
-            out.removeAll { $0.0 - 1e-9 <= os_ && oe <= $0.1 + 1e-9 }
-            out.append((ns, ne))
-            return merge(out, duration: duration)
-        }
-
-        // 整段要变 keep：把新范围从所有 cut 里挖掉
-        var out: [(Double, Double)] = []
-        for (a, b) in cuts {
-            if ne <= a || b <= ns {          // 不相交，原样保留
-                out.append((a, b))
-                continue
+    /// - Returns: 新的 cuts；非法位置返回 nil（界面保持原样）
+    static func moveRedEdge(cuts: [(Double, Double)],
+                            near: Double,
+                            to newTime: Double,
+                            duration: Double,
+                            minSeg: Double = 0.05) -> [(Double, Double)]? {
+        guard !cuts.isEmpty else { return nil }
+        // 找命中的红区：near 落在哪一段里（或紧邻哪一段）
+        var hitIndex = -1
+        var whichEnd = 0     // 0 = 改起点，1 = 改终点
+        var bestDist = Double.greatestFiniteMagnitude
+        for (i, iv) in cuts.enumerated() {
+            // 落在段内
+            if near >= iv.0 - 0.02 && near <= iv.1 + 0.02 {
+                let dHead = abs(iv.0 - near)
+                let dTail = abs(iv.1 - near)
+                if min(dHead, dTail) < bestDist {
+                    bestDist = min(dHead, dTail)
+                    hitIndex = i
+                    whichEnd = dHead <= dTail ? 0 : 1
+                }
             }
-            if a < ns { out.append((a, ns)) }   // 交集左侧残段
-            if ne < b { out.append((ne, b)) }   // 交集右侧残段
         }
-        return merge(out, duration: duration)
+        guard hitIndex >= 0 else { return nil }
+
+        var out = cuts
+        let cur = out[hitIndex]
+        if whichEnd == 0 {
+            let ns = min(max(newTime, 0), cur.1 - minSeg)
+            guard ns >= 0, cur.1 - ns >= minSeg else { return nil }
+            out[hitIndex].0 = ns
+        } else {
+            let ne = max(min(newTime, duration), cur.0 + minSeg)
+            guard ne <= duration, ne - cur.0 >= minSeg else { return nil }
+            out[hitIndex].1 = ne
+        }
+        return out
     }
+
 }

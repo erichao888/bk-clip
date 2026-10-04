@@ -913,40 +913,49 @@ final class BKEditorViewController: UIViewController {
         BKLog.shared.i(String(format: "手动切口 %.2fs（现有 %d 道）", t, p.splits.count))
     }
 
-    /// ✗✗ 删红键（v1.3.0 定稿 4.1）：一键**全删所有红区**，绿区 ripple 拼接。
+    /// ✗✗ 一键去红（v1.3.4）：进入**第二阶段**。
     ///
-    /// 【它和联播的区别，别打架】联播是「不改轨道的试看」，删红键是「把试看**提交**成新轨道」。
-    /// 按下去之后主轨道渲染成一条连续绿轨、时间轴变短、▶ 直接就只放绿区。
+    /// 【两阶段逻辑，皓哥 2026-10-04 18:39 定】
+    ///   第一阶段：自动识别气口 → 红绿交替。此时用户可以
+    ///             · 拖红区边缘调气口大小（`redEdgePan`）
+    ///             · 点绿区把它转成红区（tap）
+    ///             · 用 ✂ 切割键切开波形
+    ///             这一阶段的记录是**记录A（红区）**。
+    ///   点一下本键 → 按红区位置**切割轨道、删掉红区** → 进入第二阶段。
+    ///   第二阶段：轨道上全是绿区，一块一块。用户可以
+    ///             · 长按任一绿区 → 黄框 + 黄把手 → 调这块的开头/结尾长短
+    ///             这一阶段的记录是**记录B（绿区）**，由 A 推导生成，之后独立。
+    ///   **导出直接用 B**。
     ///
-    /// 【关键：折叠不等于销毁】`marks` 里的 cut 段一个都不删（源区间永远保留 = 皓哥说的「缓存」），
-    /// 只是把 `redFolded` 置 true。渲染与播放跳过它们，日后拖接缝（N4）能把已删素材拖回来。
-    /// 再按一次取消折叠。
+    /// 【单向，不可逆】v1.3.4 之前这里有「再按一次取消折叠」，皓哥明确说不对 ——
+    /// 删红是终态。想回到第一阶段只有「撤销」一条路（语义清晰）。
     @objc private func deleteRedTapped() {
-        // 取消折叠 = 恢复成「没删过」的显示状态，数据本来就没动过
-        if item.redFolded {
-            var p = item
-            p.redFolded = false
-            commit(p)
-            statusLabel.text = "已恢复 —— 红区都回来了"
-            BKLog.shared.i("取消去红")
+        guard !item.isStage2 else {
+            statusLabel.text = "已经删过红区了 —— 长按某块可以调它的长短"
             return
         }
-
         let cuts = item.cutRanges
         guard !cuts.isEmpty else {
             statusLabel.text = "当前没有红区可删"
             return
         }
 
+        // 记录A → 记录B：这是两阶段的**唯一一次**坐标系转换，做完 A 就冻结
+        let keeps = BKTimeline.deriveKeeps(duration: item.duration, cuts: cuts)
+        guard !keeps.isEmpty else {
+            statusLabel.text = "没有可保留的绿区"
+            return
+        }
+
         var p = item
-        p.redFolded = true
+        p.keptRanges = keeps
         commit(p)
 
-        let kept = item.keepRanges.count
-        let removed = item.foldedOutputDuration
-        statusLabel.text = String(format: "已删除 %d 段气口，保留 %d 段 · 成品 %.1fs", cuts.count, kept, removed)
-        BKLog.shared.i(String(format: "去红：删 %d 段留 %d 段，成品 %.2fs（原片 %.2fs）",
-                              cuts.count, kept, removed, item.duration))
+        let total = keeps.reduce(0.0) { $0 + $1.duration }
+        statusLabel.text = String(format: "已删 %d 段气口，剩 %d 段绿区 · 成品 %.1fs · 长按可调长短",
+                                  cuts.count, keeps.count, total)
+        BKLog.shared.i(String(format: "一键去红：删 %d 段 → 留 %d 段绿区，成品 %.2fs（原片 %.2fs）",
+                              cuts.count, keeps.count, total, item.duration))
     }
 
     /// 点段 toggle 绿↔红（v1.3.0 沿用界面定稿第 5 节第 692 行）。
@@ -954,12 +963,9 @@ final class BKEditorViewController: UIViewController {
     /// 「只能删红区、绿区想删先点成红」这条规则就是靠它落实的。
     private func togglePiece(at time: Double) {
         let p = item
-        // 折叠状态下轨道上已经没有红区了，先取消折叠再 toggle，否则点了没反应
-        if p.redFolded {
-            var q = p
-            q.redFolded = false
-            commit(q, coalesce: true)
-            statusLabel.text = "已恢复 —— 现在可以点段切换了"
+        // 第二阶段：轨道上全是绿区，没有红区可切换。点段只用来退出编辑态（见 onTap）
+        guard !p.isStage2 else {
+            statusLabel.text = "已经删过红区了 —— 长按某块可以调它的长短"
             return
         }
         let shown = BKTimeline.pieces(duration: p.duration, cuts: p.cutRanges, splits: p.splits)
@@ -1075,32 +1081,28 @@ final class BKEditorViewController: UIViewController {
     /// 轨道 + 概览条一起刷新。分开刷迟早会出现「轨道已经切了，概览条还画着旧的」
     private func refreshTrack() {
         let p = item
-        // 显示序列 = 删除区间 + 手动切口 一起算出来的片段。
-        // 导出永远只认 keepRanges，切口不参与 —— 切一刀不会让成品少一帧。
+        // 【v1.3.4 两套记录】
+        //   第一阶段：红绿交替（含红区，可拖红区边缘），画布时间轴 = **原片时长**
+        //   第二阶段：只有绿区（每块之间有分割线），画布时间轴**仍然是原片时长**
         //
-        // v1.3.0：折叠状态下换成 foldedPieces —— 绿区 ripple 拼成一条连续绿轨。
-        // ⚠️ 折叠后轨道画布的 duration 必须一起换成折叠后的成品时长，
-        // 否则内容会被按原片时长摊开，ripple 的效果就看不出来了。
-        let folded = p.redFolded
-        let shown = BKTimeline.foldedPieces(duration: p.duration,
-                                             cuts: p.cutRanges,
-                                             splits: p.splits,
-                                             redFolded: folded)
-        let trackDuration = folded ? p.foldedOutputDuration : p.duration
-        // 折叠映射表：成品时间 → 原片时间，波形靠它对回包络的原片时间轴
-        let map = folded ? BKTimeline.foldMap(duration: p.duration, cuts: p.cutRanges) : nil
+        // ⚠️ 关键差异：v1.3.0~1.3.4 第二阶段把绿区 ripple 拼成「成品时间轴」
+        // （长度 = 各绿区之和，比原片短），于是长按拿到的是成品时间、
+        // 改数据要换算回原片时间 —— 换算出错就改错段（实测第3段会改到第1段）。
+        // 两套记录下第二阶段**全程原片时间、零换算**，所以 duration 不用变。
+        let stage2 = p.isStage2
+        let shown = p.displayPieces
         track.setContent(envelope: envelope,
                          pieces: shown,
-                         splits: folded ? [] : p.splits,
-                         duration: trackDuration,
+                         splits: stage2 ? [] : p.splits,
+                         duration: p.duration,
                          thresholdDb: p.thresholdDb,
-                         foldMap: map,
-                         redFolded: folded)
+                         foldMap: nil,
+                         redFolded: stage2)
         overview.setContent(envelope: envelope,
                             pieces: shown,
-                            duration: trackDuration,
+                            duration: p.duration,
                             viewport: track.viewport,
-                            foldMap: map)
+                            foldMap: nil)
     }
 
     private func updateInfo() {
@@ -1139,7 +1141,7 @@ final class BKEditorViewController: UIViewController {
         // 已经不是指针所在的那条时间轴了 —— 继续走原片播会「画面在 A、内容是 B」。
         // 所以折叠状态下 ▶ 直接走联播那条路（它本来就是按 keepRanges 拼好播的），
         // 起播点仍按皓哥定的规则算：指针在绿区从指针处、在红区跳下一个绿区。
-        if item.redFolded {
+        if item.isStage2 {
             jointTapped()
             return
         }
@@ -1152,7 +1154,10 @@ final class BKEditorViewController: UIViewController {
         updatePlayIcons()
     }
 
-    /// `|▶|` 联播：按 keepRanges 临时拼一条来播，等于预演成品（定稿 4.5.4）
+    /// `|▶|` 联播：按保留段临时拼一条来播，等于预演成品（定稿 4.5.4）
+    ///
+    /// 【v1.3.4】`item.keepRanges` 已按阶段自动取记录（第二阶段返回记录B），
+    /// 所以这里不用再判阶段，也不用换算坐标系。
     @objc private func jointTapped() {
         if playMode == .joint { stopPlayback(); return }
         stopPlayback()
@@ -1579,109 +1584,104 @@ extension BKEditorViewController: BKTrackViewDelegate {
         BKLog.shared.d(String(format: "轨道缩放 %.1f 屏", screens))
     }
 
-    // MARK: v1.3.0 区域编辑态
+    // MARK: v1.3.4 第一阶段：拖红区边缘调气口大小
+
+    /// 按下红区边缘开始拖。开启「合并提交」—— 拖动过程每帧都回调，
+    /// 不合并的话撤销栈会被一帧一帧塞满，撤一次只退一帧
+    func track(_ view: BKTrackView, didBeginRedEdgeDragNear time: Double) {
+        boundaryDragging = true
+        boundaryCommitted = false
+        BKLog.shared.d(String(format: "开始拖红区边缘 %.2fs", time))
+    }
+
+    /// 拖红区边缘。红区是**记录A**（cuts），改它不影响记录B —— 还没进第二阶段
+    func track(_ view: BKTrackView, didDragRedEdgeNear near: Double, to newTime: Double) {
+        guard let next = BKTimeline.moveRedEdge(cuts: item.cutRanges,
+                                               near: near,
+                                               to: newTime,
+                                               duration: item.duration) else { return }
+        applyMarks(BKTimeline.build(duration: item.duration, cuts: next), coalesce: true)
+    }
+
+    func trackDidEndRedEdgeDrag(_ view: BKTrackView) {
+        boundaryDragging = false
+        boundaryCommitted = false
+    }
+
+    // MARK: v1.3.4 第二阶段：长按绿区 → 黄框黄把手 → 调这块的长短
 
     /// 长按进了编辑态。
     ///
-    /// 【v1.3.3 变更】v1.3.2 是「折叠状态下先取消折叠才能编辑」——
-    /// 那是错的，因为折叠后轨道显示的就是成品时间轴，两者对不上。
-    /// 现在（方案甲 / 皓哥 18:01 定）**折叠后可以直接长按任意绿区编辑**：
-    /// 波形连续铺满但**区与区的分割线保留**，每个绿区仍是独立可编辑单元。
-    /// 拖把手时用 `foldMap` 把成品时间换算回原片时间再改 cuts。
+    /// 【两套记录的核心收益】第二阶段轨道显示的就是**原片时间轴**（v1.3.0~1.3.4
+    /// 是「成品时间轴」，导致拖把手要换算，实测会改错段）。所以这里拿到的
+    /// 区间**就是记录B 里的原片时间**，拖动时直接改，零换算。
     func track(_ view: BKTrackView, didBeginRegionEditFrom start: Double, to end: Double) {
+        guard item.isStage2 else { return }
         regionEditing = true
-        // 编辑期间拖动要合并成一步撤销，不能每帧入一次栈
         boundaryDragging = true
-        statusLabel.text = String(format: "编辑 %.2f~%.2fs · 拖两端黄把手改边界，点别处退出",
+        statusLabel.text = String(format: "编辑 %.2f~%.2fs · 拖两端黄把手改长短，点别处退出",
                                    start, end)
         BKLog.shared.d(String(format: "进入区域编辑态 [%.2f, %.2f]", start, end))
     }
 
-    /// 拖把手中。**不落盘** —— 拖动中每帧 build+normalize+落盘会卡死，
-    /// 只更新状态行告诉用户当前区间，松手才真正提交
+    /// 拖把手中。**不落盘** —— 每帧重建+落盘会卡死。只更新状态行，松手才提交
     func track(_ view: BKTrackView, didDragRegionEdge handle: BKHandleEnd, to newTime: Double) {
         guard let seg = view.editingSegment else { return }
-        let end = handle == .head ? seg.end : newTime
-        let start = handle == .tail ? seg.start : newTime
-        statusLabel.text = String(format: "新边界 %.2f~%.2fs（长 %.2fs）· 松手生效",
-                                  start, end, end - start)
+        let s = handle == .head ? newTime : seg.start
+        let e = handle == .tail ? newTime : seg.end
+        let verb = (handle == .head) ? (newTime < seg.start ? "开头缩短" : "开头延长")
+                                      : (newTime > seg.end ? "结尾延长" : "结尾缩短")
+        statusLabel.text = String(format: "%s → %.2f~%.2fs（长 %.2fs）· 松手生效",
+                                  verb, s, e, e - s)
     }
 
-    /// 拖把手松手，提交。这一步才真正改 cuts 并落一次撤销
-    ///
-    /// 【v1.3.3 支持折叠态】折叠后轨道显示的是**成品时间轴**，
-    /// 而 `cuts` 记的是**原片时间**。所以要先换算回去才能改 cuts。
-    /// 换算用 `foldMap`：成品时间 → 原片时间（与波形绘制用的是同一张表）。
-    ///
-    /// 折叠态下的语义（皓哥 18:01 定）：**全是绿区、没有红区概念**。
-    /// 四个方向都成立：往左拖左把手=开头增加（把多切的放出来），
-    /// 往右拖右把手=结尾延长，反向=缩短。「拖短」的部分直接丢弃、界面上什么都不显示。
+    /// 拖把手松手，提交。**直接改记录B**（不反推 cuts、不换算坐标系）
     func track(_ view: BKTrackView, didCommitRegionEditFrom start: Double, to end: Double) {
         boundaryDragging = false
         regionEditing = false
-        guard let base = view.editingSegment else { return }
+        guard item.isStage2, let base = view.editingSegment else { return }
 
         let p = item
-
-        // 把画布时间换算成原片时间
-        var srcRange = (start, end)
-        var oldSrcRange = base
-        if p.redFolded {
-            let map = BKTimeline.foldMap(duration: p.duration, cuts: p.cutRanges)
-            guard !map.isEmpty else { return }
-            srcRange = (foldSourceTime(map, start), foldSourceTime(map, end))
-            oldSrcRange = (foldSourceTime(map, base.start), foldSourceTime(map, base.end))
-            if srcRange.0 < oldSrcRange.0 { srcRange.0 = oldSrcRange.0 }
-            if srcRange.1 > oldSrcRange.1 { srcRange.1 = oldSrcRange.1 }
-            if srcRange.1 - srcRange.0 < BKConfig.RegionEdit.minSegmentSec { return }
-        } else {
-            // 未折叠：按坐标找那一段（不能用 index：index 会随显示粒度变 —— 现有代码的教训）
-            let shown = BKTimeline.pieces(duration: p.duration, cuts: p.cutRanges, splits: p.splits)
-            var found = false
-            for pc in shown where abs(pc.start - base.start) < 1e-6 && abs(pc.end - base.end) < 1e-6 {
-                oldSrcRange = (pc.start, pc.end)
-                found = true
-                break
-            }
-            if !found {
-                BKLog.shared.w("提交拖动：找不到原区间 [\(base.start), \(base.end)]，放弃")
-                return
-            }
+        // 按坐标找那一段（不能用 index：index 会随显示粒度变 —— 现有代码的教训）
+        var idx = -1
+        for i in 0 ..< p.keptRanges.count
+        where abs(p.keptRanges[i].start - base.start) < 1e-6
+            && abs(p.keptRanges[i].end - base.end) < 1e-6 {
+            idx = i
+            break
+        }
+        guard idx >= 0 else {
+            BKLog.shared.w("提交拖动：记录B 里找不到 [\(base.start), \(base.end)]，放弃")
+            return
+        }
+        // 拖的是哪一端：区间变了的那头
+        let edge: BKHandleEnd = (abs(start - base.start) < 1e-6) ? .head : .tail
+        let newTime = (edge == .head) ? start : end
+        guard let next = BKTimeline.resizeKeeps(p.keptRanges,
+                                                index: idx,
+                                                edge: edge,
+                                                to: newTime,
+                                                duration: p.duration,
+                                                minSeg: BKConfig.RegionEdit.minSegmentSec) else {
+            statusLabel.text = "拖不过去了（会越界或短于 0.1 秒）"
+            return
         }
 
-        let newCuts = BKTimeline.cutsAfterResize(cuts: p.cutRanges,
-                                                 duration: p.duration,
-                                                 oldRange: oldSrcRange,
-                                                 newRange: srcRange)
         var q = item
-        q.marks = BKTimeline.build(duration: p.duration, cuts: newCuts)
+        q.keptRanges = next
         q.updatedAt = Date()
         commit(q)
 
-        let grew = (srcRange.1 - oldSrcRange.1) - (oldSrcRange.0 - srcRange.0)
-        statusLabel.text = grew > 0
-            ? String(format: "已多留 %.2fs（成品变长）", grew)
-            : String(format: "已少留 %.2fs", -grew)
-        BKLog.shared.i(String(format: "拖动提交 原片[%.2f,%.2f] → [%.2f,%.2f]",
-                              oldSrcRange.0, oldSrcRange.1, srcRange.0, srcRange.1))
+        let grew = next[idx].duration - p.keptRanges[idx].duration
+        statusLabel.text = grew >= 0
+            ? String(format: "这段变长 %.2fs · 成品共 %.1fs", grew, q.outputDuration)
+            : String(format: "这段变短 %.2fs · 成品共 %.1fs", -grew, q.outputDuration)
+        BKLog.shared.i(String(format: "绿区 %d 拖动提交 [%.2f,%.2f] → [%.2f,%.2f]",
+                              idx, base.start, base.end, next[idx].start, next[idx].end))
         // 提交后退出编辑态：一次拖动 = 一步撤销 = 一个明确的结束
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             self?.track.exitRegionEdit()
         }
-    }
-
-    /// 成品时间 → 原片时间（折叠态换算）。
-    /// 与 `BKTrackView.TrackRender.sourceTime` 同一套逻辑，只是这里不参与绘制。
-    private func foldSourceTime(_ map: [(out: Double, src: Double, dur: Double)], _ t: Double) -> Double {
-        guard !map.isEmpty else { return t }
-        for seg in map {
-            if t >= seg.out - 1e-9 && t <= seg.out + seg.dur + 1e-9 {
-                return seg.src + (t - seg.out)
-            }
-        }
-        if let first = map.first, t < first.out { return first.src }
-        if let last = map.last { return last.src + last.dur }
-        return t
     }
 
     /// 路②：已经在片头，松手时还被往右拽过 60pt → 换上一条

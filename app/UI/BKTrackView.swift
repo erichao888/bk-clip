@@ -76,11 +76,17 @@ final class BKTrackView: UIView {
     private let scroll = UIScrollView()
     private let canvas = TrackCanvas()
     private let pointer = TrackPointer()
-    private var pan: UIPanGestureRecognizer!
     private var tap: UITapGestureRecognizer!
     private var pinch: UIPinchGestureRecognizer!
-    /// v1.3.0 长按：进入区域编辑态（定稿 4.3）
+    /// v1.3.0 长按：进入区域编辑态（定稿 4.3）。**仅第二阶段**
     private var longPress: UILongPressGestureRecognizer!
+    /// v1.3.4 第一阶段：拖红区边缘调大小。**仅第一阶段**
+    private var redEdgePan: UIPanGestureRecognizer!
+    /// 正在拖的那条红区边缘（起手时的原片时间）
+    private var draggingRedEdge: Double?
+    /// 第二阶段锁定：点过「一键去红」之后为 true，第一阶段的手势全部停用。
+    /// 由 `setContent(redFolded:)` 同步 —— 红区不在轨道上了，拖红区边缘没有意义。
+    private var stage2Locked = false
 
     private var duration: Double = 0
     private var pps: CGFloat = 60
@@ -146,12 +152,23 @@ final class BKTrackView: UIView {
         pointer.isUserInteractionEnabled = false
         addSubview(pointer)
 
-        pan = UIPanGestureRecognizer(target: self, action: #selector(onPan(_:)))
-        pan.delegate = self
-        // 只认单指。默认是允许多指的，那样双指捏合时拖边界的 pan 也会跟着起手，
-        // 一边缩放一边把刀口拖跑了
-        pan.maximumNumberOfTouches = 1
-        canvas.addGestureRecognizer(pan)
+        // ============================================================
+        // 【v1.3.4 手势重构】把原来那个 `pan`（拖接缝）改成 `redEdgePan`（拖红区边缘）
+        //
+        // v1.3.4 那版把 `onPan` 清空、shouldBegin 恒 true，结果它**每次都抢下
+        // UIScrollView 的滚动**而什么都不做 —— 轨道完全滑不动、黄把手也拖不动
+        // （真机 2026-10-04 18:39 报障）。根因就是「在 canvas 上放了一个不干活的 pan」。
+        //
+        // 现在 canvas 上**没有任何抢滚动的手势**：滚动 100% 由 UIScrollView 原生负责。
+        // 两个阶段各一套手势（皓哥 18:39 定的两阶段逻辑）：
+        //   第一阶段：`redEdgePan` 拖红区边缘调大小 —— 只在手指确实按在红区边缘
+        //           ±28pt 内才起手（shouldBegin 里判），其余情况让给滚动
+        //   第二阶段：`longPress` 0.5s 进编辑态 → 拖黄把手
+        // ============================================================
+        redEdgePan = UIPanGestureRecognizer(target: self, action: #selector(onRedEdgePan(_:)))
+        redEdgePan.delegate = self
+        redEdgePan.maximumNumberOfTouches = 1
+        canvas.addGestureRecognizer(redEdgePan)
 
         tap = UITapGestureRecognizer(target: self, action: #selector(onTap(_:)))
         tap.delegate = self
@@ -226,6 +243,14 @@ final class BKTrackView: UIView {
         canvas.r.thresholdDb = thresholdDb
         canvas.r.foldMap = foldMap
         canvas.r.redFolded = redFolded
+        // 【v1.3.4】第二阶段锁定：点过「一键去红」后停用第一阶段手势
+        // （红区不在轨道上了，红区边缘拖动没有意义；长按才是第二阶段的入口）
+        if stage2Locked != redFolded {
+            stage2Locked = redFolded
+            // 阶段切换时清掉进行中的手势状态
+            draggingRedEdge = nil
+            if stage2Locked { exitRegionEdit() }
+        }
         relayout(keepPointerTime: keep)
         // 【v1.3.3 卡顿修复】按可见区重绘，别用无参 setNeedsDisplay()。
         // 无参版本 rect = 整个 bounds（放大 20 屏时 7800pt），
@@ -376,27 +401,43 @@ extension BKTrackView: UIGestureRecognizerDelegate {
     /// 代价：微调刀口前多一次长按（0.5s）。取舍理由是这个 App 的核心竞争力是「精度可控」，
     /// **行为唯一 > 少一次长按**。剪映本身也是长按才出精确调节手柄。
     ///
-    /// ⚠️ 这里恒返回 true：v1.3.3 起「拖接缝」这条路彻底取消，pan 只服务滚动。
-    ///    保留这个 override 是因为它是 UIScrollView 拖动与 canvas 手势仲裁的入口，
-    ///    未来若要恢复某种接管行为，从这里下手。
+    /// ⚠️⚠️ **这里是 v1.3.4「轨道完全滑不动」的修复点**
+    /// v1.3.4 这里恒返回 `true`，而 canvas 上那个 pan 是空函数 ——
+    /// 于是它**每次都抢下 UIScrollView 的滚动**然后什么都不做，轨道就锁死了。
+    /// （同一根因还导致黄把手拖不动：长按后 pan 仍在竞争。）
+    ///
+    /// v1.3.4 的正确做法：**canvas 上不放任何抢滚动的手势**。
+    /// `redEdgePan` 只在「手指确实按在红区边缘附近」时才起手，其余一律让给滚动。
     ///
     /// 注意这是 UIView 自带的方法，必须 override —— 直接写 func 会报
     /// "overriding declaration requires an 'override' keyword"
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        true
+        if gestureRecognizer === redEdgePan {
+            // 第二阶段：红区已经不在轨道上了，红区边缘拖动停用
+            guard !stage2Locked, editingSegmentBase == nil else { return false }
+            // 只有真的按在红区边缘附近才起手，否则**让给 UIScrollView 滚动**
+            let x = gestureRecognizer.location(in: canvas).x
+            guard let edge = nearestRedEdge(to: timeAt(canvasX: x)) else { return false }
+            return abs(canvasX(of: edge) - x) <= CGFloat(BKConfig.RegionEdit.handleGrabTolerance)
+        }
+        if gestureRecognizer === longPress {
+            // 长按进编辑态只属于第二阶段（第一阶段长按没有可编辑的东西）
+            return stage2Locked
+        }
+        return true
     }
 
-    /// v1.3.0 手势仲裁（三方互不干扰）：
+    /// v1.3.4 手势仲裁：
     ///
-    /// | 手势 | 什么时候能起手 |
+    /// | 手势 | 起手条件 |
     /// |---|---|
-    /// | 长按 | 一直可以（它是「按住不动」的唯一候选） |
-    /// | 拖边界 pan | 只在**没进编辑态**且手指确实摸到接缝时 |
-    /// | tap | 正常，长按已失败（=.failed）后才轮到它 |
+    /// | `redEdgePan` | 仅第一阶段，且手指按在红区边缘 ±28pt 内 |
+    /// | `longPress` | 仅第二阶段（长按片段进编辑态） |
+    /// | `tap` | 第一阶段切红绿；第二阶段点别处退出编辑态 |
+    /// | `pinch` | 一直可以 |
+    /// | UIScrollView 原生 pan | **一直可以，我们不抢** ← 轨道能滑动全靠这条
     ///
     /// 长按 → tap 的顺序由 UIKit 自动处理：长按先 recognized，tap 就自动 fail。
-    /// 这里真正要挡的是「长按和 pan 同时起手」——
-    /// 现有 pan 已经靠 `gestureRecognizerShouldBegin` 挡了（编辑态里 return false）。
     ///
     /// ⚠️ **这里不能加 `override`**：上面那个 `gestureRecognizerShouldBegin` 是
     /// UIView **自带**的方法（要 override），而这个是 `UIGestureRecognizerDelegate` 的
@@ -406,17 +447,53 @@ extension BKTrackView: UIGestureRecognizerDelegate {
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         // 双指捏合缩放要能和滚动同时进行
         if gestureRecognizer === pinch || other === pinch { return true }
-        // 编辑态里，长按（=拖把手）与 pan 允许共存：
-        // pan 在编辑态里本来就不起手，这里放行是为了让「拖把手时 UIScrollView 的减速惯性停掉」
+        // 第二阶段拖黄把手时，longPress 与滚动可以共存
         if editingSegmentBase != nil && (gestureRecognizer === longPress || other == longPress) { return true }
         return false
     }
 
-    /// pan 现在**只服务滚动**，不拖任何东西（v1.3.3 取消拖接缝）。
-    /// 这个 handler 保留是为了让 pan 在 canvas 上正常起手
-    /// （否则 UIScrollView 的 pan 可能被子视图手势截胡），但不抢滚动、也不编辑。
-    @objc private func onPan(_ g: UIPanGestureRecognizer) {
-        // 滚动交给 UIScrollView 自己处理，这里什么都不做
+    /// 第一阶段：拖红区边缘调大小（v1.3.4）
+    ///
+    /// 只在 `gestureRecognizerShouldBegin` 判定「手指确实按在红区边缘附近」时才进来。
+    /// 拖动中每帧回调一次，VC 侧用 `coalesce` 合并成**一步撤销**。
+    @objc private func onRedEdgePan(_ g: UIPanGestureRecognizer) {
+        let here = g.location(in: canvas)
+        let t = timeAt(canvasX: here.x)
+        switch g.state {
+        case .began:
+            // 关掉滚动，否则拖边缘的同时内容会跟着漂走
+            scroll.isScrollEnabled = false
+            draggingRedEdge = nearestRedEdge(to: t)
+            if let e = draggingRedEdge {
+                delegate?.track(self, didBeginRedEdgeDragNear: e)
+            }
+        case .changed:
+            guard let from = draggingRedEdge else { return }
+            delegate?.track(self, didDragRedEdgeNear: from, to: t)
+        case .ended, .cancelled, .failed:
+            if draggingRedEdge != nil {
+                delegate?.trackDidEndRedEdgeDrag(self)
+            }
+            draggingRedEdge = nil
+            scroll.isScrollEnabled = true
+        default:
+            break
+        }
+    }
+
+    /// 离 t 最近的一条**红区边缘**（第一阶段拖它调红区大小）。
+    /// 只看红区的两端，素材首尾不算。
+    private func nearestRedEdge(to t: Double) -> Double? {
+        var best: Double?
+        // 超过 0.5 秒就不算摸到：不然手指一放下去就抓住远处的边界
+        var bestDist = 0.5
+        for pc in canvas.r.pieces where pc.kind == .cut {
+            for edge in [pc.start, pc.end] where edge > 0.001 && edge < duration - 0.001 {
+                let d = abs(edge - t)
+                if d < bestDist { bestDist = d; best = edge }
+            }
+        }
+        return best
     }
 
     @objc private func onTap(_ g: UITapGestureRecognizer) {
