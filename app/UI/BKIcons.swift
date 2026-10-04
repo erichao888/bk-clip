@@ -4,12 +4,13 @@
 //
 //  【为什么还有自定义图标，不全用 SF Symbols】
 //  工具栏里绝大多数按钮都能在 SF Symbols 里找到现成的（剪刀、吸管、播放……），
-//  但「反选当前片段」这个语义没有对应的系统图标 —— 它是个「圆环双箭头首尾相接」，
-//  表达的是「留 ↔ 删 来回倒」。皓哥从画的 5 个方案里选了 B，这里就是方案 B。
+//  但有些语义没有对应的系统图标 —— 比如「删红 ✗✗」和「阈值恢复自动 ↺」。
 //
-//  【为什么画成模板图（alwaysTemplate）】
+//  【为什么大部分画成模板图（alwaysTemplate）】
 //  模板图只取 alpha 通道，颜色由按钮的 tintColor 决定。
 //  这样按下 / 禁用时图标会跟着系统一起变色，不用为每种状态再画一张。
+//  ⚠️ 例外是 `deleteRedDoubleX`：红是它的**语义色**，做成模板图会被 tintColor 覆盖，
+//  那里刻意不用模板图（详见该函数注释）。
 //
 //  【⚠️ 透明通道必须显式开】
 //  模板图看的是 alpha。如果绘制上下文是不透明的（opaque），整张图 alpha 全是 1，
@@ -17,65 +18,15 @@
 //  所以下面用 UIGraphicsBeginImageContextWithOptions(..., false, ...)，
 //  第二个参数 false 就是「不要不透明背景」。
 //
+//  【v1.3.0 删掉了 loopArrow】
+//  原来的「反选 ⟳」被删红键替换（皓哥 2026-10-04 定）。它的能力并进了
+//  「点段 toggle 绿↔红」—— 手指直接点那一段就行，不需要专门的键。
+//  图标一并删除：零调用的死代码留着，会让人以为反选键还在。
+//
 
 import UIKit
 
 enum BKIcons {
-
-    /// ⟳ 反选当前片段（定稿第 4.2 节，方案 B）
-    ///
-    /// 图形是两段半圆 + 两个箭头，首尾相接成一个环：
-    ///   上半弧 从 (5,12) 经顶部 到 (19,12)，运动方向朝下 → 箭头尖朝下
-    ///   下半弧 从 (19,12) 经底部 到 (5,12)，运动方向朝上 → 箭头尖朝上
-    ///
-    /// 坐标系统是 24×24（和 SVG viewBox 一致），绘制前整体缩放到 side。
-    /// 注意 UIKit 里 y 轴朝下，所以「顺时针」= 角度递增：
-    ///   θ=0 → 右，θ=π/2 → 下，θ=π → 左，θ=3π/2 → 上
-    /// 上半弧取 π → 2π（经过 3π/2 也就是顶部），下半弧取 0 → π（经过 π/2 底部）。
-    static func loopArrow(side: CGFloat = 24, weight: CGFloat = 1.8) -> UIImage {
-        let half = CGFloat(Double.pi)
-        let full = CGFloat(Double.pi) * 2
-
-        // false = 透明背景。改成 true 这个图标就变成实心方块了
-        UIGraphicsBeginImageContextWithOptions(CGSize(width: side, height: side), false, 0)
-
-        if let ctx = UIGraphicsGetCurrentContext() {
-            let scale = side / 24.0
-            ctx.scaleBy(x: scale, y: scale)
-            ctx.setStrokeColor(UIColor.black.cgColor)
-            ctx.setLineWidth(weight / scale)   // 先缩放了，线宽要还原回去
-            ctx.setLineCap(.round)
-            ctx.setLineJoin(.round)
-
-            // 上半弧：π → 2π，顺时针，经过顶部
-            ctx.move(to: CGPoint(x: 5, y: 12))
-            ctx.addArc(center: CGPoint(x: 12, y: 12), radius: 7,
-                       startAngle: half, endAngle: full, clockwise: true)
-            ctx.strokePath()
-
-            // 下半弧：0 → π，顺时针，经过底部
-            ctx.move(to: CGPoint(x: 19, y: 12))
-            ctx.addArc(center: CGPoint(x: 12, y: 12), radius: 7,
-                       startAngle: 0, endAngle: half, clockwise: true)
-            ctx.strokePath()
-
-            // 右上箭头：尖在 (19,12)，尖朝下
-            ctx.move(to: CGPoint(x: 16, y: 9))
-            ctx.addLine(to: CGPoint(x: 19, y: 12))
-            ctx.addLine(to: CGPoint(x: 22, y: 9))
-            ctx.strokePath()
-
-            // 左下箭头：尖在 (5,12)，尖朝上
-            ctx.move(to: CGPoint(x: 8, y: 15))
-            ctx.addLine(to: CGPoint(x: 5, y: 12))
-            ctx.addLine(to: CGPoint(x: 2, y: 15))
-            ctx.strokePath()
-        }
-
-        let image = UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
-        UIGraphicsEndImageContext()
-        return image.withRenderingMode(.alwaysTemplate)
-    }
 
     /// `|▶|` 联播键（定稿 4.4，皓哥从 5 个方案里挑的 **E**）
     ///
@@ -157,5 +108,55 @@ enum BKIcons {
         let image = UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
         UIGraphicsEndImageContext()
         return image.withRenderingMode(.alwaysTemplate)
+    }
+
+    /// ✗✗ 删红键（v1.3.0 定稿 4.1，皓哥 2026-10-04 终选**方案 B · 错位重叠双 X**）
+    ///
+    /// 两个 X 对角错位、中间交叠，像「✕✕」——比方案 A（同心旋转 30° 的八芒星）更轻盈。
+    /// 参照 `docs/删红键图标.svg`。
+    ///
+    /// ⚠️ **这个图标不能用 alwaysTemplate**，是本文件里唯一的例外。
+    /// 其余图标都是线条 + 模板图（颜色交给 tintColor，按下/禁用自动变色）；
+    /// 但删红的红是**语义色**（= 红区删除动作色，纯红 #FF3B30），
+    /// 做成模板图会被按钮的 tintColor 覆盖掉 —— 按下变灰、禁用变淡，
+    /// 就分不出「这是删红键」还是「这是别的键」了。所以这里固定画死纯红，
+    /// 代价是按下/禁用时颜色不变（对删除类按钮反而更合适：不该鼓励连点）。
+    ///
+    /// 坐标系统是 24×24，和其余图标一致，绘制前整体缩放到 side。
+    /// 同样必须 `false` = 透明背景，否则 alpha 全 1 会变成实心方块。
+    static func deleteRedDoubleX(side: CGFloat = 24, weight: CGFloat = 2.1) -> UIImage {
+        UIGraphicsBeginImageContextWithOptions(CGSize(width: side, height: side), false, 0)
+
+        if let ctx = UIGraphicsGetCurrentContext() {
+            let scale = side / 24.0
+            ctx.scaleBy(x: scale, y: scale)
+            // 固定纯红，不用模板图（见上面的注释）
+            // ⚠️ 写成 0x3B / 255.0 会被当成整数除法（结果 0），
+            // 必须让分子是浮点。UIColor(red:green:blue:alpha:) 收 CGFloat，
+            // 这里显式给 Double 免得踩整除。
+            let red = UIColor(red: 1.0, green: 59.0 / 255.0, blue: 48.0 / 255.0, alpha: 1.0)
+            ctx.setStrokeColor(red.cgColor)
+            ctx.setLineWidth(weight / scale)
+            ctx.setLineCap(.round)
+
+            // X1：中心 (10, 10)
+            ctx.move(to: CGPoint(x: 6.5, y: 6.5))
+            ctx.addLine(to: CGPoint(x: 13.5, y: 13.5))
+            ctx.move(to: CGPoint(x: 13.5, y: 6.5))
+            ctx.addLine(to: CGPoint(x: 6.5, y: 13.5))
+            ctx.strokePath()
+
+            // X2：中心 (15, 15)，对角错位 5pt —— 这就是「错位重叠」
+            ctx.move(to: CGPoint(x: 11.5, y: 11.5))
+            ctx.addLine(to: CGPoint(x: 18.5, y: 18.5))
+            ctx.move(to: CGPoint(x: 18.5, y: 11.5))
+            ctx.addLine(to: CGPoint(x: 11.5, y: 18.5))
+            ctx.strokePath()
+        }
+
+        let image = UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
+        UIGraphicsEndImageContext()
+        // ⚠️ 不加 withRenderingMode(.alwaysTemplate) —— 见上面的注释
+        return image
     }
 }

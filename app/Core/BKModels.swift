@@ -174,6 +174,21 @@ struct BKProject: Codable, Identifiable {
     /// 单独点掉切开的其中一半 —— 这才是「点切割能从指针处分开」的真意
     var splits: [Double]
 
+    /// v1.3.0 删红键：是否已把红区**折叠**掉。
+    ///
+    /// 折叠 = 真折叠：绿区 ripple 拼接、主轨道渲染成一条连续绿轨、时间轴变短。
+    /// 但 `marks` 里的 cut 段**一个都不删**（源区间永远保留 = 皓哥说的「缓存」），
+    /// 折叠只影响渲染与播放，日后拖接缝能把已删素材拖回来。
+    /// 所以这个标志是「显示模式开关」，不是「数据已删除」的记录。
+    ///
+    /// ⚠️ 旧草稿没有这个字段，必须 decodeIfPresent 兜底成 false（v1.2.x 的老草稿都是未折叠状态）。
+    var redFolded: Bool = false
+
+    /// 折叠后的**成品时长**（= 总时长 − 被删红区总长）。导出与进度条都用它。
+    var foldedOutputDuration: Double {
+        redFolded ? BKTimeline.foldedOutputDuration(duration: duration, cuts: cutRanges) : outputDuration
+    }
+
     /// 橙色指针停在哪儿。换素材 / 退出再进来都要回到这一帧，
     /// 起始页的封面也是这一帧（定稿 3.1）
     var playheadTime: Double
@@ -221,6 +236,7 @@ extension BKProject {
         case sourceRotationDegrees, thresholdDb, autoThresholdDb
         case sourceApplicable, marks, createdAt, updatedAt, exportHistory, splits
         case playheadTime
+        case redFolded
     }
 
     init(from decoder: Decoder) throws {
@@ -241,6 +257,9 @@ extension BKProject {
         exportHistory = (try? c.decodeIfPresent([BKExportRecord].self, forKey: .exportHistory)) ?? []
         splits = (try? c.decodeIfPresent([Double].self, forKey: .splits)) ?? []
         playheadTime = (try? c.decodeIfPresent(Double.self, forKey: .playheadTime)) ?? 0
+        // v1.3.0 新增字段。旧草稿没有它 —— 缺 key 必须兜底成 false，
+        // 不兜底的话合成 init 遇到缺 key 直接 throw，皓哥手机上一堆老草稿全得没
+        redFolded = (try? c.decodeIfPresent(Bool.self, forKey: .redFolded)) ?? false
         // 老草稿没有名字，回退到相册里查一次，补上之后下次就不用再查了
         if assetName.isEmpty {
             assetName = BKVideoLibrary.assetName(localID: assetLocalID)
@@ -593,5 +612,119 @@ enum BKTimeline {
             result.append(BKMark(start: last.end, end: duration, kind: .keep))
         }
         return result
+    }
+
+    // MARK: - v1.3.0 段模型（删红键地基）
+
+    /// 一段素材的状态。
+    ///
+    /// 【为什么不是新增一个存储，而是继续用 BKMark】
+    /// v1.3.0 原计划把 `marks` 变成派生、`keepRanges` 改 computed。动手前先用 Python 复刻验证
+    /// （tools/diag_segment_model.py，6000 组随机脏数据全绿）：**现有 build/normalize 已经做到了
+    /// 「覆盖 [0,duration] / 相邻严丝合缝 / 无零宽 / 重叠裁断 / 缝隙补 keep / 同类合并」**，
+    /// 也就是说「段」这个语义现在已经被推导出来了，只是推导发生在 `pieces()`（显示用）里，
+    /// 而 `keepRanges` / `cutRanges` 各自 filter 一次。
+    /// 所以**重写数据模型风险高、收益低**，改成在现有基础上叠加这一层操作。
+    /// `marks` 的存储与落盘格式**一个字没动**，旧草稿照常读。
+    enum SegState {
+        case keep      // 绿区：导出后保留
+        case cut       // 红区：导出后不保留
+    }
+
+    /// 素材是否被「删红键」折叠过。折叠是真折叠：绿区 ripple 拼接、时间轴变短，
+    /// 但 **.cut 段的源区间永远保留**（这就是皓哥说的「缓存」）——
+    /// 折叠只影响渲染与播放，不销毁源时间，日后拖接缝能把已删素材拖回来。
+    /// ⚠️ 这个标志存在 `marks` 之外（`BKProject.redFolded`），因为它是「整条素材」级别的状态，
+    /// 不是某一段的属性。
+    static func foldedPieces(duration: Double,
+                             cuts: [(Double, Double)],
+                             splits: [Double],
+                             redFolded: Bool) -> [BKMark] {
+        let base = pieces(duration: duration, cuts: cuts, splits: splits)
+        guard redFolded else { return base }
+        // 折叠 = 只留 keep 段，按原顺序首尾相接拼成一条连续的绿轨。
+        // 相邻两个 keep 之间原本夹着 cut，拼接后中间的空洞就合上了 —— 这就是 ripple。
+        let kept = base.filter { $0.kind == .keep }
+        guard !kept.isEmpty else { return base }
+        var out: [BKMark] = []
+        var cursor: Double = 0
+        for m in kept {
+            let len = m.end - m.start
+            out.append(BKMark(start: cursor, end: cursor + len, kind: .keep))
+            cursor += len
+        }
+        return out
+    }
+
+    /// 折叠后的成品时长（= 总时长 − 被删红区总长）。
+    /// （原先写成返回「删除总长」，且拿 greatestFiniteMagnitude 当 duration —— 都会出错，直接重写。）
+    static func foldedOutputDuration(duration: Double, cuts: [(Double, Double)]) -> Double {
+        let clean = merge(cuts, duration: duration)
+        let removed = clean.reduce(0.0) { $0 + ($1.1 - $1.0) }
+        return max(0, duration - removed)
+    }
+
+    /// 折叠映射表 [(成品起点, 原片起点, 时长)]。
+    /// 折叠后轨道画布的时间轴是「成品时间」，而波形包络是「原片时间」，
+    /// 两者靠这张表对应起来 —— 不给的话波形会整体画错位置。
+    /// 与 `foldedPieces` 的拼接规则严格一致（都只取 keep 段、首尾相接）。
+    static func foldMap(duration: Double, cuts: [(Double, Double)]) -> [(out: Double, src: Double, dur: Double)] {
+        let base = build(duration: duration, cuts: cuts)
+        var out: [(out: Double, src: Double, dur: Double)] = []
+        var cursor: Double = 0
+        for m in base where m.kind == .keep {
+            let len = m.end - m.start
+            out.append((out: cursor, src: m.start, dur: len))
+            cursor += len
+        }
+        return out
+    }
+
+    /// 段模型里「一个绿区」的定义，供拖把手时夹边界用。
+    /// 返回该时刻所在的 keep 段下标；不在任何 keep 段里返回 nil。
+    static func keepIndex(at time: Double, in marks: [BKMark]) -> Int? {
+        for i in 0 ..< marks.count where marks[i].kind == .keep {
+            if time >= marks[i].start - 1e-9 && time <= marks[i].end + 1e-9 { return i }
+        }
+        return nil
+    }
+
+    /// 拖动某一段的**开头**，做三重夹取（v1.3.0 定稿 4.3）：
+    ///   ① 不越过原视频开头（0 之前没素材）
+    ///   ② 不越过本段终点减最短长度（否则压碎）
+    ///   ③ 不往右拖过原起点（那叫「改段边界」，是另一件事，由 N4 的语义处理）
+    ///
+    /// 段本身的状态（绿/红）不变；扫过的新区域继承该段同色，由调用方拿返回的新区间去改 cuts。
+    static func clampHead(_ newHead: Double,
+                          ofSegmentAt index: Int,
+                          in marks: [BKMark],
+                          minSeg: Double) -> Double? {
+        guard index >= 0, index < marks.count else { return nil }
+        let segStart = marks[index].start
+        let segEnd = marks[index].end
+        // ① 资产开头 0；② 最短段 → 上限是本段终点往前 minSeg
+        let lowerBound = 0.0
+        let upperBound = segEnd - minSeg
+        guard upperBound > lowerBound else { return nil }
+        // ③ 只允许往左拖（扩大本段）。往右拖 = 缩小，交给 moveBoundary 那条路
+        if newHead > segStart { return segStart }
+        return min(max(newHead, lowerBound), upperBound)
+    }
+
+    /// 拖动某一段的**结尾**，三重夹取（对称于 clampHead）
+    static func clampTail(_ newTail: Double,
+                          ofSegmentAt index: Int,
+                          in marks: [BKMark],
+                          minSeg: Double,
+                          duration: Double) -> Double? {
+        guard index >= 0, index < marks.count else { return nil }
+        let segStart = marks[index].start
+        let segEnd = marks[index].end
+        let lowerBound = segStart + minSeg    // 不压碎
+        let upperBound = duration             // 不越过原视频结尾
+        guard upperBound > lowerBound else { return nil }
+        // 只允许往右拖（扩大本段）
+        if newTail < segEnd { return segEnd }
+        return min(max(newTail, lowerBound), upperBound)
     }
 }

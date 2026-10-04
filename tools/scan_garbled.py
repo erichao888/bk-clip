@@ -21,6 +21,13 @@ PAT = re.compile(
 )
 
 files = sys.argv[1:]
+
+# 项目自用符号白名单：这些字符在代码/注释里是**有意为之**，不是乱码。
+# 起因：BKIcons.loopArrow 的注释里大量用希腊字母 π 讲弧度参数
+#（"θ=0 → 右，θ=π/2 → 下"），扫描脚本把 π 报成乱码了。
+# π 在几何语境下是正常记号，放行。
+WHITELIST = set("π")
+
 bad = 0
 for f in files:
     try:
@@ -29,7 +36,7 @@ for f in files:
         print("读取失败", f, e)
         continue
     for i, line in enumerate(lines, 1):
-        m = PAT.findall(line)
+        m = [c for c in PAT.findall(line) if c not in WHITELIST]
         if m:
             # 过滤掉明显是项目自用排版符号的（· × ② ⟳ − 等不在上述范围，天然排除）
             print("%s:%d: %s :: %s" % (f, i, "".join(m), line.strip()[:80]))

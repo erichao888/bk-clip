@@ -145,7 +145,8 @@ final class BKTrackView: UIView {
                     pieces: [BKMark],
                     splits: [Double],
                     duration: Double,
-                    thresholdDb: Double) {
+                    thresholdDb: Double,
+                    foldMap: [(out: Double, src: Double, dur: Double)]? = nil) {
         let keep = currentTime
         self.duration = duration
         canvas.r.envelope = envelope
@@ -153,6 +154,7 @@ final class BKTrackView: UIView {
         canvas.r.splits = splits
         canvas.r.duration = duration
         canvas.r.thresholdDb = thresholdDb
+        canvas.r.foldMap = foldMap
         relayout(keepPointerTime: keep)
         canvas.setNeedsDisplay()
     }
@@ -386,6 +388,31 @@ fileprivate struct TrackRender {
     var envelope: BKEnvelope?
     var pieces: [BKMark] = []
     var splits: [Double] = []
+
+    /// v1.3.0 折叠映射：成品时间 → 原片时间。
+    ///
+    /// 【为什么必须有它】删红键折叠后，轨道画布的 duration 变成**成品时长**（比原片短），
+    /// 但 `envelope` 的波形包络是按**原片时间轴**算的。
+    /// 波形绘制里 `env.peak(from: t0, to: t1)` 的 t 是「画布上的时间」，
+    /// 直接拿它查包络就会查到原片更靠后的位置 —— **波形会画错位置**（能画出来，但不对）。
+    ///
+    /// 映射表 = 折叠后的绿段 [(成品起点, 原片起点, 时长)]，与 BKJointBuilder 的 segments 同构。
+    /// nil = 没折叠，成品时间就是原片时间，直接用。
+    var foldMap: [(out: Double, src: Double, dur: Double)]?
+
+    /// 画布时间（折叠后的成品时间）→ 波形包络该查的原片时间
+    func sourceTime(_ t: Double) -> Double {
+        guard let map = foldMap, !map.isEmpty else { return t }
+        for seg in map {
+            if t >= seg.out && t <= seg.out + seg.dur {
+                return seg.src + (t - seg.out)
+            }
+        }
+        // 落在缝隙里（理论上不该发生，normalize 保证严丝合缝）：夹到最近的边界
+        if let first = map.first, t < first.out { return first.src }
+        if let last = map.last { return last.src + last.dur }
+        return t
+    }
 }
 
 fileprivate final class TrackCanvas: UIView {
@@ -430,7 +457,11 @@ fileprivate final class TrackCanvas: UIView {
                 let t0 = Double(c) / Double(pps)
                 guard t0 < r.duration else { break }
                 let t1 = min(Double(c + 1) / Double(pps), r.duration)
-                let peak = Double(env.peak(from: t0, to: t1))
+                // v1.3.0：折叠后画布时间是成品时间，包络是原片时间，必须过映射表。
+                // 不换的话波形会整体画错位置（能画出来，但和绿区对不上）。
+                let s0 = r.sourceTime(t0)
+                let s1 = r.sourceTime(t1)
+                let peak = Double(env.peak(from: s0, to: s1))
                 let conv = min(max((peak - dbLo) / (dbHi - dbLo), 0.0), 1.0)
                 let half = CGFloat(conv) * amp
                 if half < 0.5 { continue }

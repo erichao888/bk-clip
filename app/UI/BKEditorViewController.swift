@@ -95,12 +95,15 @@ final class BKEditorViewController: UIViewController {
     private let trackContainer = UIView()
     private let track = BKTrackView()
 
-    // 工具栏第一排：撤销 / 重做 / 联播 / 播放 / 反选 / 切割 / 检测
+    // 工具栏第一排：撤销 / 重做 / 联播 / 播放 / 删红 / 切割 / 检测
+    // ⚠️ v1.3.0：「反选 ⟳」的位置换成了「删红 ✗✗」（皓哥 2026-10-04 定）。
+    // 反选 ⟳ 并不是被删掉了 —— 它的能力并进了「点段 toggle 绿↔红」（界面定稿第 5 节第 692 行），
+    // 手指直接点那一段就行，不需要一个专门的键。
     private let undoButton = UIButton(type: .system)
     private let redoButton = UIButton(type: .system)
     private let jointButton = UIButton(type: .system)
     private let playButton = UIButton(type: .system)
-    private let invertButton = UIButton(type: .system)
+    private let deleteRedButton = UIButton(type: .system)
     private let cutButton = UIButton(type: .system)
     private let detectButton = UIButton(type: .system)
 
@@ -525,13 +528,14 @@ final class BKEditorViewController: UIViewController {
         // 播放 / 停止是同一个键
         configureTool(playButton, systemName: "play.fill", action: #selector(playTapped))
 
-        invertButton.setImage(BKIcons.loopArrow(), for: .normal)
-        applyToolStyle(invertButton, action: #selector(invertTapped))
+        // v1.3.0：原来是「反选 ⟳」，现在换成「删红 ✗✗」（自定义纯红双 X，非模板图）
+        deleteRedButton.setImage(BKIcons.deleteRedDoubleX(), for: .normal)
+        applyToolStyle(deleteRedButton, action: #selector(deleteRedTapped))
         configureTool(cutButton, systemName: "scissors", action: #selector(cutTapped))
         configureTool(detectButton, systemName: "eyedropper", action: #selector(detectTapped))
 
         let row1 = UIStackView(arrangedSubviews: [
-            undoButton, redoButton, jointButton, playButton, invertButton, cutButton, detectButton
+            undoButton, redoButton, jointButton, playButton, deleteRedButton, cutButton, detectButton
         ])
         row1.axis = .horizontal
         row1.spacing = BKTheme.Space.sm
@@ -907,13 +911,55 @@ final class BKEditorViewController: UIViewController {
         BKLog.shared.i(String(format: "手动切口 %.2fs（现有 %d 道）", t, p.splits.count))
     }
 
-    /// ⟳ 反选：把指针所在的这一段在「留 / 删」之间倒一下
-    @objc private func invertTapped() {
-        togglePiece(at: lastTime)
+    /// ✗✗ 删红键（v1.3.0 定稿 4.1）：一键**全删所有红区**，绿区 ripple 拼接。
+    ///
+    /// 【它和联播的区别，别打架】联播是「不改轨道的试看」，删红键是「把试看**提交**成新轨道」。
+    /// 按下去之后主轨道渲染成一条连续绿轨、时间轴变短、▶ 直接就只放绿区。
+    ///
+    /// 【关键：折叠不等于销毁】`marks` 里的 cut 段一个都不删（源区间永远保留 = 皓哥说的「缓存」），
+    /// 只是把 `redFolded` 置 true。渲染与播放跳过它们，日后拖接缝（N4）能把已删素材拖回来。
+    /// 再按一次取消折叠。
+    @objc private func deleteRedTapped() {
+        // 取消折叠 = 恢复成「没删过」的显示状态，数据本来就没动过
+        if item.redFolded {
+            var p = item
+            p.redFolded = false
+            commit(p)
+            statusLabel.text = "已取消折叠 —— 红区都回来了"
+            BKLog.shared.i("取消折叠删红")
+            return
+        }
+
+        let cuts = item.cutRanges
+        guard !cuts.isEmpty else {
+            statusLabel.text = "当前没有红区可删"
+            return
+        }
+
+        var p = item
+        p.redFolded = true
+        commit(p)
+
+        let kept = item.keepRanges.count
+        let removed = item.foldedOutputDuration
+        statusLabel.text = String(format: "已删除 %d 段气口，保留 %d 段 · 成品 %.1fs", cuts.count, kept, removed)
+        BKLog.shared.i(String(format: "折叠删红：删 %d 段留 %d 段，成品 %.2fs（原片 %.2fs）",
+                              cuts.count, kept, removed, item.duration))
     }
 
+    /// 点段 toggle 绿↔红（v1.3.0 沿用界面定稿第 5 节第 692 行）。
+    /// 「反选 ⟳」被删掉后，这个能力**全靠直接点那一段**——
+    /// 「只能删红区、绿区想删先点成红」这条规则就是靠它落实的。
     private func togglePiece(at time: Double) {
         let p = item
+        // 折叠状态下轨道上已经没有红区了，先取消折叠再 toggle，否则点了没反应
+        if p.redFolded {
+            var q = p
+            q.redFolded = false
+            commit(q, coalesce: true)
+            statusLabel.text = "已取消折叠 —— 现在可以点段切换了"
+            return
+        }
         let shown = BKTimeline.pieces(duration: p.duration, cuts: p.cutRanges, splits: p.splits)
         for pc in shown where time >= pc.start && time <= pc.end {
             var cuts = p.cutRanges
@@ -1028,13 +1074,25 @@ final class BKEditorViewController: UIViewController {
     private func refreshTrack() {
         let p = item
         // 显示序列 = 删除区间 + 手动切口 一起算出来的片段。
-        // 导出永远只认 keepRanges，切口不参与 —— 切一刀不会让成品少一帧
-        let shown = BKTimeline.pieces(duration: p.duration, cuts: p.cutRanges, splits: p.splits)
+        // 导出永远只认 keepRanges，切口不参与 —— 切一刀不会让成品少一帧。
+        //
+        // v1.3.0：折叠状态下换成 foldedPieces —— 绿区 ripple 拼成一条连续绿轨。
+        // ⚠️ 折叠后轨道画布的 duration 必须一起换成折叠后的成品时长，
+        // 否则内容会被按原片时长摊开，ripple 的效果就看不出来了。
+        let folded = p.redFolded
+        let shown = BKTimeline.foldedPieces(duration: p.duration,
+                                             cuts: p.cutRanges,
+                                             splits: p.splits,
+                                             redFolded: folded)
+        let trackDuration = folded ? p.foldedOutputDuration : p.duration
+        // 折叠映射表：成品时间 → 原片时间，波形靠它对回包络的原片时间轴
+        let map = folded ? BKTimeline.foldMap(duration: p.duration, cuts: p.cutRanges) : nil
         track.setContent(envelope: envelope,
                          pieces: shown,
-                         splits: p.splits,
-                         duration: p.duration,
-                         thresholdDb: p.thresholdDb)
+                         splits: folded ? [] : p.splits,
+                         duration: trackDuration,
+                         thresholdDb: p.thresholdDb,
+                         foldMap: map)
         overview.setContent(envelope: envelope,
                             pieces: shown,
                             duration: p.duration,
@@ -1381,7 +1439,7 @@ final class BKEditorViewController: UIViewController {
     /// 状态机统一入口：提波形 / 导出期间把整个工具栏灰掉，
     /// 免得在半成品状态上再叠一层编辑
     private func setControlsEnabled(_ enabled: Bool) {
-        let buttons = [undoButton, redoButton, jointButton, playButton, invertButton,
+        let buttons = [undoButton, redoButton, jointButton, playButton, deleteRedButton,
                        cutButton, detectButton, zoomOutButton, zoomInButton]
         for b in buttons {
             b.isEnabled = enabled
