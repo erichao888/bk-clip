@@ -561,13 +561,22 @@ extension BKTrackView: UIGestureRecognizerDelegate {
             // 用来区分「按住」和「按住后想滚动」。进了编辑态就得一直跟到底，
             // 否则用户按住拖把手时手一抖，手势被判 cancelled、把手就丢了。
             guard var seg = editingSegmentBase, draggingHandle == nil else { return }
-            let tol = CGFloat(BKConfig.RegionEdit.handleGrabTolerance)
+            // ⚠️⚠️ **v1.4.3「黄把手出得来但拖不动」的根因**（2026-10-04 19:50）
+            //
+            // 原来这里要求「手指离某端 < handleGrabTolerance(28pt)」才起手。
+            // 但长按 0.5 秒期间手指必然有轻微抖动，等到 .changed 触发时偏移已超过 28pt
+            // → `return` → **永远进不了拖动状态**，表现为「按住了但拖不动」。
+            //
+            // v1.4.4 正解：**进入编辑态后，手指落在框内任意位置都算抓住把手**，
+            // 离哪端近就拖哪端（不设最小距离门槛）。理由：
+            //   ① 编辑态是「我已经决定要调这段」的明确意图，不需要再判断「是否摸到把手」
+            //   ② 把手已移到框外，用户看到的是箭头，指向性已经够强
+            //   ③ 判定放宽后手感顺滑，不用精确瞄准
             let xHead = canvasX(of: seg.start)
             let xTail = canvasX(of: seg.end)
-            // 离哪端近就拖哪端；两端都远（手指在段中间）就不拖
+            // 手指在段的哪一侧就拖哪一端；正好在中间则取最近的那端
             let dHead = abs(xHead - here.x)
             let dTail = abs(xTail - here.x)
-            if min(dHead, dTail) > tol { return }
             let h: BKHandleEnd = (dHead <= dTail) ? .head : .tail
             draggingHandle = h
             dragPreview = seg
@@ -937,28 +946,48 @@ fileprivate final class TrackCanvas: UIView {
                 ctx.stroke(border)
                 ctx.restoreGState()
 
-                // 2) 两端把手：16pt 宽竖条、上下各探出 10pt、中心白抓点
+                // 2) 两端把手 —— **在黄框外侧**，参照剪映（v1.4.4 改，2026-10-04 19:50）
+                //
+                // ⚠️ v1.3.0~1.4.3 的设计是「把手压在框**内侧**」，皓哥指出是错的：
+                //    把手 16pt 宽压在框内，**正好挡住波形内容**，用户看不到框内那段的波形。
+                // 参照图里的做法：**把手在框外、紧贴框边，形状是 `‹` `›` 箭头**。
+                //
+                // 好处：框内完整显示波形（看得清要调的是哪一段），
+                //       把手在框外不挡视线，箭头形状也更像「可拖」的意思。
                 let hw = CGFloat(BKConfig.RegionEdit.handleWidth) / 2
                 let over = CGFloat(BKConfig.RegionEdit.handleOverhang)
-                let dot = CGFloat(BKConfig.RegionEdit.gripDot)
-                for (hx, isDragging) in [(box.minX, r.draggingHandle == 0),
-                                         (box.maxX, r.draggingHandle == 1)] {
+                for (hx, isHead, isDragging) in [(box.minX, true, r.draggingHandle == 1),
+                                                (box.maxX, false, r.draggingHandle == 2)] {
                     // 只画可见那一侧
-                    if hx < rect.minX - 20 || hx > rect.maxX + 20 { continue }
-                    let bar = CGRect(x: hx - hw,
-                                      y: box.midY - (box.height / 2 + over) - (hw / 2),
-                                      width: hw * 2,
-                                      height: box.height + over * 2)
+                    if hx < rect.minX - 24 || hx > rect.maxX + 24 { continue }
+                    // ⚠️ 关键：把手中心在框边**外侧** offset 个 pt，不是压在框上
+                    let out = hx + (isHead ? -hw : hw)
+                    let h = box.height + over * 2
+                    let y = box.midY - h / 2
+                    let bar = CGRect(x: out - hw / 2, y: y, width: hw, height: h)
                     ctx.saveGState()
                     ctx.setAlpha(alpha)
-                    // 正在拖的那一枚加深，给「你正捏着它」的实感
                     ctx.setFillColor(BKTheme.Color.warning.cgColor)
-                    ctx.fill(bar)
-                    // 白抓点
-                    ctx.setFillColor(BKTheme.Color.handle.cgColor)
-                    let d = isDragging ? dot * 1.5 : dot
-                    let dotRect = CGRect(x: hx - d / 2, y: box.midY - d / 2, width: d, height: d)
-                    ctx.fillEllipse(in: dotRect)
+                    // 圆角胶囊
+                    let path = CGPath(roundedRect: bar, cornerWidth: hw / 2,
+                                       cornerHeight: hw / 2, transform: nil)
+                    ctx.addPath(path)
+                    ctx.fillPath()
+                    // 箭头：左端朝左 `‹`，右端朝右 `›`
+                    // 拖动时放大 1.25 倍，给「你正捏着它」的实感
+                    let scale: CGFloat = isDragging ? 1.25 : 1.0
+                    let aw: CGFloat = 4 * scale      // 箭头半宽
+                    let ah: CGFloat = 7 * scale      // 箭头半高
+                    let cx = out
+                    let cy = box.midY
+                    let dir: CGFloat = isHead ? -1 : 1
+                    ctx.setStrokeColor(BKTheme.Color.handle.cgColor)   // 白色箭头
+                    ctx.setLineWidth(2 * scale)
+                    ctx.setLineCap(.round)
+                    ctx.move(to: CGPoint(x: cx + dir * aw, y: cy - ah))
+                    ctx.addLine(to: CGPoint(x: cx - dir * aw, y: cy))
+                    ctx.addLine(to: CGPoint(x: cx + dir * aw, y: cy + ah))
+                    ctx.strokePath()
                     ctx.restoreGState()
                 }
             }

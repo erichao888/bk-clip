@@ -430,9 +430,27 @@ enum BKExporter {
         audioInput?.markAsFinished()
 
         // finishWriting 是异步收尾，用信号量等它落盘完成
+        //
+        // ⚠️⚠️ **v1.4.3 闪退的元凶**（2026-10-04 19:50 皓哥真机报障）
+        // 原来这里是裸 `sem.wait()` —— **无限等待**。而
+        // `AVAssetWriter.finishWriting` 的 completion **在 writer 已 failed 时不保证触发**，
+        // 于是信号量永远等不到 → 主线程卡死 → iOS 判定「无响应」直接杀进程
+        // → 用户看到的就是「导出时 App 闪退」。
+        //
+        // 为什么会走到 failed：composition 拼接后若某段 `insertTimeRange` 失败
+        // （越界/时长为负），表里就少一段而音频轨照样插了，两轨长度不一致，
+        // writer 在收尾阶段报错 —— 这时 completion 就不来了。
+        //
+        // 正解：**带超时的等待**。超时就报真实错误（带上 writer 的 error），不无限卡。
         let sem = DispatchSemaphore(value: 0)
         writer.finishWriting { sem.signal() }
-        sem.wait()
+        // 素材越长落盘越慢，给 120 秒。实测正常导出 30 秒内完成
+        let waited = sem.wait(timeout: .now() + 120)
+        if waited == .timedOut {
+            var extra = ""
+            if let e = writer.error { extra = "（\(e.localizedDescription)）" }
+            throw BKExportError.writeFailed("导出收尾超时 120 秒\(extra)")
+        }
 
         guard writer.status == .completed else {
             throw BKExportError.writeFailed(writer.error?.localizedDescription ?? "收尾失败")
