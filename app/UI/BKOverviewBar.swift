@@ -41,6 +41,13 @@ final class BKOverviewBar: UIView {
     private var peaks: [CGFloat] = []
     private var peaksWidth: CGFloat = 0
 
+    /// v1.3.0 折叠映射 [(成品起点, 原片起点, 时长)]。nil = 未折叠。
+    /// 折叠后 duration 是成品时长、envelope 是原片时间轴，靠它换算。
+    private var foldMap: [(out: Double, src: Double, dur: Double)]?
+    /// 映射表段数签名。折叠/取消折叠时用来判断缓存的 peaks 作废了
+    /// （宽度没变但时间轴变了，只按宽度判缓存会画出上一次的波形）
+    private var foldMapSignature: Int = -1
+
     private let dbLo: Double = -70
     private let dbHi: Double = -5
 
@@ -73,11 +80,19 @@ final class BKOverviewBar: UIView {
     func setContent(envelope: BKEnvelope?,
                     pieces: [BKMark],
                     duration: Double,
-                    viewport: (start: Double, end: Double)) {
+                    viewport: (start: Double, end: Double),
+                    foldMap: [(out: Double, src: Double, dur: Double)]? = nil) {
         self.duration = duration
         self.cuts = pieces.filter { $0.kind == .cut }.map { ($0.start, $0.end) }
         self.viewport = viewport
         self.envelope = envelope
+        self.foldMap = foldMap
+        // 换了素材 / 换了时长映射，缓存的峰值就作废了，必须重算。
+        // 原来只按宽度判断缓存，折叠切换时宽度没变 → 会画出上一次的波形
+        if let m = foldMap {
+            let sig = m.count
+            if sig != foldMapSignature { foldMapSignature = sig; peaks = [] }
+        }
         rebuildPeaks()
         setNeedsDisplay()
     }
@@ -106,12 +121,28 @@ final class BKOverviewBar: UIView {
         for c in 0 ..< cols {
             let t0 = duration * Double(c) / Double(cols)
             let t1 = duration * Double(c + 1) / Double(cols)
-            let peak = Double(env.peak(from: t0, to: t1))
+            // v1.3.0 折叠：概览条和主轨道一样，duration 是成品时长、包络是原片时间轴，
+            // 必须过映射表反查回原片时间，否则缩略波形整体画错位置
+            let peak = Double(env.peak(from: sourceTime(t0), to: sourceTime(t1)))
             let conv = min(max((peak - dbLo) / (dbHi - dbLo), 0.0), 1.0)
             out.append(CGFloat(conv))
         }
         peaks = out
         peaksWidth = w
+    }
+
+    /// 画布时间（成品时间）→ 波形包络该查的原片时间。
+    /// 与 BKTrackView.TrackRender.sourceTime 同一套逻辑，折叠时才需要映射。
+    private func sourceTime(_ t: Double) -> Double {
+        guard let map = foldMap, !map.isEmpty else { return t }
+        for seg in map {
+            if t >= seg.out && t <= seg.out + seg.dur {
+                return seg.src + (t - seg.out)
+            }
+        }
+        if let first = foldMap.first, t < first.out { return first.src }
+        if let last = foldMap.last { return last.src + last.dur }
+        return t
     }
 
     // MARK: - 绘制

@@ -1095,8 +1095,9 @@ final class BKEditorViewController: UIViewController {
                          foldMap: map)
         overview.setContent(envelope: envelope,
                             pieces: shown,
-                            duration: p.duration,
-                            viewport: track.viewport)
+                            duration: trackDuration,
+                            viewport: track.viewport,
+                            foldMap: map)
     }
 
     private func updateInfo() {
@@ -1131,6 +1132,14 @@ final class BKEditorViewController: UIViewController {
     /// ▶ 原片播：从橙指针处起播，红区绿区都播
     @objc private func playTapped() {
         if playMode == .straight { stopPlayback(); return }
+        // v1.3.0（定稿 5）：删红折叠后轨道时间轴就是成品时间轴，「原片播放器 + 原片 seek」
+        // 已经不是指针所在的那条时间轴了 —— 继续走原片播会「画面在 A、内容是 B」。
+        // 所以折叠状态下 ▶ 直接走联播那条路（它本来就是按 keepRanges 拼好播的），
+        // 起播点仍按皓哥定的规则算：指针在绿区从指针处、在红区跳下一个绿区。
+        if item.redFolded {
+            jointTapped()
+            return
+        }
         stopPlayback()
         guard let p = player else { return }
         // 起播路径保持极短：只做 play()。seek 和 preroll 早在指针停下时就做完了
