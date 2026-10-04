@@ -252,10 +252,19 @@ final class BKTrackView: UIView {
             if stage2Locked { exitRegionEdit() }
         }
         relayout(keepPointerTime: keep)
-        // 【v1.3.3 卡顿修复】按可见区重绘，别用无参 setNeedsDisplay()。
-        // 无参版本 rect = 整个 bounds（放大 20 屏时 7800pt），
-        // 而 draw(_:) 里的可见列裁剪就完全失效了 —— 每帧白画 95%。
-        redrawVisible()
+        // ⚠️⚠️ 【v1.4.6 修】这里必须**全量重绘**，不能只重画可见区。
+        //
+        // 现象（2026-10-04 20:33 皓哥真机截图）：点「一键去红」后，
+        // **屏幕内**的红区消失了，**屏幕外**的红区还留在画面上。
+        //
+        // 根因：`redrawVisible()` 只调 `setNeedsDisplay(可见区)`，
+        // 于是屏幕外那些**从没被重画过**的区域继续显示旧内容（带红区）。
+        // 数据其实是对的（keptRanges 已经更新），是画面没刷新。
+        //
+        // 区分两种重绘：
+        //   · **内容变了**（删红、检测、换素材、撤销）→ 全量，整条都要更新
+        //   · **只是滚动/拖动** → 只画可见区（每帧都走全量会卡顿，v1.3.3 的教训）
+        canvas.setNeedsDisplay()
     }
 
     /// 只重画当前可见的那一屏。
@@ -514,16 +523,36 @@ extension BKTrackView: UIGestureRecognizerDelegate {
     private func segment(at t: Double) -> (start: Double, end: Double)? {
         var best: (start: Double, end: Double)?
         var bestDist = Double.greatestFiniteMagnitude
+        var bestWidth: Double = 0
         for pc in canvas.r.pieces {
             // 【v1.3.3】跳过零长度标记。
-            // 折叠后 `foldedPieces` 会在区与区之间插一个 start == end 的标记当分割线，
+            // 第二阶段 `keepsToPieces` 会在区与区之间插一个 start == end 的标记当分割线，
             // 而零长度段对 t 的区间判断是 `t >= start && t <= end` —— 任何落在该点上的
-            // 手指都会命中它，返回一个宽度为 0 的段 → 黄框宽度 0，看起来就是「黄把手出不来」。
+            // 手指都会命中它，返回一个宽度为 0 的段 → 黄框宽度 0。
             if pc.duration <= 1e-9 { continue }
-            // 含两端；手按在边界上也算命中这一段
             if t >= pc.start - 1e-9 && t <= pc.end + 1e-9 {
-                let d = t < pc.start ? pc.start - t : (t > pc.end ? t - pc.end : 0)
-                if d < bestDist { bestDist = d; best = (pc.start, pc.end) }
+                // ⚠️⚠️ **v1.4.6 修「黄框位置不对」的关键**（2026-10-04 20:33 皓哥截图）
+                //
+                // 原来算的是「t 到该段**端点**的距离」，取最小。
+                // 问题：手指正好落在两个绿区之间的**分割线**上时，
+                // 相邻两段到 t 的距离**都是 0** → 平局 → 取先遍历到的**前一段**。
+                // 于是明明长的是右边那块，黄框却画在了左边那块上（截图里就是这个现象）。
+                //
+                // 正解：**手指落点更靠近哪一段的内部，就选哪一段**。
+                // 用「到该段中点的距离」比较 —— 分割线正好是两段的中点分界，
+                // 落在线上时距离相等，此时取**更长**的那段（用户更可能想调大的那块），
+                // 并且遍历顺序改成**从后往前**，保证平局时取靠手指右侧的那段。
+                let mid = (pc.start + pc.end) / 2
+                let dMid = abs(mid - t)
+                let width = pc.duration
+                if best == nil {
+                    best = (pc.start, pc.end); bestDist = dMid; bestWidth = width
+                } else if dMid < bestDist - 1e-9 {
+                    best = (pc.start, pc.end); bestDist = dMid; bestWidth = width
+                } else if abs(dMid - bestDist) <= 1e-9 && width > bestWidth {
+                    // 平局：取更长的那段
+                    best = (pc.start, pc.end); bestWidth = width
+                }
             }
         }
         return best
@@ -984,8 +1013,10 @@ fileprivate final class TrackCanvas: UIView {
                     // 中心：框边 + gap，再往框外偏半个方块
                     let cx = edgeX + (isHead ? -(gap + hs) : (gap + hs))
                     let cy = box.midY
-                    let rect = CGRect(x: cx - hs, y: cy - hs, width: size, height: size)
-                    if rect.maxX < rect.minX - 20 || rect.minX > rect.maxX + 20 { continue }
+                    // ⚠️ 变量名别叫 `rect` —— 它会遮蔽 `draw(_ rect:)` 的参数，
+                    // 下面判可见性时用到的是外层那个脏矩形，一混淆就是隐蔽 bug
+                    let hRect = CGRect(x: cx - hs, y: cy - hs, width: size, height: size)
+                    if hRect.maxX < rect.minX - 20 || hRect.minX > rect.maxX + 20 { continue }
 
                     ctx.saveGState()
                     ctx.setAlpha(alpha)
@@ -999,15 +1030,26 @@ fileprivate final class TrackCanvas: UIView {
                     ctx.setFillColor(BKTheme.Color.warning.cgColor)
                     ctx.addPath(pill)
                     ctx.fillPath()
-                    // 黑色箭头：左端朝左 ‹，右端朝右 ›
+                    // 黑色箭头：左端尖头朝左 ‹，右端尖头朝右 ›
+                    //
+                    // ⚠️⚠️ v1.4.6 修：之前**左右反了**（2026-10-04 20:33 皓哥截图）。
+                    // 原因：折线的「尖端」应该在 `dir` 指向的那一侧，我却把
+                    // 尖端放在了 `-dir` 那一侧 —— 画出来左端是 `>`、右端是 `<`。
+                    //
+                    // 正确画法：尖端在 `dir` 方向，两条尾巴在 `-dir` 方向。
+                    //   dir = -1（左端）：尖端在 cx - aLen，尾巴在 cx + aLen → ‹
+                    //   dir = +1（右端）：尖端在 cx + aLen，尾巴在 cx - aLen → ›
                     let dir: CGFloat = isHead ? -1 : 1
+                    let tipX = cx + dir * aLen * scale
+                    let tailX = cx - dir * aLen * scale
+                    let aH = aLen * scale
                     ctx.setStrokeColor(BKTheme.Color.selection.cgColor)
                     ctx.setLineWidth(aW * scale)
                     ctx.setLineCap(.round)
                     ctx.setLineJoin(.round)
-                    ctx.move(to: CGPoint(x: cx + dir * aLen * scale, y: cy - aLen * scale))
-                    ctx.addLine(to: CGPoint(x: cx - dir * aLen * scale, y: cy))
-                    ctx.addLine(to: CGPoint(x: cx + dir * aLen * scale, y: cy + aLen * scale))
+                    ctx.move(to: CGPoint(x: tailX, y: cy - aH))
+                    ctx.addLine(to: CGPoint(x: tipX, y: cy))
+                    ctx.addLine(to: CGPoint(x: tailX, y: cy + aH))
                     ctx.strokePath()
                     ctx.restoreGState()
                 }
