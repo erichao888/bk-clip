@@ -333,6 +333,36 @@ extension BKProject {
             assetName = BKVideoLibrary.assetName(localID: assetLocalID)
         }
     }
+
+    /// 【v1.4.0 手写 encode —— 因为 CodingKeys 里有个只读的 `redFolded`】
+    ///
+    /// 那个 key 只为**读回 v1.3.0~1.3.4 的旧草稿**而存在（迁移要判断当时是否已折叠），
+    /// 它不是存储属性。合成的 `encode(to:)` 会遍历 CodingKeys 找对应属性，找不到就
+    /// 报 "type 'BKProject' does not conform to protocol 'Encodable'"（CI 报的）。
+    ///
+    /// 解决：自己写一份，只编码真正的存储属性。**顺带的好处：redFolded 不会写进新草稿**，
+    /// 新草稿里只有 `keptRanges`，语义单一。
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(assetLocalID, forKey: .assetLocalID)
+        try c.encode(assetName, forKey: .assetName)
+        try c.encode(duration, forKey: .duration)
+        try c.encode(displayWidth, forKey: .displayWidth)
+        try c.encode(displayHeight, forKey: .displayHeight)
+        try c.encode(sourceRotationDegrees, forKey: .sourceRotationDegrees)
+        try c.encode(thresholdDb, forKey: .thresholdDb)
+        try c.encode(autoThresholdDb, forKey: .autoThresholdDb)
+        try c.encode(sourceApplicable, forKey: .sourceApplicable)
+        try c.encode(marks, forKey: .marks)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(updatedAt, forKey: .updatedAt)
+        try c.encode(exportHistory, forKey: .exportHistory)
+        try c.encode(splits, forKey: .splits)
+        try c.encode(playheadTime, forKey: .playheadTime)
+        try c.encode(keptRanges, forKey: .keptRanges)
+        // ⚠️ 故意不编码 redFolded —— 那是迁移用的只读 key
+    }
 }
 
 // MARK: - 草稿批（第一层）
