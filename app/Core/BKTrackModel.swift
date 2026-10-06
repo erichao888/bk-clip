@@ -115,7 +115,9 @@ struct BKOverlayClip: Codable, Identifiable {
 
 // MARK: - 轨道模型
 
-struct BKTrackModel {
+// Codable：v2 草稿（BKDraft）要整体落盘，主轨必须能编解码。
+// blocks / overlays 各自都是 Codable，这里直接合成，不需要手写 init(from:)。
+struct BKTrackModel: Codable {
 
     static let eps = 1e-9
     static let minLen = 1e-6

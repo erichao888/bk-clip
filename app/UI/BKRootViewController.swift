@@ -173,7 +173,7 @@ final class BKRootViewController: UIViewController {
             BKLog.shared.i(probe.logLine)
             BKDraftStore.shared.markDraftOpened(draft.id)
             // ★ TEMP 桥接：编辑页还吃 v1，把 v2 草稿转成 v1 批喂给它
-            let editor = BKEditorViewController(batch: self.bridgeToV1(draft), index: idx,
+            let editor = BKEditorViewController(batch: bridgeToV1(draft), index: idx,
                                                 asset: asset, probeInfo: probe)
             self.navigationController?.pushViewController(editor, animated: true)
         }
@@ -270,7 +270,7 @@ final class BKRootViewController: UIViewController {
             }
             let idx = draft.track.blocks.firstIndex(where: { $0.assetLocalID == first }) ?? 0
             // ★ TEMP 桥接：编辑页还吃 v1，转成 v1 批进编辑
-            let editor = BKEditorViewController(batch: self.bridgeToV1(draft), index: idx,
+            let editor = BKEditorViewController(batch: bridgeToV1(draft), index: idx,
                                                 asset: asset, probeInfo: probe)
             self.navigationController?.pushViewController(editor, animated: true)
         }
