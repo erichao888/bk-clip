@@ -952,7 +952,7 @@ final class BKEditorViewController: UIViewController {
                          autoThresholdDb: autoThresholdDb, sourceApplicable: sourceApplicable,
                          splits: splits))
 
-        let total = keeps.reduce(0.0) { $0 + $1.duration }
+        let total = keeps.reduce(0.0) { $0 + $1.length }
         let keepDesc = keeps.map { String(format: "%.2f→%.2f", $0.start, $0.end) }
         BKLog.shared.i(String(format:
             "一键去红：删 %d 段 → 留 %d 段绿区，成品 %.2fs（原片 %.2fs）| 绿区区间: %@",

@@ -33,12 +33,12 @@ struct BKHistory<T> {
     /// 撤销容量。皓哥 2026-10-02 晚拍板**改掉了原来的 60**：
     /// 工程快照里含 marks，一条 42 秒素材几十刀也就几百字节，15 格足够退回去。
     /// 再深就是白占内存 —— 真要退 15 步以上，说明该重新检测了
-    static let limit = BKConfig.Draft.undoLimit
+    static var limit: Int { BKConfig.Draft.undoLimit }
 
     /// 重做容量**只有 1 步**。语义是：连着撤两步之后，先撤的那一步就救不回来了。
     /// 这是皓哥明确要的效果 —— 撤销能退得深，但重做只保底下那一步，
     /// 防止来来回回「撤了又做、做了又撤」把状态搅乱
-    static let redoLimit = BKConfig.Draft.redoLimit
+    static var redoLimit: Int { BKConfig.Draft.redoLimit }
 
     // MARK: - 查询
 
