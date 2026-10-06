@@ -92,7 +92,7 @@ final class BKRootViewController: UIViewController {
         // 右下角金色悬浮 ⊕：导入新的一批
         fab.setImage(UIImage(systemName: "plus"), for: .normal)
         fab.tintColor = .white
-        fab.backgroundColor = BKTheme.Color.gold
+        fab.backgroundColor = BKTheme.Color.accent
         fab.layer.cornerRadius = 28
         fab.layer.shadowColor = UIColor.black.cgColor
         fab.layer.shadowOpacity = 0.25

@@ -287,7 +287,7 @@ final class BKMainEditorViewController: UIViewController {
         for k in keys(for: barTrack) {
             let b = UIButton(type: .system)
             b.setImage(UIImage(systemName: k.icon), for: .normal)
-            b.tintColor = (k.id == "delete") ? UIColor(hex: 0xD6707A) : BKTheme.Color.text2
+            b.tintColor = (k.id == "delete") ? BKTheme.Color.danger : BKTheme.Color.text2
             b.accessibilityIdentifier = k.id
             b.accessibilityLabel = k.label
             b.layer.cornerRadius = 12

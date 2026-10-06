@@ -105,7 +105,7 @@ final class BKExportPanelViewController: UIViewController {
         start.setTitle("开始导出", for: .normal)
         start.setTitleColor(.white, for: .normal)
         start.titleLabel?.font = BKTheme.Font.button
-        start.backgroundColor = BKTheme.Color.gold
+        start.backgroundColor = BKTheme.Color.accent
         start.layer.cornerRadius = 8
         start.addTarget(self, action: #selector(startTapped), for: .touchUpInside)
 

@@ -223,7 +223,7 @@ private final class TrackCanvas: UIView {
             if let img = thumbs[blocks[i].assetLocalID] {
                 img.draw(in: r)
             } else {
-                ctx.setFillColor(UIColor(hex: 0xA9BE9C).cgColor)
+                ctx.setFillColor(BKTheme.Color.panel2.cgColor)
                 ctx.fill(r)
             }
             ctx.restoreGState()

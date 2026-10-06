@@ -82,7 +82,7 @@ final class BKDraftCell: UICollectionViewCell {
 
         badge.font = BKTheme.Font.small
         badge.textColor = BKTheme.Color.text
-        badge.backgroundColor = BKTheme.Color.gold
+        badge.backgroundColor = BKTheme.Color.accent
         badge.textAlignment = .center
         badge.layer.cornerRadius = 3
         badge.clipsToBounds = true
@@ -108,7 +108,7 @@ final class BKDraftCell: UICollectionViewCell {
         contentView.addSubview(menuButton)
 
         checkView.image = UIImage(systemName: "checkmark.circle.fill")
-        checkView.tintColor = BKTheme.Color.gold
+        checkView.tintColor = BKTheme.Color.accent
         checkView.backgroundColor = BKTheme.Color.panel
         checkView.layer.cornerRadius = 11
         checkView.clipsToBounds = true
@@ -178,10 +178,10 @@ final class BKDraftCell: UICollectionViewCell {
     private func applyPickState() {
         let picked = isPicking && isSelected
         checkView.image = UIImage(systemName: picked ? "checkmark.circle.fill" : "circle")
-        checkView.tintColor = picked ? BKTheme.Color.gold : UIColor(hex: 0xFFFFFF, alpha: 0.8)
+        checkView.tintColor = picked ? BKTheme.Color.accent : UIColor(hex: 0xFFFFFF, alpha: 0.8)
         checkView.backgroundColor = picked ? BKTheme.Color.panel : UIColor(hex: 0x000000, alpha: 0.30)
         contentView.layer.borderWidth = picked ? 3 : 0
-        contentView.layer.borderColor = BKTheme.Color.gold.cgColor
+        contentView.layer.borderColor = BKTheme.Color.accent.cgColor
     }
 
     @objc private func menuTapped() {

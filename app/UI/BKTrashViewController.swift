@@ -82,7 +82,7 @@ final class BKTrashViewController: UIViewController {
 
         let restoreItem = UIBarButtonItem(title: "恢复", style: .plain,
                                           target: self, action: #selector(restoreTapped))
-        restoreItem.tintColor = BKTheme.Color.gold
+        restoreItem.tintColor = BKTheme.Color.accent
         toolbarItems = [
             UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil),
             restoreItem

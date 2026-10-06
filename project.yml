@@ -132,7 +132,7 @@ targets:
         # 上一版直接把整套波形渲染成暗色 —— 和参考图定的浅色系完全对不上。
         # 这里必须显式声明 Light：光靠代码里的固定色值不够，
         # 系统弹的告警框、授权弹窗、导航栏走的是系统语义色，不锁就会一半深一半浅
-        UIUserInterfaceStyle: Light
+        UIUserInterfaceStyle: Dark
         UIStatusBarStyle: UIStatusBarStyleDefault
         UILaunchScreen:
           UIColorName: ""

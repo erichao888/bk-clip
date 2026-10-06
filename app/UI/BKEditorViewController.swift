@@ -453,7 +453,7 @@ final class BKEditorViewController: UIViewController {
         statusLabel.numberOfLines = 0
 
         spinner.hidesWhenStopped = true
-        spinner.color = BKTheme.Color.gold
+        spinner.color = BKTheme.Color.accent
 
         // 导出/进度提示做成一条独立状态栏，固定贴在工具栏正上方，不再放进可压缩的内容栈。
         // 这样无论上方内容多高，提示区永远不会被底部工具栏遮住（16/16 Pro 小屏最容易触发遮挡）。
@@ -620,7 +620,7 @@ final class BKEditorViewController: UIViewController {
         let cfg = UIImage.SymbolConfiguration(pointSize: 14, weight: .bold)
         button.setImage(UIImage(systemName: "xmark", withConfiguration: cfg), for: .normal)
         button.tintColor = .white
-        button.backgroundColor = UIColor(hex: 0xC0392B)
+        button.backgroundColor = BKTheme.Color.danger
         button.layer.cornerRadius = 14
         button.clipsToBounds = true
         button.addTarget(self, action: action, for: .touchUpInside)
@@ -636,7 +636,7 @@ final class BKEditorViewController: UIViewController {
         playButton.setImage(UIImage(systemName: playMode == .straight ? "stop.fill" : "play.fill",
                                     withConfiguration: cfg), for: .normal)
         jointButton.backgroundColor = (playMode == .joint)
-            ? BKTheme.Color.gold.withAlphaComponent(0.30)
+            ? BKTheme.Color.selectBg
             : BKTheme.Color.panel
     }
 
@@ -1303,7 +1303,7 @@ private final class BKAssetRowCell: UITableViewCell {
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: .subtitle, reuseIdentifier: reuseIdentifier)
-        bar.backgroundColor = BKTheme.Color.gold
+        bar.backgroundColor = BKTheme.Color.accent
         bar.isHidden = true
         contentView.addSubview(bar)
         bar.translatesAutoresizingMaskIntoConstraints = false
@@ -1336,13 +1336,13 @@ extension BKEditorViewController: UITableViewDataSource, UITableViewDelegate {
         cell.textLabel?.text = it.assetName
         // 定稿 4.2：已切割 → **红色 #C0392B**；没动过 → 默认色。
         // 判定用「cuts 或 splits 非空」，不能用「有没有草稿」
-        cell.textLabel?.textColor = it.isEdited ? UIColor(hex: 0xC0392B) : BKTheme.Color.text
+        cell.textLabel?.textColor = it.isEdited ? BKTheme.Color.danger : BKTheme.Color.text
         cell.detailTextLabel?.text = it.isEdited
             ? "\(it.cutCount) 刀 · \(BKVideoLibrary.formatDuration(it.duration))"
             : BKVideoLibrary.formatDuration(it.duration)
         cell.detailTextLabel?.textColor = BKTheme.Color.text2
         cell.accessoryType = isCurrent ? .checkmark : .none
-        cell.tintColor = BKTheme.Color.gold
+        cell.tintColor = BKTheme.Color.accent
         cell.selectionStyle = .default
         cell.bar.isHidden = !isCurrent
         return cell
