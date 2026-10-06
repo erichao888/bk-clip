@@ -138,6 +138,7 @@ final class BKMainTrackView: UIView {
         canvas.frame = CGRect(x: 0, y: 0, width: w, height: bounds.height)
         canvas.pps = pps
         canvas.pad = pad
+        canvas.totalSec = totalSec
         canvas.setNeedsDisplay()
     }
 
@@ -221,6 +222,8 @@ private final class TrackCanvas: UIView {
     var pps: CGFloat = 26
     var pad: CGFloat = 0
     var selectedIndex: Int? = nil
+    /// 整条主轨总时长（供刻度绘制）。由外层 BKMainTrackView.relayout 同步
+    var totalSec: Double = 0
 
     /// 已就绪的媒体。帧图键与 BKFrameGrabs 缓存键一致
     var frames: [String: UIImage] = [:]
@@ -265,6 +268,11 @@ private final class TrackCanvas: UIView {
 
     override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
+
+        // 三层高度（static 成员，实例方法里取本地别名避免满屏 Self.）
+        let thumbH = Self.thumbH
+        let waveH = Self.waveH
+        let rulerH = Self.rulerH
 
         let thumbTop: CGFloat = 0
         let waveTop = thumbH + 1                      // 1px 分隔线
