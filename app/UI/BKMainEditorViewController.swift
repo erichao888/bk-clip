@@ -185,7 +185,7 @@ final class BKMainEditorViewController: UIViewController {
     /// 重新铺轨 + 选中 + 刷底栏/信息。select 不传 = 尽量保持当前选中
     private func reload(select: Int? = nil) {
         let n = draft.track.blocks.count
-        trackView.setContent(draft.track.blocks)
+        trackView.setContent(blocks: draft.track.blocks)
         guard n > 0 else {
             trackView.selectedIndex = nil
             refreshBar()
