@@ -70,9 +70,20 @@ jobs:
         # Codable 终点但没有 Yams —— 用 JSON 能跑通就说明是 YAML 层的坑，
         # 跑不通则诊断器（同样走 JSON）会把肇事块直接点名
         run: |
-          # 两条转换路径，谁先产出 project.json 用谁。都加了 || true：
-          # 在 GitHub 的 bash（-eo pipefail）下，任一条失败都会让整步立刻退出，
-          # 兜底就永远走不到
+          # 【主路径：直接让 XcodeGen 读 YAML】
+          # XcodeGen 自带 Yams，能直接解析 project.yml，不需要 pyyaml / 系统 ruby。
+          # 之前绕 JSON 转换，是因为旧版 project.yml 缺 info.path 触发 Yams 报错；
+          # 现在 info: path: app/Info.plist 已补，原生读法可用，且不再依赖
+          # 「系统 ruby / pip 装 pyyaml」—— 这正是 2026-10-06 那次构建
+          # YAML→JSON 转换全线失败变红的根因（GitHub macOS 镜像已移除系统 ruby）。
+          xcodegen generate --spec project.yml && {
+            echo "=== 原生 YAML 生成成功，工程里的 scheme： ==="
+            xcodebuild -list -project BKClip.xcodeproj || true
+            exit 0
+          }
+          echo "::warning::原生 YAML 生成失败，走 JSON 兜底转换做诊断 ↓"
+
+          # 兜底：转 JSON（需要 pyyaml 或 ruby，缺失则跳过诊断，但不因此红）
           python3 - <<'PYEOF' || true
           import yaml, json
           spec = yaml.safe_load(open('project.yml', encoding='utf-8'))
@@ -91,7 +102,7 @@ jobs:
           fi
 
           if [ ! -f project.json ]; then
-            echo "::error::yml -> json 转换全线失败，无法继续"
+            echo "::error::YAML→JSON 兜底转换也失败（pyyaml 与 ruby 都不可用），无法生成工程"
             exit 1
           fi
 
@@ -151,10 +162,15 @@ jobs:
       # 而那个提示完全不提中文的事 —— 与其以后花两小时排这个，不如在这里断掉
       - name: 检查 PRODUCT_NAME 必须是纯 ASCII
         run: |
-          NAME=$(grep -m1 '^        PRODUCT_NAME:' project.yml | awk '{print $2}')
+          # 缩进容忍：匹配任意前导空格的 PRODUCT_NAME:（排除注释行），
+          # 避免因缩进漂移被误杀（2026-10-06 那次红曾疑似踩到）
+          NAME=$(grep -m1 '^[[:space:]]*PRODUCT_NAME:' project.yml | grep -v '^[[:space:]]*#' | awk '{print $2}')
           echo "PRODUCT_NAME = [$NAME]"
           if [ -z "$NAME" ]; then
-            echo "::error::没从 project.yml 里取到 PRODUCT_NAME，检查缩进是不是变了"
+            echo "::error::没从 project.yml 里取到 PRODUCT_NAME"
+            echo "---------- project.yml 中含 PRODUCT_NAME 的行（排障用） ----------"
+            grep -n 'PRODUCT_NAME' project.yml || true
+            echo "-------------------------------------------------------------------"
             exit 1
           fi
           if [ "$NAME" != "BKClip" ]; then
