@@ -1,34 +1,33 @@
 //
 //  BKRootViewController.swift
-//  bk剪辑 — 起始页（草稿网格）
+//  bk剪辑 v2.0 — 起始页（草稿网格）
 //
-//  【这个页面是为「回马枪」服务的】
-//  皓哥的原话：导出到剪映之后发现有问题，要回到 bk剪辑，点历史里那条，
-//  改那一处红区，重新导出。所以它不是「入口页」，是**最近编辑过的 10 批的快捷回马枪**。
+//  【v2.0 重写：用 BKTrackModel 全新写】
+//  一个草稿 = 一条多片段主轨（BKTrackModel），不再有 v1 的「批 / 素材项」两层。
+//  数据模型真源：docs/v2.0数据模型-多片段主轨与变速坐标.md。
 //
-//  【一格 = 一次导入的一整批】
-//  导入 5 条 → 起始页多 1 格 → 点进去 5 条都还在，各自的刀口、指针位置、阈值都在。
-//  皓哥 2026-10-02 口述定稿，听完我的复述他说「就是这样」。
-//  数据模型是两层的（BKDraftBatch → BKProject[]），别按「一视频一格」存。
+//  【一格 = 一个草稿 = 一条主轨】
+//  导入 N 条视频 → 起始页多 1 格 → 主轨上 N 个块，各自的波剪 / 指针 / 倍速都在。
 //
-//  【不做底部 tab】
-//  单功能工具，两个入口（导入 ⊕ / 回收站）一个在右下角、一个在导航栏，够用了。
+//  【不做底部 tab】单功能工具，两个入口（导入 ⊕ / 回收站）一个在右下角、一个在导航栏。
 //
-//  【起始页不显示「一刀没切」的草稿】
-//  整批从头到尾没动过刀 → 退出编辑页时直接丢掉，不进网格（定稿 3.1）。
-//  判据是 `everEdited`（**曾经**动过刀），只置不清。
+//  【起始页不显示「一刀没切」的草稿】整批从头到尾没动过刀 → 退出编辑页时直接丢掉
+//  （定稿 3.1）。判据是 everEdited（曾经动过刀），只置不清。
+//
+//  【Batch 1 临时：编辑页走桥接】编辑页（BKEditorViewController）还没迁 v2，仍吃 v1
+//  BKDraftBatch。点开草稿时 bridgeToV1 把 v2 草稿转成 v1 喂给它；编辑页的改动落在 v1
+//  草稿文件，v2 草稿文件保持创建时状态。Batch 2 重写编辑页为 v2 后桥接删除、统一走 v2。
 //
 
 import UIKit
 import Photos
-import PhotosUI
 import AVFoundation
 
 final class BKRootViewController: UIViewController {
 
     // MARK: - 数据
 
-    private var batches: [BKDraftBatch] = []
+    private var drafts: [BKDraft] = []
     /// 多选态（批量删）
     private var picking = false
 
@@ -106,8 +105,7 @@ final class BKRootViewController: UIViewController {
         versionLabel.textColor = BKTheme.Color.text3
         versionLabel.textAlignment = .center
         versionLabel.isUserInteractionEnabled = true
-        // 调试入口藏在版本号后面，连点 7 次。
-        // 不放显眼位置是因为现实使用里误触的概率比想 debug 的概率高得多
+        // 调试入口藏在版本号后面，连点 7 次
         versionLabel.addGestureRecognizer(
             UITapGestureRecognizer(target: self, action: #selector(versionTapped))
         )
@@ -140,20 +138,20 @@ final class BKRootViewController: UIViewController {
     // MARK: - 刷新
 
     private func reload() {
-        batches = BKDraftStore.shared.allBatches
-        title = "草稿 (\(batches.count))"
-        emptyLabel.isHidden = !batches.isEmpty
-        grid.isHidden = batches.isEmpty
+        drafts = BKDraftStore.shared.allDrafts
+        title = "草稿 (\(drafts.count))"
+        emptyLabel.isHidden = !drafts.isEmpty
+        grid.isHidden = drafts.isEmpty
         grid.reloadData()
-        navigationItem.rightBarButtonItem?.isEnabled = !batches.isEmpty
+        navigationItem.rightBarButtonItem?.isEnabled = !drafts.isEmpty
         versionLabel.text = "BK剪辑 专剪口播 v\(BKConfig.appVersion) · 已导出 \(BKDraftStore.shared.totalExportCount) 条"
     }
 
-    // MARK: - 打开草稿
+    // MARK: - 打开草稿（Batch 1 桥接到 v1 编辑页）
 
-    private func open(batch: BKDraftBatch) {
-        guard let assetId = batch.coverAssetId() else { return }
-        guard let idx = batch.items.firstIndex(where: { $0.assetLocalID == assetId }) else { return }
+    private func open(draft: BKDraft) {
+        guard let assetId = draft.coverAssetId() else { return }
+        guard let idx = draft.track.blocks.firstIndex(where: { $0.assetLocalID == assetId }) else { return }
 
         let spinner = UIActivityIndicatorView(style: .medium)
         spinner.color = BKTheme.Color.gold
@@ -173,8 +171,9 @@ final class BKRootViewController: UIViewController {
             }
             let probe = BKAssetProbe.probe(asset)
             BKLog.shared.i(probe.logLine)
-            BKDraftStore.shared.markOpened(batch.id)
-            let editor = BKEditorViewController(batch: batch, index: idx,
+            BKDraftStore.shared.markDraftOpened(draft.id)
+            // ★ TEMP 桥接：编辑页还吃 v1，把 v2 草稿转成 v1 批喂给它
+            let editor = BKEditorViewController(batch: self.bridgeToV1(draft), index: idx,
                                                 asset: asset, probeInfo: probe)
             self.navigationController?.pushViewController(editor, animated: true)
         }
@@ -183,33 +182,19 @@ final class BKRootViewController: UIViewController {
     // MARK: - 导入
 
     @objc private func importTapped() {
-        // 真因（v1.2.7）：16 Pro 上 +「完全没反应」—— 15PM 早授权过走 authorized 直开页，
-        // 16 Pro 首次走 notDetermined，而老式无参 requestAuthorization 的回调在
-        // iOS 26 上不触发（v1.2.6 的「无参」改法反而没修好）。
-        // 必须用现代 requestAuthorization(for: .readWrite)（iOS 16+，两台真机都是），
-        // 用 @available 包一层保 15 编译。
-        // v1.2.8：16Pro/iOS26.6 上 v1.2.7 依旧没反应——整条链路埋 BKLog + 看门狗兜底。
-        BKLog.shared.i("+ 点击：进入 importTapped，photoAuthStatus=\(Self.photoAuthStatus().rawValue)")
         let status = Self.photoAuthStatus()
         switch status {
         case .authorized, .limited:
-            BKLog.shared.i("+ 点击：已授权，直接开勾选页")
             presentPicker()
         case .notDetermined:
-            BKLog.shared.i("+ 点击：notDetermined，发起系统授权请求")
             Self.requestPhotoAccess { [weak self] granted in
-                BKLog.shared.i("+ 授权：回调触发 granted=\(granted)")
                 if granted { self?.presentPicker() } else { self?.showPermissionDenied() }
             }
-            // 看门狗：3 秒后回调没来、系统也没弹任何窗（比如授权对话框挂着就不算），
-            // 主动弹「去设置」指路 —— iOS 26 上系统授权弹窗偶发不弹，别让用户干等
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
                 guard let self = self else { return }
                 let now = Self.photoAuthStatus()
                 let systemShowing = self.presentedViewController != nil
-                BKLog.shared.i("+ 看门狗：3s后 status=\(now.rawValue) 系统有弹窗=\(systemShowing)")
                 if now == .notDetermined && !systemShowing {
-                    BKLog.shared.w("+ 看门狗：授权请求 3 秒无回调且系统未弹窗，走手动指路")
                     self.showPermissionDenied()
                 }
             }
@@ -218,7 +203,7 @@ final class BKRootViewController: UIViewController {
         }
     }
 
-    // MARK: - 相册权限（iOS 16+ 用现代 API，老式无参回调在 iOS 26 上不触发）
+    // MARK: - 相册权限（iOS 16+ 用现代 API）
 
     private static func photoAuthStatus() -> PHAuthorizationStatus {
         if #available(iOS 16.0, *) {
@@ -242,62 +227,33 @@ final class BKRootViewController: UIViewController {
     }
 
     private func presentPicker() {
-        BKLog.shared.i("presentPicker：开始构建勾选页")
-        // 自建勾选页，不走系统 PHPicker（定稿 6.1）：
-        // 系统选择器没有「点圈选 / 点圈外当场预览」这套手势，挑素材时
-        // 看不到片段对不对，只能选完再退出去看一遍。
         let picker = BKVideoPickerViewController()
         picker.onDone = { [weak self] ids in
             self?.dismiss(animated: true) { self?.handleImported(ids: ids) }
         }
-        // 套一层导航控制器：勾选页才有真导航条 —— 左上「返回」按钮、标题、右上已选角标都显示出来；
-        // 下滑关闭手势依旧可用，返回按钮只是更省事（不必先滚到列表最顶）。
         let nav = UINavigationController(rootViewController: picker)
         nav.modalPresentationStyle = .pageSheet
-        present(nav, animated: true) {
-            BKLog.shared.i("presentPicker：present 动画完成，勾选页已上台")
-        }
-        BKLog.shared.i("presentPicker：present 已发出")
+        present(nav, animated: true)
     }
 
-    /// 一次导入 = 建一个批。批里每条先把时长和名字记下来，
-    /// 显示尺寸要等编辑页探过素材才知道，先留 0
-    private func makeBatch(ids: [String]) -> BKDraftBatch {
-        let mid = (BKConfig.Detect.clampLow + BKConfig.Detect.clampHigh) / 2
+    /// 一次导入 = 建一个 v2 草稿。每条视频是一个未波剪的块（整段保留），倍速 1
+    private func makeDraft(ids: [String]) -> BKDraft {
         let now = Date()
-        let items = ids.map { id -> BKProject in
+        let blocks = ids.map { id -> BKClipBlock in
             let dur = BKVideoLibrary.duration(localID: id)
-            return BKProject(id: UUID(),
-                             assetLocalID: id,
-                             assetName: BKVideoLibrary.assetName(localID: id),
-                             duration: dur,
-                             displayWidth: 0,
-                             displayHeight: 0,
-                             sourceRotationDegrees: 0,
-                             thresholdDb: mid,
-                             autoThresholdDb: nil,
-                             sourceApplicable: true,
-                             marks: [BKMark(start: 0, end: dur, kind: .keep)],
-                             splits: [],
-                             playheadTime: 0,
-                             createdAt: now,
-                             updatedAt: now,
-                             exportHistory: [])
+            return BKClipBlock.uncutted(assetLocalID: id, srcDuration: dur)
         }
-        var batch = BKDraftBatch(id: UUID(), title: "", items: items, lastAssetId: ids.first,
-                                 createdAt: now, lastEditedAt: now, everEdited: false, deletedAt: nil)
-        batch.title = batch.displayTitle
-        return batch
+        return BKDraft(id: UUID(), title: "", blocks: blocks,
+                       lastAssetId: ids.first, createdAt: now, lastEditedAt: now, everEdited: false)
     }
 
     private func handleImported(ids: [String]) {
         guard !ids.isEmpty else { return }
-        let batch = makeBatch(ids: ids)
-        BKDraftStore.shared.scheduleSave(batch)
-        BKDraftStore.shared.markOpened(batch.id)
-        BKLog.shared.i("新建草稿批 \(batch.id.uuidString.prefix(8)) · \(ids.count) 条")
+        let draft = makeDraft(ids: ids)
+        BKDraftStore.shared.scheduleSaveV2(draft)
+        BKDraftStore.shared.markDraftOpened(draft.id)
+        BKLog.shared.i("新建 v2 草稿 \(draft.id.uuidString.prefix(8)) · \(ids.count) 条")
 
-        // 载入第一条直接进编辑页
         guard let first = ids.first else { return }
         BKVideoLibrary.loadAVAsset(localID: first) { [weak self] asset in
             guard let self = self else { return }
@@ -312,7 +268,9 @@ final class BKRootViewController: UIViewController {
                                message: "去气口靠音轨判断呼吸停顿，无声视频没法自动找气口。")
                 return
             }
-            let editor = BKEditorViewController(batch: batch, index: 0,
+            let idx = draft.track.blocks.firstIndex(where: { $0.assetLocalID == first }) ?? 0
+            // ★ TEMP 桥接：编辑页还吃 v1，转成 v1 批进编辑
+            let editor = BKEditorViewController(batch: self.bridgeToV1(draft), index: idx,
                                                 asset: asset, probeInfo: probe)
             self.navigationController?.pushViewController(editor, animated: true)
         }
@@ -349,21 +307,20 @@ final class BKRootViewController: UIViewController {
     }
 
     @objc private func selectAllTapped() {
-        for i in 0 ..< batches.count {
+        for i in 0 ..< drafts.count {
             grid.selectItem(at: IndexPath(item: i, section: 0), animated: false, scrollPosition: [])
         }
     }
 
-    /// 批量删。删掉的是刀口数据，所以只提示「已移到最近删除」——
-    /// **不弹确认框**，给用户「还能捞回来」的感觉（定稿 3.2）
+    /// 批量删。删掉的是刀口数据，只提示「已移到最近删除」——不弹确认框（定稿 3.2）
     @objc private func deleteSelectedTapped() {
         let rows = selectedRows
         guard !rows.isEmpty else {
             showAlert(title: "还没选", message: "先点几格，再按删除。")
             return
         }
-        for ip in rows where ip.item < batches.count {
-            BKDraftStore.shared.moveToTrash(batches[ip.item])
+        for ip in rows where ip.item < drafts.count {
+            BKDraftStore.shared.moveDraftToTrash(drafts[ip.item])
         }
         pickTapped()          // 顺带退出多选态
         reload()
@@ -378,7 +335,6 @@ final class BKRootViewController: UIViewController {
     }
 
     @objc private func versionTapped() {
-        // Ad Hoc 是 Release 包，#if DEBUG 不生效，面板开关走运行时判断
         BKDebug.tapVersionTag(self)
     }
 
@@ -411,7 +367,7 @@ extension BKRootViewController: UICollectionViewDataSource, UICollectionViewDele
                                  UICollectionViewDelegateFlowLayout {
 
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        batches.count
+        drafts.count
     }
 
     func collectionView(_ collectionView: UICollectionView,
@@ -420,18 +376,20 @@ extension BKRootViewController: UICollectionViewDataSource, UICollectionViewDele
             withReuseIdentifier: BKDraftCell.reuseId, for: indexPath) as? BKDraftCell else {
             return UICollectionViewCell()
         }
-        let b = batches[indexPath.item]
-        let coverId = b.coverAssetId()
-        let img = coverId.flatMap { BKCovers.load(batchId: b.id, assetId: $0) }
-        cell.configure(title: b.displayTitle, cuts: b.totalCuts, count: b.items.count, coverImage: img, picking: picking)
-        cell.onMenu = { [weak self] in self?.showDraftMenu(for: b) }
+        let d = drafts[indexPath.item]
+        let coverId = d.coverAssetId()
+        let firstName = (d.track.blocks.first).map { BKVideoLibrary.assetName(localID: $0.assetLocalID) } ?? ""
+        let img = coverId.flatMap { BKCovers.load(batchId: d.id, assetId: $0) }
+        cell.configure(title: d.displayTitle(firstName: firstName),
+                       cuts: d.totalCuts, count: d.blockCount, coverImage: img, picking: picking)
+        cell.onMenu = { [weak self] in self?.showDraftMenu(for: d) }
         return cell
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         if picking { return }                 // 多选态下交给底部操作条
-        guard indexPath.item < batches.count else { return }
-        open(batch: batches[indexPath.item])
+        guard indexPath.item < drafts.count else { return }
+        open(draft: drafts[indexPath.item])
     }
 
     func collectionView(_ collectionView: UICollectionView,
@@ -444,47 +402,50 @@ extension BKRootViewController: UICollectionViewDataSource, UICollectionViewDele
     }
 
     /// 「···」菜单三项：重命名 / 删除 / 直接导出（定稿 3.1）
-    private func showDraftMenu(for batch: BKDraftBatch) {
-        let sheet = UIAlertController(title: batch.displayTitle, message: nil, preferredStyle: .actionSheet)
+    private func showDraftMenu(for draft: BKDraft) {
+        let firstName = (draft.track.blocks.first).map { BKVideoLibrary.assetName(localID: $0.assetLocalID) } ?? ""
+        let sheet = UIAlertController(title: draft.displayTitle(firstName: firstName), message: nil, preferredStyle: .actionSheet)
 
         sheet.addAction(UIAlertAction(title: "重命名", style: .default) { [weak self] _ in
-            self?.promptRename(batch)
+            self?.promptRename(draft)
         })
         sheet.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
-            BKDraftStore.shared.moveToTrash(batch)
+            BKDraftStore.shared.moveDraftToTrash(draft)
             self?.reload()
             self?.showAlert(title: "已移到最近删除",
                             message: "30 天内可以在左上角回收站里恢复。")
         })
         sheet.addAction(UIAlertAction(title: "直接导出", style: .default) { [weak self] _ in
-            self?.confirmDirectExport(batch)
+            self?.confirmDirectExport(draft)
         })
         sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
-        // iPad 上 actionSheet 必须给锚点，否则直接崩。本 App 只锁竖屏，但这条留着更保险
         sheet.popoverPresentationController?.sourceView = view
         sheet.popoverPresentationController?.sourceRect = CGRect(x: view.bounds.midX,
                                                                  y: view.bounds.midY, width: 0, height: 0)
         present(sheet, animated: true)
     }
 
-    private func promptRename(_ batch: BKDraftBatch) {
+    private func promptRename(_ draft: BKDraft) {
+        let firstName = (draft.track.blocks.first).map { BKVideoLibrary.assetName(localID: $0.assetLocalID) } ?? ""
         let alert = UIAlertController(title: "重命名", message: nil, preferredStyle: .alert)
         alert.addTextField { tf in
-            tf.text = batch.displayTitle
+            tf.text = draft.displayTitle(firstName: firstName)
             tf.placeholder = "给这一批起个名字"
         }
         alert.addAction(UIAlertAction(title: "好", style: .default) { [weak self] _ in
-            var b = batch
-            b.title = alert.textFields?.first?.text ?? ""
-            BKDraftStore.shared.scheduleSave(b)
-            BKDraftStore.shared.flushIfNeeded()
+            var d = draft
+            d.title = alert.textFields?.first?.text ?? ""
+            BKDraftStore.shared.scheduleSaveV2(d)
+            BKDraftStore.shared.flushV2IfNeeded()
             self?.reload()
         })
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         present(alert, animated: true)
     }
 
-    private func confirmDirectExport(_ batch: BKDraftBatch) {
+    private func confirmDirectExport(_ draft: BKDraft) {
+        // ★ TEMP 桥接：直接导出走 v1 批量导出逻辑（它也吃 BKDraftBatch）
+        let batch = bridgeToV1(draft)
         let edited = batch.editedItems
         guard !edited.isEmpty else {
             showAlert(title: "这批还没有刀口", message: "先点进去切几刀再导出。")
@@ -502,11 +463,10 @@ extension BKRootViewController: UICollectionViewDataSource, UICollectionViewDele
     }
 }
 
-// MARK: - 批量导出（起始页「直接导出」用）
+// MARK: - 批量导出（起始页「直接导出」用，v1 逻辑复用）
 
 extension BKRootViewController {
 
-    /// 逐条排队导出。单条失败记下来继续跑，最后统一报一句，不中途弹窗打断整批（定稿 4.8）
     private func runBatchExport(batch: BKDraftBatch, spec: BKConfig.ExportSpec) {
         let edited = batch.editedItems
         guard !edited.isEmpty else { return }
@@ -521,7 +481,6 @@ extension BKRootViewController {
 
         func step(_ i: Int) {
             if i >= edited.count {
-                // 把导出记录写回草稿 —— 文件名后缀靠 exportCount 递增，不写回去下次重号
                 for u in updated {
                     if let k = working.items.firstIndex(where: { $0.assetLocalID == u.assetLocalID }) {
                         working.items[k] = u
@@ -590,9 +549,7 @@ extension BKRootViewController {
         step(0)
     }
 
-    /// 存相册。**必须用 PHAssetCreationRequest 指定 originalFilename** ——
-    /// 老的 creationRequestForAssetFromVideo 存进去后，相册会自己起一个 IMG_xxxx 的名字，
-    /// 皓哥要的 `BK_` 前缀就丢了：同一条片子改一版导一次，剪映里好几版分不清哪版是哪版
+    /// 存相册。必须用 PHAssetCreationRequest 指定 originalFilename，保住 BK_ 前缀
     static func saveToPhotos(url: URL, fileName: String, completion: @escaping (Bool) -> Void) {
         func work() {
             PHPhotoLibrary.shared().performChanges({
@@ -612,7 +569,6 @@ extension BKRootViewController {
             }
         }
 
-        // 用现代 API（#available iOS16 包住，15 回落无参），避免 iOS 26 上回调不触发
         switch Self.photoAuthStatus() {
         case .authorized, .limited:
             work()
@@ -626,21 +582,52 @@ extension BKRootViewController {
     }
 }
 
-// MARK: - 相册回调
+// MARK: - v2 → v1 桥接（TEMP，Batch 2 删除）
+//
+// 编辑页（BKEditorViewController）还没迁 v2，依旧吃 v1 BKDraftBatch / BKProject。
+// 这里把 v2 的 BKTrackModel（blocks: [BKClipBlock]）转成 v1 批，喂给编辑页。
+// ⚠️ 编辑页的改动会落在 v1 草稿文件（Drafts/），v2 草稿文件（Drafts/v2/）保持创建时状态。
+//   这是 Batch 1「外层三页先 v2、编辑器走桥接」的已知临时状态，Batch 2 统一后消除。
 
-extension BKRootViewController: PHPickerViewControllerDelegate {
-
-    // 【已废弃】导入改走自建勾选页 BKVideoPickerViewController（见 presentPicker）。
-    // 保留这段是为了留住「为什么不用系统 PHPicker」的理由，别让人手贱改回去：
-    // 系统选择器没有「点圈选 / 点圈外当场预览」这套手势。
-    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-        picker.dismiss(animated: true)
-        let ids = results.compactMap { $0.assetIdentifier }
-        guard !ids.isEmpty else {
-            BKLog.shared.d("相册选择已取消")
-            return
-        }
-        BKLog.shared.i("本次导入 \(ids.count) 条素材")
-        handleImported(ids: ids)
+private func bridgeBlockToV1(_ b: BKClipBlock) -> BKProject {
+    let dur = b.srcDuration
+    // 未波剪：整段保留（单段 keptRanges）→ v1 第一阶段（空 keptRanges），
+    // 编辑页打开会跑自动检测，符合 v1 习惯
+    let isUncut = b.keptRanges.count == 1
+        && abs(b.keptRanges[0].start) < 1e-6
+        && abs(b.keptRanges[0].end - dur) < 1e-6
+    let mid = (BKConfig.Detect.clampLow + BKConfig.Detect.clampHigh) / 2
+    let now = Date()
+    var proj = BKProject(id: b.id,
+                         assetLocalID: b.assetLocalID,
+                         assetName: BKVideoLibrary.assetName(localID: b.assetLocalID),
+                         duration: dur,
+                         displayWidth: 0,
+                         displayHeight: 0,
+                         sourceRotationDegrees: 0,
+                         thresholdDb: mid,
+                         autoThresholdDb: nil,
+                         sourceApplicable: true,
+                         marks: [BKMark(start: 0, end: dur, kind: .keep)],
+                         splits: [],
+                         playheadTime: 0,
+                         createdAt: now,
+                         updatedAt: now,
+                         exportHistory: [])
+    // 波剪过的块 → 直接给 v1 第二阶段（绿区），编辑页能接着调长短
+    if !isUncut {
+        proj.keptRanges = b.keptRanges.map { Segment(start: $0.start, end: $0.end) }
     }
+    return proj
+}
+
+func bridgeToV1(_ draft: BKDraft) -> BKDraftBatch {
+    BKDraftBatch(id: draft.id,
+                 title: draft.title,
+                 items: draft.track.blocks.map(bridgeBlockToV1),
+                 lastAssetId: draft.coverAssetId(),
+                 createdAt: draft.createdAt,
+                 lastEditedAt: draft.lastEditedAt,
+                 everEdited: draft.everEdited,
+                 deletedAt: draft.deletedAt)
 }

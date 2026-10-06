@@ -283,6 +283,175 @@ final class BKDraftStore {
         dir.appendingPathComponent("\(id.uuidString).json")
     }
 
+    // MARK: - v2 草稿（BKTrackModel 顶层）
+    //
+    // 【Batch 1 临时并存】编辑页（BKEditorViewController）还没迁 v2，仍吃 v1 BKDraftBatch，
+    // 所以它的落盘走上面的 v1 路径（Drafts/）。本段是起始页用的 v2 路径，
+    // 单独放 Drafts/v2/ 子目录，文件名带同一 UUID 也不会和 v1 文件撞（不同目录）。
+    // v1 方法全部保留不动，等 Batch 2 编辑页迁完 v2 后，整段删除 v1 路径 + BKModels。
+
+    private var v2dir: URL {
+        let url = dir.appendingPathComponent("v2", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private var pendingV2: BKDraft?
+    private var scheduledV2: DispatchWorkItem?
+    private let queueV2 = DispatchQueue(label: "bk.draft.store.v2", qos: .utility)
+    private let lastOpenedV2Key = "bk_last_opened_draft_v2"
+
+    // MARK: v2 写入
+
+    /// 安排保存 v2 草稿（debounce 同 v1）
+    func scheduleSaveV2(_ draft: BKDraft) {
+        queueV2.async { [weak self] in
+            guard let self else { return }
+            self.pendingV2 = draft
+            self.scheduledV2?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, let d = self.pendingV2 else { return }
+                self.writeV2(d)
+            }
+            self.scheduledV2 = work
+            self.queueV2.asyncAfter(deadline: .now() + self.debounceSec, execute: work)
+        }
+    }
+
+    func flushV2IfNeeded() {
+        queueV2.async { [weak self] in
+            guard let self else { return }
+            self.scheduledV2?.cancel()
+            self.scheduledV2 = nil
+            guard let d = self.pendingV2 else { return }
+            self.writeV2(d)
+        }
+    }
+
+    func cancelPendingV2() {
+        queueV2.async { [weak self] in
+            guard let self else { return }
+            self.scheduledV2?.cancel()
+            self.scheduledV2 = nil
+            self.pendingV2 = nil
+        }
+    }
+
+    private func writeV2(_ draft: BKDraft) {
+        let url = v2fileURL(for: draft.id)
+        let bak = url.appendingPathExtension("bak1")
+        try? FileManager.default.removeItem(at: bak)
+        try? FileManager.default.copyItem(at: url, to: bak)
+        do {
+            let data = try encoder.encode(draft)
+            try data.write(to: url, options: .atomic)
+            pendingV2 = nil
+            let tag = String(draft.id.uuidString.prefix(8))
+            BKLog.shared.d(String(format: "v2 草稿已保存 %@ · %d KB · %d 刀",
+                                  tag, data.count / 1024, draft.totalCuts))
+        } catch {
+            BKLog.shared.e("v2 草稿保存失败：\(error.localizedDescription)")
+        }
+    }
+
+    // MARK: v2 读取
+
+    func loadDraft(id: UUID) -> BKDraft? {
+        decodeV2(at: v2fileURL(for: id))
+    }
+
+    private func decodeV2(at url: URL) -> BKDraft? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? decoder.decode(BKDraft.self, from: data)
+    }
+
+    /// 网格里显示的草稿：没被删的、按最后编辑时间倒序、最多 maxBatches 个
+    var allDrafts: [BKDraft] {
+        purgeExpiredV2Trash()
+        return Array(loadAllV2().filter { !$0.isTrashed }.prefix(BKConfig.Draft.maxBatches))
+    }
+
+    /// 回收站里的草稿
+    var trashedDrafts: [BKDraft] {
+        loadAllV2().filter { $0.isTrashed }
+            .sorted { ($0.deletedAt ?? .distantPast) > ($1.deletedAt ?? .distantPast) }
+    }
+
+    private func loadAllV2() -> [BKDraft] {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: v2dir, includingPropertiesForKeys: nil) else {
+            return []
+        }
+        return files.filter { $0.pathExtension == "json" }
+            .compactMap { decodeV2(at: $0) }
+            .sorted { $0.lastEditedAt > $1.lastEditedAt }
+    }
+
+    // MARK: v2 删除 / 恢复 / 回收站
+
+    func moveDraftToTrash(_ draft: BKDraft) {
+        var d = draft
+        d.deletedAt = Date()
+        pendingV2 = d
+        writeV2(d)
+        if lastOpenedDraftID == d.id { lastOpenedDraftID = nil }
+        BKLog.shared.i("v2 草稿已移到最近删除 \(d.id.uuidString.prefix(8))")
+    }
+
+    func restoreDraft(_ draft: BKDraft) -> (ok: Bool, missing: [String]) {
+        let missing = draft.track.blocks
+            .filter { BKVideoLibrary.phAsset(localID: $0.assetLocalID) == nil }
+            .map { BKVideoLibrary.assetName(localID: $0.assetLocalID) }
+        var d = draft
+        d.deletedAt = nil
+        pendingV2 = d
+        writeV2(d)
+        BKLog.shared.i("v2 草稿已恢复 \(d.id.uuidString.prefix(8))\(missing.isEmpty ? "" : "（有 \(missing.count) 条原片已失效）")")
+        return (true, missing)
+    }
+
+    func permanentlyDeleteDraft(_ draft: BKDraft) {
+        let fm = FileManager.default
+        try? fm.removeItem(at: v2fileURL(for: draft.id))
+        try? fm.removeItem(at: v2fileURL(for: draft.id).appendingPathExtension("bak1"))
+        BKCovers.remove(batchId: draft.id)
+        if lastOpenedDraftID == draft.id { lastOpenedDraftID = nil }
+        BKLog.shared.i("v2 草稿已彻底删除 \(draft.id.uuidString.prefix(8))")
+    }
+
+    func emptyTrashV2() {
+        for d in trashedDrafts { permanentlyDeleteDraft(d) }
+        BKLog.shared.i("v2 回收站已清空")
+    }
+
+    private func purgeExpiredV2Trash() {
+        let limit = TimeInterval(BKConfig.Draft.trashKeepDays * 86400)
+        for d in loadAllV2() where d.isTrashed {
+            if let dt = d.deletedAt, Date().timeIntervalSince(dt) > limit {
+                permanentlyDeleteDraft(d)
+            }
+        }
+    }
+
+    // MARK: v2 最后编辑的草稿
+
+    var lastOpenedDraftID: UUID? {
+        get {
+            guard let s = UserDefaults.standard.string(forKey: lastOpenedV2Key) else { return nil }
+            return UUID(uuidString: s)
+        }
+        set { UserDefaults.standard.set(newValue?.uuidString, forKey: lastOpenedV2Key) }
+    }
+
+    func markDraftOpened(_ id: UUID) {
+        lastOpenedDraftID = id
+        BKLog.shared.d("记录最后编辑 v2 草稿 \(id.uuidString.prefix(8))")
+    }
+
+    private func v2fileURL(for id: UUID) -> URL {
+        v2dir.appendingPathComponent("\(id.uuidString).json")
+    }
+
     var totalSizeText: String {
         let size = BKProbe.folderSize(at: dir)
         return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)

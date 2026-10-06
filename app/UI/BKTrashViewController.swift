@@ -6,6 +6,14 @@
 //  **删掉的是刀口数据，删了等于白切** —— 一条片子上十几刀，一删全没了，
 //  而「删草稿」这个动作在手指上跟「删照片」一样轻。没有退路一定会出事。
 //
+//  【v2.0：回收站必须跟着草稿一起迁 v2】
+//  起始页（BKRootViewController）已经全面走 v2 的 BKDraft，删除动作走
+//  BKDraftStore.moveDraftToTrash，文件落在 Drafts/v2/。
+//  ⚠️ 如果这里还读 v1 的 trashedBatches（Drafts/），**v2 草稿删完就再也找不回来**
+//  —— 两个目录物理隔离，回收站里根本不显示它，单条删除就变成了不可逆操作。
+//  迁完的闭环：起始页删 → v2 回收站可见 → 恢复回起始页。
+//  旧 v1 草稿按皓哥定的「不迁移、全新起步」处理，本页不再显示。
+//
 //  【两个确认层级要分清】
 //  · 单条删 → 只提示「已移到最近删除」，**不弹确认框**（可撤销感，别烦人）
 //  · 清空回收站 → 才弹**真正的二次确认**（这一步是不可逆的）
@@ -25,7 +33,7 @@ final class BKTrashViewController: UIViewController {
 
     private let table = UITableView(frame: .zero, style: .plain)
     private let emptyLabel = UILabel()
-    private var batches: [BKDraftBatch] = []
+    private var drafts: [BKDraft] = []
 
     /// 从这个页面恢复了草稿，回起始页要刷新网格
     var onChanged: (() -> Void)?
@@ -92,11 +100,11 @@ final class BKTrashViewController: UIViewController {
     }
 
     private func reload() {
-        batches = BKDraftStore.shared.trashedBatches
-        emptyLabel.isHidden = !batches.isEmpty
-        table.isHidden = batches.isEmpty
+        drafts = BKDraftStore.shared.trashedDrafts
+        emptyLabel.isHidden = !drafts.isEmpty
+        table.isHidden = drafts.isEmpty
         table.reloadData()
-        navigationItem.rightBarButtonItem?.isEnabled = !batches.isEmpty
+        navigationItem.rightBarButtonItem?.isEnabled = !drafts.isEmpty
     }
 
     // MARK: - 操作
@@ -107,17 +115,17 @@ final class BKTrashViewController: UIViewController {
             return
         }
         var missing: [String] = []
-        for ip in rows where ip.row < batches.count {
-            let r = BKDraftStore.shared.restore(batches[ip.row])
+        for ip in rows where ip.row < drafts.count {
+            let r = BKDraftStore.shared.restoreDraft(drafts[ip.row])
             missing.append(contentsOf: r.missing)
         }
         reload()
         onChanged?()
         if missing.isEmpty {
-            showNotice(title: "已恢复", message: "\(rows.count) 批草稿已放回起始页。")
+            showNotice(title: "已恢复", message: "\(rows.count) 个草稿已放回起始页。")
         } else {
             showNotice(title: "已恢复，但有原片找不到了",
-                       message: "\(rows.count) 批草稿已放回起始页，但其中 \(missing.count) 条素材的原视频已被删除：\n"
+                       message: "\(rows.count) 个草稿已放回起始页，但其中 \(missing.count) 条素材的原视频已被删除：\n"
                         + missing.prefix(5).joined(separator: "\n"))
         }
     }
@@ -126,10 +134,10 @@ final class BKTrashViewController: UIViewController {
         // 唯一弹真确认框的地方 —— 这一步不可逆
         let alert = UIAlertController(
             title: "清空最近删除？",
-            message: "\(batches.count) 批草稿会被**永久删除**，刀口数据一起消失，无法恢复。",
+            message: "\(drafts.count) 个草稿会被**永久删除**，刀口数据一起消失，无法恢复。",
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "永久删除", style: .destructive) { [weak self] _ in
-            BKDraftStore.shared.emptyTrash()
+            BKDraftStore.shared.emptyTrashV2()
             self?.reload()
             self?.onChanged?()
         })
@@ -158,18 +166,19 @@ private final class BKSubtitleCell: UITableViewCell {
 extension BKTrashViewController: UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        batches.count
+        drafts.count
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
-        let b = batches[indexPath.row]
-        let left = b.trashDaysLeft
+        let d = drafts[indexPath.row]
+        // 模型不碰 Photos，素材名由这里用 BKVideoLibrary 取后再交给 displayTitle
+        let firstName = (d.track.blocks.first).map { BKVideoLibrary.assetName(localID: $0.assetLocalID) } ?? ""
+        let left = d.trashDaysLeft
         cell.backgroundColor = .clear
-        cell.textLabel?.text = b.displayTitle
+        cell.textLabel?.text = d.displayTitle(firstName: firstName)
         cell.textLabel?.textColor = BKTheme.Color.text
-        cell.detailTextLabel?.text = nil
-        var sub = "\(b.items.count) 条 · \(b.totalCuts) 刀"
+        var sub = "\(d.blockCount) 条 · \(d.totalCuts) 刀"
         sub += left > 0 ? " · 剩 \(left) 天自动清空" : " · 即将自动清空"
         cell.detailTextLabel?.text = sub
         return cell
