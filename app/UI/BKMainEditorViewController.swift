@@ -65,6 +65,10 @@ final class BKMainEditorViewController: UIViewController {
     private let barContent = UIView()
     private let timeLabel = UILabel()
     private let statusLabel = UILabel()
+    /// 预览取帧防抖：只有最新一次滚动的结果落屏，旧请求回来不覆盖新画面
+    private var posterToken: Int = 0
+    /// 上次已抓帧的「块×0.25s 桶」键，避免快速滚动反复起生成器
+    private var lastPosterKey: Int = Int.min
 
     // MARK: - 初始化
 
@@ -221,13 +225,29 @@ final class BKMainEditorViewController: UIViewController {
         statusLabel.text = String(format: "第 %d/%d 段 · %@ · %@",
                                   i + 1, n, b.assetName, formatClock(b.timelineDuration))
 
-        // 预览海报 = 这一段的第一帧。回调可能晚到，回来时先核对还是不是这一段
-        BKThumbnails.image(localID: b.assetLocalID,
-                           size: CGSize(width: 640, height: 360),
-                           networkAllowed: true) { [weak self] img in
+        // 预览 = 指针当前所指那一帧（剪映式：滚动主轨时预览跟着指针走），
+        // 不再是「块第一帧」——之前那样在块内滚动时海报纹丝不动
+        updatePosterAtPlayhead()
+    }
+
+    /// 预览 = 指针所指那一帧（剪映式：滚动主轨时预览跟着指针走）。
+    /// 按「块序号 × 0.25s 桶」去重，避免快速滚动反复起 AVAssetImageGenerator；
+    /// posterToken 保证只有最新一次滚动的结果会落屏。
+    private func updatePosterAtPlayhead() {
+        guard let info = trackView.playheadFrameInfo() else {
+            posterView.image = nil
+            return
+        }
+        let key = info.blockIndex * 1_000_000 + Int(max(0, info.sourceTime) * 4)
+        guard key != lastPosterKey else { return }
+        lastPosterKey = key
+        let token = posterToken + 1
+        posterToken = token
+        BKFrameGrabs.frame(localID: info.localID, at: info.sourceTime,
+                           size: CGSize(width: 640, height: 360)) { [weak self] img in
             guard let self = self else { return }
-            guard self.trackView.selectedIndex == i else { return }
-            self.posterView.image = img
+            guard token == self.posterToken else { return }   // 已被更新的滚动覆盖
+            if let img = img { self.posterView.image = img }
         }
     }
 
@@ -528,6 +548,11 @@ extension BKMainEditorViewController: BKMainTrackViewDelegate {
     func mainTrack(_ view: BKMainTrackView, didAutoSelectBlockAt index: Int?) {
         refreshBar()
         updateInfo()
+    }
+
+    /// 滚动过程中指针持续移动：预览随指针刷新（剪映式）。底栏/信息不变，不重建
+    func mainTrack(_ view: BKMainTrackView, didScrubTo time: Double) {
+        updatePosterAtPlayhead()
     }
 
     /// 点区块 = 选中 + 三轨同步滚动让它居中。

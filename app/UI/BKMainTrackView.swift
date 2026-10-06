@@ -34,6 +34,8 @@ protocol BKMainTrackViewDelegate: AnyObject {
     func mainTrack(_ view: BKMainTrackView, didTapBlockAt index: Int)
     /// 点了轨道空白（区块之间的缝 / 两头余量区）
     func mainTrackDidTapBlank(_ view: BKMainTrackView)
+    /// 滚动/拖动过程中指针时间持续变化（已节流），供预览随指针刷新
+    func mainTrack(_ view: BKMainTrackView, didScrubTo time: Double)
 }
 
 final class BKMainTrackView: UIView {
@@ -48,6 +50,11 @@ final class BKMainTrackView: UIView {
     private var starts: [Double] = []
     private var durations: [Double] = []
     private var totalSec: Double = 0
+    /// 块的副本，供 playheadFrameInfo 取 assetLocalID / keptRanges 做源时间映射
+    /// （canvas 也有一份，这里留一份好让预览取帧不依赖私有子类）
+    private var blocks: [BKClipBlock] = []
+    /// 滚动节流：上次通知预览的指针时间。避免每像素都回调
+    private var lastScrubNotify: Double = -1
 
     /// 每秒多少点（缩放）。越大 = 时间轴拉得越长
     var pps: CGFloat = 26 { didSet { relayout() } }
@@ -98,6 +105,7 @@ final class BKMainTrackView: UIView {
 
     /// 换一批区块（整条主轨）。starts / durations 由块的 timelineDuration 累加得出
     func setContent(blocks: [BKClipBlock]) {
+        self.blocks = blocks
         canvas.blocks = blocks
         var acc = 0.0
         starts = []
@@ -172,6 +180,18 @@ final class BKMainTrackView: UIView {
         return b.keptRanges.last?.end ?? 0
     }
 
+    /// 指针当前所指的「区块 + 源时间」，供预览取帧（剪映式随指针刷新预览）。
+    /// 返回 nil 表示指针落在块外的留白区
+    func playheadFrameInfo() -> (blockIndex: Int, localID: String, sourceTime: Double)? {
+        let t = centerTime
+        for i in 0 ..< starts.count where t >= starts[i] && t <= starts[i] + durations[i] {
+            let local = t - starts[i]
+            let src = BKMainTrackView.srcTime(inBlock: blocks[i], localOut: local)
+            return (i, blocks[i].assetLocalID, src)
+        }
+        return nil
+    }
+
     /// 自动蓝框。★ 只在跨过区块边界时才改选中 + 回调（性能关键，别删这个判断）
     private func updateAutoFrame() {
         guard !autoFrameLock else { return }
@@ -204,6 +224,17 @@ extension BKMainTrackView: UIScrollViewDelegate {
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         updateAutoFrame()
+        notifyScrub()
+    }
+
+    /// 滚动节流：指针时间每变化 ≥0.1s 才通知一次预览刷新（剪映式随指针走），
+    /// 避免每像素都去抓帧。帧本身还有 0.25s 桶去重，两层叠加不卡
+    private func notifyScrub() {
+        let t = centerTime
+        if abs(t - lastScrubNotify) >= 0.1 {
+            lastScrubNotify = t
+            delegate?.mainTrack(self, didScrubTo: t)
+        }
     }
 }
 
