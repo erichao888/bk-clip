@@ -27,6 +27,7 @@
 //
 
 import UIKit
+import AVFoundation
 
 // MARK: - 底栏上下文
 
@@ -414,8 +415,72 @@ final class BKMainEditorViewController: UIViewController {
     }
 
     @objc private func exportTapped() {
-        // 第二段（导出管线迁 v2）接进来后这里直接调 v2 导出面板
-        statusLabel.text = "导出管线在本批第二段接入（v2 多轨合成）"
+        // 先把主轨改动落盘，免得导出读到旧草稿
+        BKDraftStore.shared.flushV2IfNeeded()
+        let panel = BKExportPanelViewController(draft: draft)
+        panel.onStart = { [weak self] spec in
+            self?.runExport(spec: spec)
+        }
+        present(panel, animated: true)
+    }
+
+    /// 导出整条主轨：逐块加载素材（顺序链）→ 一次导出 → 存相册。
+    /// 和起始页的「直接导出」是同一条链路，差别只在没有确认弹窗（刚选完规格）
+    private func runExport(spec: BKConfig.ExportSpec) {
+        let blocks = draft.track.blocks
+        guard !blocks.isEmpty else { return }
+
+        let title = draft.displayTitle(firstName: blocks.first?.assetName ?? "")
+        let hud = UIAlertController(title: "正在导出", message: "准备中…", preferredStyle: .alert)
+        present(hud, animated: true)
+
+        var parts: [BKCompositionBuilder.Part] = []
+
+        func load(_ i: Int) {
+            if i >= blocks.count {
+                BKExporter.export(title: title, sources: parts, spec: spec,
+                                  progress: { _, _, frac in
+                                      hud.message = String(format: "%d%%", Int(frac * 100))
+                                  },
+                                  completion: { [weak self] result in
+                                      guard let self = self else { return }
+                                      switch result {
+                                      case .failure(let err):
+                                          hud.dismiss(animated: true) {
+                                              self.statusLabel.text = "导出失败：" + err.localizedDescription
+                                          }
+                                      case .success(let url):
+                                          BKRootViewController.saveToPhotos(url: url,
+                                                                            fileName: url.lastPathComponent) { ok in
+                                              hud.dismiss(animated: true) {
+                                                  self.statusLabel.text = ok
+                                                      ? "已导出并存入相册"
+                                                      : "导出成功，存相册失败（成品在 Exports 目录）"
+                                              }
+                                          }
+                                      }
+                                  })
+                return
+            }
+            let b = blocks[i]
+            hud.message = "读取素材 \(i + 1)/\(blocks.count)…"
+            BKVideoLibrary.loadAVAsset(localID: b.assetLocalID) { [weak self] asset in
+                guard let self = self else { return }
+                guard let asset = asset else {
+                    hud.dismiss(animated: true) {
+                        self.statusLabel.text = "「\(b.assetName)」读不到，导出中止"
+                    }
+                    return
+                }
+                parts.append(BKCompositionBuilder.Part(
+                    asset: asset,
+                    name: b.assetName,
+                    keeps: b.keptRanges.map { ($0.start, $0.end) },
+                    speed: b.speed))
+                load(i + 1)
+            }
+        }
+        load(0)
     }
 
     @objc private func closeTapped() {

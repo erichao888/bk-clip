@@ -53,38 +53,29 @@ enum BKExporter {
         }
     }
 
-    /// 批量导出时的「参考规格」—— 定稿 4.9.1：
-    /// 用户选「同源文件」但一批里各条参数不一样时，全批按**时长最长那条**统一。
-    /// 传了它，长宽和帧率就照它来，不再各用各的；手动选了具体值则听手动的
-    struct ExportReference {
-        var displayWidth: Double
-        var displayHeight: Double
-        var fps: Double
-    }
-
     /// progress 回调 (已完成段数, 总段数, 完成度 0~1)。
     /// 给完成度是因为「第几段」的观感很差：一上来第 1/12 段，
     /// 用户根本不知道要等多久 —— 百分比才是人能感知的进度
     ///
-    /// - parameter reference: 批量导出的统一基准。单条导出传 nil（各用各的源参数）
-    static func export(project: BKProject,
-                       asset: AVAsset,
+    /// 【v2】一条主轨 = 一个成品文件。sources = 主轨全部块（顺序即主轨顺序）。
+    /// v1 的「批量多条各自导出 + 同源统一」规则随这个语义一起消失 ——
+    /// 草稿就是片子，导出就是导出这一条片子。
+    static func export(title: String,
+                       sources: [BKCompositionBuilder.Part],
                        spec: BKConfig.ExportSpec,
-                       reference: ExportReference? = nil,
                        progress: @escaping (Int, Int, Double) -> Void,
                        completion: @escaping (Result<URL, Error>) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let url = try exportSync(project: project, asset: asset,
-                                         spec: spec, reference: reference, progress: progress)
+                let url = try exportSync(title: title, sources: sources,
+                                         spec: spec, progress: progress)
                 DispatchQueue.main.async { completion(.success(url)) }
             } catch {
                 // 【IMG_4873 案】失败现场全部打包成可复制报告。
                 // 光弹一句「写入失败：10 秒不就绪」什么都定位不了，必须把
                 // 素材规格 / 导出参数 / 段边界 / 卡在哪一段 / writer 真实错误都记上。
-                let report = buildFailureReport(project: project, asset: asset,
-                                                spec: spec, reference: reference,
-                                                error: error)
+                let report = buildFailureReport(title: title, sources: sources,
+                                                spec: spec, error: error)
                 BKLog.shared.e(report)
                 DispatchQueue.main.async { completion(.failure(error)) }
             }
@@ -92,41 +83,66 @@ enum BKExporter {
     }
 
     /// 拼一份「人能看懂 + 我能直接定位」的失败报告（纯文本，方便微信粘贴）
-    private static func buildFailureReport(project: BKProject,
-                                           asset: AVAsset,
+    private static func buildFailureReport(title: String,
+                                           sources: [BKCompositionBuilder.Part],
                                            spec: BKConfig.ExportSpec,
-                                           reference: ExportReference?,
                                            error: Error) -> String {
         BKDiag.shared.reset()
         BKDiag.shared.add("错误：\(error.localizedDescription)")
         BKDiag.shared.noteStage("抛错：\(error.localizedDescription)")
 
-        if let videoTrack = asset.tracks(withMediaType: .video).first {
+        let head = "主轨：\(sources.count) 块 · 草稿「\(title)」"
+        BKDiag.shared.add(head)
+
+        // 逐块列保留段边界 + 倍速 —— 段边界对不齐是音画错位最可疑的元凶
+        for (i, p) in sources.enumerated() {
+            let bounds: String
+            if p.keeps.count <= 8 {
+                // 每段单独拼好再 joined —— 三元里直接塞 map(...).joined 类型检查扛不住
+                let parts = p.keeps
+                    .map { seg in "[\(BKDiag.s(seg.0))→\(BKDiag.s(seg.1))]" }
+                bounds = parts.joined(separator: " ")
+            } else {
+                bounds = "太多不逐条列（\(p.keeps.count) 段）"
+            }
+            let sp = String(format: "%.2fx", p.speed)
+            let line = "块\(i + 1)「\(p.name)」\(p.keeps.count) 段 \(bounds) · \(sp)"
+            BKDiag.shared.add(line)
+        }
+        // 块内相邻保留段之间的红区宽度：边界差一点点音频样本就会越界
+        for (i, p) in sources.enumerated() where p.keeps.count > 1 {
+            var gaps: [String] = []
+            for k in 0 ..< (p.keeps.count - 1) {
+                gaps.append(String(format: "%.3f", p.keeps[k + 1].0 - p.keeps[k].1))
+            }
+            BKDiag.shared.add("块\(i + 1)「\(p.name)」段间红区宽度(s)：" + gaps.joined(separator: " "))
+        }
+
+        // 第一块的源规格做代表（同一台手机拍的素材规格一致；个别不同会在 makeMain 日志里警告）
+        if let p = sources.first, let videoTrack = p.asset.tracks(withMediaType: .video).first {
             let n = videoTrack.naturalSize
             let d = n.applying(videoTrack.preferredTransform)
             // 长串用 + 拼超过 5 段，Swift 编译器会「unable to type-check in reasonable time」；
-            // 跨行续行 + 前缀在某些上下文还会解析成 String.Stride。两头都避开：
             // 拆成独立变量，且每条 add() 只写一行、不用续行 +。
             let storeWH = "\(Int(n.width))×\(Int(n.height))"
             let dispWH = "\(Int(abs(d.width)))×\(Int(abs(d.height)))"
             let fpsText = String(format: "%.2f", videoTrack.nominalFrameRate)
             let kbps = Int(videoTrack.estimatedDataRate / 1000)
-            let durText = BKDiag.s(CMTimeGetSeconds(asset.duration))
+            let durText = BKDiag.s(CMTimeGetSeconds(p.asset.duration))
             // ⚠️ track 上是 preferredTransform，不是 transform（transform 是 writerInput 的属性）
             let vtXform = Self.brief(videoTrack.preferredTransform)
-            let head = "源视频：存储 \(storeWH) → 显示 \(dispWH) · \(fpsText)fps"
+            let h1 = "源视频（块1「\(p.name)」代表）：存储 \(storeWH) → 显示 \(dispWH) · \(fpsText)fps"
             let tail = "码率 \(kbps)kbps · 时长 \(durText)s"
-            BKDiag.shared.add("\(head) · \(vtXform) · \(tail)")
+            BKDiag.shared.add("\(h1) · \(vtXform) · \(tail)")
 
-            if let audioTrack = asset.tracks(withMediaType: .audio).first {
+            if let audioTrack = p.asset.tracks(withMediaType: .audio).first {
                 let aDur = BKDiag.s(CMTimeGetSeconds(audioTrack.timeRange.duration))
-                let atXform = Self.brief(audioTrack.preferredTransform)
-                BKDiag.shared.add("源音频：\(atXform) · 时长 \(aDur)s")
+                BKDiag.shared.add("源音频：时长 \(aDur)s")
             } else {
-                BKDiag.shared.add("源音频：无音轨")
+                BKDiag.shared.add("源音频：块1 无音轨")
             }
 
-            let plan = makePlan(videoTrack: videoTrack, project: project, spec: spec, reference: reference)
+            let plan = makePlan(videoTrack: videoTrack, spec: spec)
             let wWH = "\(Int(plan.writeSize.width))×\(Int(plan.writeSize.height))"
             let dWH = "\(Int(plan.displaySize.width))×\(Int(plan.displaySize.height))"
             let outFps = String(format: "%.0f", plan.fps)
@@ -142,27 +158,7 @@ enum BKExporter {
             BKDiag.shared.add("源视频：取不到视频轨")
         }
 
-        let keeps = project.keepRanges
-        var keepLine = "保留段数：\(keeps.count)"
-        if keeps.count <= 12 {
-            // 每段单独拼好再 joined —— 三元里直接塞 map(...).joined 类型检查扛不住
-            let bounds = keeps
-                .map { seg in "[\(BKDiag.s(seg.0))→\(BKDiag.s(seg.1))]" }
-                .joined(separator: " ")
-            keepLine += " · 边界 " + bounds
-        } else {
-            keepLine += " · 太多不逐条列"
-        }
-        BKDiag.shared.add(keepLine)
-        // 红区段（相邻两段之间的空隙）是最可疑的元凶：段边界对不齐音频样本就会越界
-        if keeps.count > 1 {
-            var gaps: [String] = []
-            for i in 0 ..< (keeps.count - 1) {
-                gaps.append(String(format: "%.3f", keeps[i + 1].0 - keeps[i].1))
-            }
-            BKDiag.shared.add("段间红区宽度(s)：" + gaps.joined(separator: " "))
-        }
-        return BKDiag.shared.makeReport(title: "导出失败 · \(project.assetName)")
+        return BKDiag.shared.makeReport(title: "导出失败 · \(title)")
     }
 
     /// CGAffineTransform 简短描述，看不出翻转/镜像时就打印 identity
@@ -181,25 +177,17 @@ enum BKExporter {
     ///   写入宽高    ：把显示尺寸按 transform **反方向转回去**
     /// 用 `transform.inverted()` 而不是「如果是 90 度就交换宽高」——
     /// 后者遇到镜像（自拍，a 或 d 为负）就直接给错答案。
+    ///
+    /// 【v2】只吃 composition 的视频轨：拼接时 transform 已从源素材抄过去，
+    /// 尺寸和朝向**天然同源**（v1.4.7 崩溃的根因就是两处不同源）。
+    /// v1 的「project 上存的 displayWidth/Height 兜底」一并删除 ——
+    /// 2A 已拍板几何不落块、导出时实时 probe，composition 就是实时的。
     static func makePlan(videoTrack: AVAssetTrack,
-                         project: BKProject,
-                         spec: BKConfig.ExportSpec,
-                         reference: ExportReference? = nil) -> Plan {
+                         spec: BKConfig.ExportSpec) -> Plan {
         let transform = videoTrack.preferredTransform
         let natural = videoTrack.naturalSize
-        // 源素材的显示尺寸。批量导出的「同源文件」模式直接采用参考条的尺寸
-        var dispW: CGFloat
-        var dispH: CGFloat
-        if let r = reference, r.displayWidth > 0, r.displayHeight > 0 {
-            dispW = CGFloat(r.displayWidth)
-            dispH = CGFloat(r.displayHeight)
-        } else if project.displayWidth > 0, project.displayHeight > 0 {
-            dispW = CGFloat(project.displayWidth)
-            dispH = CGFloat(project.displayHeight)
-        } else {
-            dispW = abs(natural.applying(transform).width)
-            dispH = abs(natural.applying(transform).height)
-        }
+        var dispW = abs(natural.applying(transform).width)
+        var dispH = abs(natural.applying(transform).height)
         if dispW <= 0 || dispH <= 0 {
             dispW = abs(natural.width); dispH = abs(natural.height)
         }
@@ -223,8 +211,7 @@ enum BKExporter {
 
         // 帧率：只做「降」不做「升」。源素材 30fps 拉到 60 只能靠复制帧，
         // 体积翻倍画质不变，没意义 —— 如实按源帧率输出，状态行会写清楚
-        var srcFps = videoTrack.nominalFrameRate > 0 ? Double(videoTrack.nominalFrameRate) : 30.0
-        if let r = reference, r.fps > 0 { srcFps = r.fps }
+        let srcFps = videoTrack.nominalFrameRate > 0 ? Double(videoTrack.nominalFrameRate) : 30.0
         var outFps = srcFps
         if let target = spec.frameRate.value, target < srcFps - 0.01 {
             outFps = target
@@ -238,47 +225,34 @@ enum BKExporter {
 
     // MARK: - 同步实现（后台线程调用）
 
-    private static func exportSync(project: BKProject,
-                                   asset: AVAsset,
+    private static func exportSync(title: String,
+                                   sources: [BKCompositionBuilder.Part],
                                    spec: BKConfig.ExportSpec,
-                                   reference: ExportReference?,
                                    progress: @escaping (Int, Int, Double) -> Void) throws -> URL {
-        let keeps = project.keepRanges
-        guard !keeps.isEmpty else { throw BKExportError.nothingToExport }
+        guard !sources.isEmpty else { throw BKExportError.nothingToExport }
 
         let outDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Exports", isDirectory: true)
         try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
         // 定稿 4.8 的命名：BK_ 前缀 + 重复导出的 _k 后缀
-        let fileName = project.nextExportFileName
+        // （v2 靠扫 Exports 目录推次数，不给 BKDraft 加 exportCount 字段 ——
+        //   加非可选字段会让老 v2 草稿解码直接失败）
+        let fileName = nextExportFileName(base: title)
         let url = outDir.appendingPathComponent(fileName)
         // 同名残留文件会让 writer 初始化失败，先清掉
         try? FileManager.default.removeItem(at: url)
 
-        guard let videoTrack = asset.tracks(withMediaType: .video).first else {
-            throw BKExportError.noVideoTrack
-        }
-        // 注：源音轨不用取 —— v1.3.4 起音频也走 composition（见下面 BKCompositionBuilder），
-        // 那边自己从 asset 取，这里取了会变成未使用变量。
-
         // ============================================================
-        // 【v1.3.4 音画同步第四次修复 —— 根治】
+        // 【v1.3.4 音画同步第四次修复 —— 根治，思路原样沿用】
         //
-        // 前三次都错在同一个根因：**手算每段的 PTS 偏移**。
-        // 而我用来算的那些值（帧长、块长、样本是否越界）全是我**猜的** ——
-        // 视频有 B 帧（DTS≠PTS）、CMSampleBufferGetDuration 不等于一帧长、
-        // 音频块长也不等于 1024/48000。Python 复刻说「四条样片全绿」，
-        // 但那只是**我的模型绿**，真机照样「越往后面越大」。
-        //
-        // 这次换做法：**先用 AVMutableComposition 把保留段拼成一条**，
-        // 系统保证时间轴连续 + 音视频两轨天然对齐，我们**一个 PTS 都不用算**。
-        // 然后从 composition 读出来写 writer —— 读出来的 PTS 已经是最终值。
-        //
-        // 额外收益：联播（BKJointBuilder）和导出共用同一份拼法，
-        // 「预演听到的」必然等于「导出的」。
+        // 前三次都错在同一个根因：手算每段的 PTS 偏移。而那些值全是我猜的。
+        // 正解：先用 AVMutableComposition 把保留段拼成一条，系统保证
+        // 时间轴连续 + 音视频两轨天然对齐，我们一个 PTS 都不用算。
+        // v2 只换了一件事：拼的是**整条主轨**（多素材多段 + 逐块变速），
+        // 走 BKCompositionBuilder.makeMain，读出来的 PTS 依然是最终值。
         // ============================================================
-        guard let built = BKCompositionBuilder.make(asset: asset, keeps: keeps) else {
+        guard let built = BKCompositionBuilder.makeMain(sources) else {
             throw BKExportError.nothingToExport
         }
         let compAsset: AVAsset = built.comp
@@ -286,62 +260,40 @@ enum BKExporter {
             throw BKExportError.noVideoTrack
         }
         let compAudio = compAsset.tracks(withMediaType: .audio).first
-        BKLog.shared.i(String(format: "导出：已拼成 composition %d 段 / 成品 %.3fs",
-                              built.table.count, built.total))
+        BKLog.shared.i(String(format: "导出：已拼成主轨 composition %d 块 %d 段 / 成品 %.3fs",
+                              sources.count, built.table.count, built.total))
 
-        // 方向铁律要从 composition 的轨道拿 —— 拼接时已经抄过一遍，这里再确认一次，
-        // 下面的 writerInput.transform 用的就是这个值
+        // ============================================================
+        // 【v1.4.7 崩溃的教训，v2 直接从根上满足】
+        //
+        // 尺寸与 transform 必须同源。plan 只从 **composition 的视频轨** 算一次，
+        // writerInput.transform 也用同一条轨的 —— 不存在「源素材 vs composition」
+        // 两套参数打架的可能。v1 里先算源素材再重算 composition 的补丁动作随之删除。
+        // ============================================================
         let compTransform = compVideo.preferredTransform
+        let finalPlan = makePlan(videoTrack: compVideo, spec: spec)
+        let bitrate = videoBitrate(for: sources)
 
-        let plan = makePlan(videoTrack: videoTrack, project: project,
-                            spec: spec, reference: reference)
-        let bitrate = BKExporter.videoBitrate(for: videoTrack)
-
-        // ⚠️⚠️ **v1.4.7 导出闪退的根因**（2026-10-04 20:48 皓哥日志，崩在打这条日志之后）
-        //
-        // 日志原文：`导出参数 写入 1920×1080 显示 1080×1920 60fps`，
-        // 然后**直接重启**（连下一条「已拼成 composition」都没打）。
-        // 崩在 `AVAssetWriter` 初始化 / `canAdd` 那一带。
-        //
-        // 病根：**transform 与像素尺寸不匹配**。
-        // `makePlan` 用的是**源素材**的 `videoTrack.preferredTransform` 去逆推 writeSize，
-        // 而 `videoInput.transform` 用的是 **composition 的** `compTransform`。
-        // 竖拍素材（旋转 90°）下两者一旦不一致，
-        // 编码器就会拿到「尺寸是横的、transform 说要转成竖的」这种自相矛盾的输入
-        // → AVFoundation 内部直接崩（不是报错，是崩溃）。
-        //
-        // 正解：**两处必须用同一个 transform**。统一用 composition 的（它是从源素材抄的，
-        // 而且拼接后才是真正要写出的内容）。
-        let planWithComp = makePlan(videoTrack: compVideo,
-                                    project: project,
-                                    spec: spec,
-                                    reference: reference)
-        let sameTransform = (compTransform == videoTrack.preferredTransform)
-        if !sameTransform {
-            BKLog.shared.w("composition transform 与源素材不一致，改用 composition 的重算尺寸")
+        // 源总时长（折叠前、未变速）与成品时长，进日志对账用
+        var srcTotal = 0.0
+        for p in sources {
+            for k in p.keeps { srcTotal += max(0, k.1 - k.0) }
         }
-        let finalPlan = planWithComp
-        BKLog.shared.i(String(format: "导出参数 写入 %d×%d 显示 %d×%d %.0ffps（源 %.0f） %.1fMbps %d段 | %@",
-                              Int(finalPlan.writeSize.width), Int(finalPlan.writeSize.height),
-                              Int(finalPlan.displaySize.width), Int(finalPlan.displaySize.height),
-                              finalPlan.fps, finalPlan.sourceFps,
-                              Double(bitrate) / 1_000_000, keeps.count, spec.summary))
+
+        BKLog.shared.i(String(format:
+            "导出参数 写入 %d×%d 显示 %d×%d %.0ffps（源 %.0f） %.1fMbps %d块%d段 | %@",
+            Int(finalPlan.writeSize.width), Int(finalPlan.writeSize.height),
+            Int(finalPlan.displaySize.width), Int(finalPlan.displaySize.height),
+            finalPlan.fps, finalPlan.sourceFps,
+            Double(bitrate) / 1_000_000, sources.count, built.table.count, spec.summary))
 
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
 
         // 视频必须重编码：MP4 容器不接受原始比特流直通（nil 会被 canAdd 拒掉）
-        // ✅ v1.4.7 写反了判断，v1.4.8 删掉。
         //
-        // v1.4.7 我以为「写入 1920×1080 + transform 旋转 90°」是矛盾，
-        // 于是「安全降级」成不套 transform —— **判断反了**。
-        //
-        // 竖拍素材的**正确**组合恰恰就是：
+        // 竖拍素材的正确组合恰恰是：
         //     存储尺寸 1920×1080（横，传感器原生）+ transform 旋转 90° → 显示 1080×1920（竖）
-        // 这就是项目铁律「**存的横着，看的竖着，transform 一次都不能少**」。
-        //
-        // 真机日志（21:11:56）证明：加了那个「防御」之后照样崩 ——
-        // 因为不套 transform 反而让像素与朝向真的对不上了。
-        // **防御不能建立在错误的判断上**，宁可不做。
+        // 这就是项目铁律「存的横着，看的竖着，transform 一次都不能少」。
         let appliedTransform = compTransform
 
         let videoSettings: [String: Any] = [
@@ -351,42 +303,23 @@ enum BKExporter {
             AVVideoHeightKey: Int(finalPlan.writeSize.height),
             AVVideoCompressionPropertiesKey: [
                 AVVideoAverageBitRateKey: bitrate,
-                // ⚠️⚠️ **v1.4.8 崩溃真凶之二**（21:11:56 真机日志）
-                //
-                // 成功的两次（18:29 / 18:47）：源 30fps → outFps **30**（整数）
-                // 崩溃的这次：源 59.95fps，规格选 60 → outFps = **59.95**（非整数）
-                //
-                // `AVVideoExpectedSourceFrameRateKey` 传非整数 + `AVVideoAllowFrameReorderingKey: true`
-                // （开 B 帧）这个组合，H.264 编码器在 iOS 26.x 上**直接崩进程**。
-                //
-                // 正解：**一律传整数**。iPhone 拍摄常见 59.94/59.96（29.97 的倍数），
-                // 归到最近的整数档（60）即可 —— 差 0.05fps 肉眼与播放器都无感。
+                // ⚠️ 帧率一律传**整数**：非整数（59.95）+ 开 B 帧的组合
+                //    在 iOS 26.x 上会直接崩进程（v1.4.8 真机定位）。
+                //    iPhone 常见的 59.94 归到 60，差 0.05fps 无感。
                 AVVideoMaxKeyFrameIntervalKey: max(1, Int(round(finalPlan.fps))),
                 AVVideoExpectedSourceFrameRateKey: max(1, Int(round(finalPlan.fps))),
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-                // B 帧重排序：v1.2.x 曾因它导致「画面滞后于声音」，
-                // 但那是实时模式的问题；离线精确模式下开着是安全的。
                 AVVideoAllowFrameReorderingKey: true
             ] as [String: Any]
         ]
 
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
 
-        // ⚠️ v1.4.8 加诊断：崩溃都发生在这几行之后（初始化/加入/启动）。
-        // 把关键参数全打出来，下次万一还崩，看日志最后一条就知道卡在哪一步。
-        BKLog.shared.i(String(format:
-            "导出诊断：transform=(%.2f,%.2f,%.2f,%.2f,%.2f,%.2f) 写入 %dx%d 帧率 %.3f→%d 码率 %d bps",
-            compTransform.a, compTransform.b, compTransform.c,
-            compTransform.d, compTransform.tx, compTransform.ty,
-            Int(finalPlan.writeSize.width), Int(finalPlan.writeSize.height),
-            finalPlan.fps, max(1, Int(round(finalPlan.fps))), bitrate))
         // 铁律②：transform 必须显式赋值，漏了成品必躺下。
-        // v1.3.4：取 **composition 的**轨道的 transform（拼接时已把源素材的抄过去）。
-        // 分辨率怎么改，transform 都是源素材那一个 —— 定稿 4.9.2
+        // 用 composition 的轨道的 transform（拼接时已把源素材的抄过去）。
         videoInput.transform = appliedTransform
-        // expectsMediaDataInRealTime = false：v1.2.11~1.3.2 这里设过 true，
-        // 实时模式会让 AVFoundation 自行重排时间戳追实时，两轨策略不一致 → 画面滞后于声音。
-        // 现在 composition 已经保证了连续性，不需要任何"追实时"的补救。
+        // expectsMediaDataInRealTime = false：实时模式会让 AVFoundation 自行重排
+        // 时间戳追实时，两轨策略不一致 → 画面滞后于声音。composition 已保证连续性。
         videoInput.expectsMediaDataInRealTime = false
         guard writer.canAdd(videoInput) else {
             throw BKExportError.writerSetupFailed("视频轨无法加入导出器")
@@ -416,19 +349,8 @@ enum BKExporter {
         }
         writer.startSession(atSourceTime: .zero)
 
-        // ============================================================
-        // 【v1.3.4】搬运：整条 composition 一次读完，不分段、不算偏移
-        //
-        // 关键认知：**PTS 已经是最终值了**。composition 里系统已经把保留段
-        // 首尾相接排好、音视频两轨对齐，我们读出来直接 append 即可。
-        //
-        // 之前那套「每段新建 reader + 手算 offset」的做法必须整段拿掉 ——
-        // 它连错三次（累积错位 / 轨道空洞 / 锚点阈值猜错），
-        // 而那些「不越界检查」的阈值全是猜的：视频有 B 帧、duration 不等于帧长、
-        // 音频块长不等于 1024/48000。真机「越往后面越大」就是这么来的。
-        // ============================================================
-        let planned = built.total
-        var written: Double = 0
+        // 整条 composition 一次读完，不分段、不算偏移：PTS 已是最终值
+        let total = built.total
         let reader = try AVAssetReader(asset: compAsset)
 
         // 从 composition 读出「原始帧」交给 writer 压缩：
@@ -460,11 +382,6 @@ enum BKExporter {
             }
         }
 
-        guard writer.startWriting() else {
-            throw BKExportError.writeFailed(writer.error?.localizedDescription ?? "未知原因")
-        }
-        writer.startSession(atSourceTime: .zero)
-
         guard reader.startReading() else {
             throw BKExportError.readFailed(reader.error?.localizedDescription ?? "未知原因")
         }
@@ -480,7 +397,7 @@ enum BKExporter {
                              reader: reader,
                              planFps: finalPlan.fps,
                              minFrameInterval: finalPlan.minFrameInterval,
-                             total: built.total,
+                             total: total,
                              progress: { frac in
                                  DispatchQueue.main.async { progress(1, 1, frac) }
                              })
@@ -488,22 +405,9 @@ enum BKExporter {
         videoInput.markAsFinished()
         audioInput?.markAsFinished()
 
-        // finishWriting 是异步收尾，用信号量等它落盘完成
-        //
-        // ⚠️⚠️ **v1.4.3 闪退的元凶**（2026-10-04 19:50 皓哥真机报障）
-        // 原来这里是裸 `sem.wait()` —— **无限等待**。而
-        // `AVAssetWriter.finishWriting` 的 completion **在 writer 已 failed 时不保证触发**，
-        // 于是信号量永远等不到 → 主线程卡死 → iOS 判定「无响应」直接杀进程
-        // → 用户看到的就是「导出时 App 闪退」。
-        //
-        // 为什么会走到 failed：composition 拼接后若某段 `insertTimeRange` 失败
-        // （越界/时长为负），表里就少一段而音频轨照样插了，两轨长度不一致，
-        // writer 在收尾阶段报错 —— 这时 completion 就不来了。
-        //
-        // 正解：**带超时的等待**。超时就报真实错误（带上 writer 的 error），不无限卡。
+        // finishWriting 异步收尾，**带超时**等它落盘（v1.4.3：裸 wait 会卡死闪退）
         let sem = DispatchSemaphore(value: 0)
         writer.finishWriting { sem.signal() }
-        // 素材越长落盘越慢，给 120 秒。实测正常导出 30 秒内完成
         let waited = sem.wait(timeout: .now() + 120)
         if waited == .timedOut {
             var extra = ""
@@ -516,23 +420,62 @@ enum BKExporter {
         }
 
         // 铁律③：导出记录永久带上显示尺寸
-        BKLog.shared.i(String(format: "导出完成 %@ | %d 段 | 写入 %d×%d 显示 %d×%d %.0ffps | 源 %.1fs → 成品 %.1fs",
-                              fileName, keeps.count,
-                              Int(finalPlan.writeSize.width), Int(finalPlan.writeSize.height),
-                              Int(finalPlan.displaySize.width), Int(finalPlan.displaySize.height), finalPlan.fps,
-                              project.duration, project.outputDuration))
+        BKLog.shared.i(String(format:
+            "导出完成 %@ | %d 块 %d 段 | 写入 %d×%d 显示 %d×%d %.0ffps | 源 %.1fs → 成品 %.1fs",
+            fileName, sources.count, built.table.count,
+            Int(finalPlan.writeSize.width), Int(finalPlan.writeSize.height),
+            Int(finalPlan.displaySize.width), Int(finalPlan.displaySize.height), finalPlan.fps,
+            srcTotal, total))
         return url
     }
 
     /// 输出码率：跟随源素材（重编码不额外丢画质），但夹到合理区间 ——
-    /// 有些 4K/高码率素材的 estimatedDataRate 会让成品体积失控
-    private static func videoBitrate(for track: AVAssetTrack) -> Int {
-        let raw = Int(track.estimatedDataRate)
+    /// 有些 4K/高码率素材的 estimatedDataRate 会让成品体积失控。
+    /// v2 主轨可能由多个素材拼成，取**所有块里最高的**那个 ——
+    /// 按低的走会把高码率那几块压糊，按高的走只是体积大一点
+    private static func videoBitrate(for sources: [BKCompositionBuilder.Part]) -> Int {
+        var raw = 0
+        for p in sources {
+            if let t = p.asset.tracks(withMediaType: .video).first {
+                raw = max(raw, Int(t.estimatedDataRate))
+            }
+        }
         switch raw {
         case 0 ..< 4_000_000:    return 8_000_000    // 估不出来就给 1080p 的常用值
         case 4_000_000 ..< 30_000_000: return raw
         default:                 return 30_000_000
         }
+    }
+
+    /// v2 导出命名：`BK_<草稿名>.mp4`，重复导出加 `_k`（定稿 4.8）。
+    /// 次数靠**扫 Exports 目录**推：目录里已有几个同名成品，这次就是第几次。
+    /// 不给 BKDraft 加 exportCount 字段 —— 加非可选字段会让已存的老 v2 草稿解码直接失败，
+    /// 加可选字段又要到处判 nil，扫目录零迁移成本且和 v1 的观感一致
+    static func nextExportFileName(base: String) -> String {
+        var clean = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        if clean.isEmpty { clean = "clip" }
+        // 文件名非法字符换掉，超长截断（iOS 文件名上限 255 字节，留足余量）
+        let bad = CharacterSet(charactersIn: "/\\:?%*|\"<>")
+        clean = clean.components(separatedBy: bad).joined(separator: "-")
+        if clean.count > 40 { clean = String(clean.prefix(40)) }
+
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Exports", isDirectory: true)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+
+        let prefix = "BK_" + clean
+        var count = 0
+        for n in names where n.hasSuffix(".mp4") {
+            let stem = (n as NSString).deletingPathExtension
+            if stem == prefix {
+                count += 1
+            } else if stem.hasPrefix(prefix + "_"),
+                      let k = Int(stem.dropFirst(prefix.count + 1)), k > 0 {
+                count += 1
+            }
+        }
+        if count <= 0 { return prefix + ".mp4" }
+        return "\(prefix)_\(count).mp4"
     }
 
     // MARK: - 从 composition 搬运采样（v1.3.4）

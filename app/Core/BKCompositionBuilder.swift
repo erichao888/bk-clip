@@ -33,8 +33,10 @@ import AVFoundation
 /// 拼好的成品：composition 本身 + 「成品时间 ↔ 原片时间」对照表
 struct BKCompositionBuild {
     let comp: AVMutableComposition
-    /// (成品起点, 原片起点, 时长)
-    let table: [(out: Double, src: Double, dur: Double)]
+    /// (成品起点 out, 源起点 src, 成品时长 dur, 倍速 speed)
+    /// ⚠️ dur 是**成品时长**（已除 speed）；对应源时长 = dur * speed。
+    /// 变速时源时间以 speed 倍速推进，所以反查源时间必须带上 speed
+    let table: [(out: Double, src: Double, dur: Double, speed: Double)]
     var total: Double { table.last.map { $0.out + $0.dur } ?? 0 }
 }
 
@@ -88,7 +90,7 @@ enum BKCompositionBuilder {
 
         var cursor = CMTime.zero
         var audioCursor = CMTime.zero
-        var table: [(out: Double, src: Double, dur: Double)] = []
+        var table: [(out: Double, src: Double, dur: Double, speed: Double)] = []
         var skipped = 0
 
         for (a0, b0) in keeps {
@@ -130,7 +132,7 @@ enum BKCompositionBuilder {
                 continue
             }
 
-            table.append((out: cursor.seconds, src: a, dur: dur.seconds))
+            table.append((out: cursor.seconds, src: a, dur: dur.seconds, speed: 1.0))
             cursor = cursor + dur
             audioCursor = audioCursor + dur
         }
@@ -139,6 +141,137 @@ enum BKCompositionBuilder {
             BKLog.shared.w("拼接跳过 \(skipped)/\(keeps.count) 段（音视频成对，不留半个）")
         }
 
+        return BKCompositionBuild(comp: comp, table: table)
+    }
+
+    // MARK: - 多素材主轨拼接（v2）
+
+    /// 主轨上的一个块 = 一个素材 + 它的绿区（源时间）+ 倍速
+    struct Part {
+        let asset: AVAsset
+        /// 展示名（日志/失败报告用，不参与拼接）
+        let name: String
+        let keeps: [(Double, Double)]
+        let speed: Double
+    }
+
+    /// 把整条主轨（N 块、可能来自不同素材）拼成一条 composition。
+    ///
+    /// 【和 make 的区别】make 是「一个素材里的多段」；makeMain 是「多素材多段」。
+    /// 拼法完全同一套：**先音频后视频、成对插入**（v1.4.3 教训），
+    /// 每段插完把 [cursor, cursor+源长) 缩放到 源长/speed —— 这就是逐块变速，
+    /// 不需要算任何 PTS（铁律：out == trackT，先折叠再变速）。
+    ///
+    /// 【朝向】composition 一条轨只能挂一个 transform，取**第一块有视频轨的**素材的。
+    /// 皓哥的素材全是同一台手机拍的，实践里一致；混入不同朝向时按第一块出并记警告。
+    ///
+    /// 【音频音高】铁律：变速**保持音高**。音频轨挂 `.spectral` 算法（变调不变速的反义词：
+    /// 变速不变调），由 scaleTimeRange 触发重采样。
+    static func makeMain(_ parts: [Part]) -> BKCompositionBuild? {
+        guard !parts.isEmpty else { return nil }
+
+        guard let anchor = parts.first(where: {
+            $0.asset.tracks(withMediaType: .video).first != nil
+        }), let srcVideo0 = anchor.asset.tracks(withMediaType: .video).first else {
+            return nil
+        }
+
+        let comp = AVMutableComposition()
+        guard let dstVideo = comp.addMutableTrack(withMediaType: .video,
+                                                  preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            return nil
+        }
+        dstVideo.preferredTransform = srcVideo0.preferredTransform
+
+        var dstAudio: AVMutableCompositionTrack?
+        if let da = comp.addMutableTrack(withMediaType: .audio,
+                                         preferredTrackID: kCMPersistentTrackID_Invalid) {
+            da.audioTimePitchAlgorithm = .spectral     // 变速保持音高（铁律）
+            dstAudio = da
+        }
+
+        var cursor = CMTime.zero
+        var table: [(out: Double, src: Double, dur: Double, speed: Double)] = []
+        var skipped = 0
+        var mixedOrientationWarned = false
+
+        for part in parts {
+            guard let sv = part.asset.tracks(withMediaType: .video).first else {
+                BKLog.shared.w("主轨拼接：块「\(part.name)」取不到视频轨，整块跳过")
+                skipped += 1
+                continue
+            }
+            if sv.preferredTransform != srcVideo0.preferredTransform && !mixedOrientationWarned {
+                mixedOrientationWarned = true
+                BKLog.shared.w("主轨里混了不同朝向的素材，成品统一按第一块的朝向输出")
+            }
+            let sa = part.asset.tracks(withMediaType: .audio).first
+            let assetDur = CMTimeGetSeconds(part.asset.duration)
+            // ★ speed 夹回 [0.1, 4]（规格补充B 拍板的档位边界），非法值按 1 走
+            let sp = (part.speed > 0.1 - 1e-9 && part.speed < 4.0 + 1e-9) ? part.speed : 1.0
+
+            for (a0, b0) in part.keeps {
+                // ① 按素材真实时长夹一遍 —— 越界段两轨都插不进去，先夹再插保证成对
+                let a = max(0, min(a0, assetDur))
+                let b = max(a, min(b0, assetDur))
+                let len = b - a
+                guard len > 0.01 else { skipped += 1; continue }
+                let range = CMTimeRange(start: CMTime(seconds: a, preferredTimescale: 600),
+                                        duration: CMTime(seconds: len, preferredTimescale: 600))
+
+                // ② 音频先试（更易失败）；没有音轨的素材这一步自然跳过（成对 = 两轨都没有）
+                var audioInserted = false
+                if let da = dstAudio, let sa = sa {
+                    do {
+                        try da.insertTimeRange(range, of: sa, at: cursor)
+                        audioInserted = true
+                    } catch {
+                        let m = "「\(part.name)」[\(BKDiag.s(a))→\(BKDiag.s(b))] 拼音频失败：\(error.localizedDescription)"
+                        BKLog.shared.w(m)
+                    }
+                }
+                if dstAudio != nil && sa != nil && !audioInserted {
+                    // 有音轨却插失败 → 整段跳过（两轨必须成对，不许半个）
+                    skipped += 1
+                    continue
+                }
+
+                // ③ 视频后试
+                do {
+                    try dstVideo.insertTimeRange(range, of: sv, at: cursor)
+                } catch {
+                    let m = "「\(part.name)」[\(BKDiag.s(a))→\(BKDiag.s(b))] 拼视频失败：\(error.localizedDescription)"
+                    BKLog.shared.w(m)
+                    skipped += 1
+                    cursor = cursor + range.duration
+                    continue
+                }
+
+                // ④ 逐块变速：把刚插好的 [cursor, cursor+源长) 缩放到 源长/speed
+                let outLen = len / sp
+                if abs(sp - 1.0) > 1e-9 {
+                    let target = CMTime(seconds: outLen, preferredTimescale: 600)
+                    dstVideo.scaleTimeRange(range, toDuration: target)
+                    // 音频只在「这段真有素材」时缩。没素材的空区间缩放会越界炸
+                    // （ObjC 异常 Swift 接不住），且 speed≠1 目前没有 UI 入口，
+                    // 真出现「无声块 + 变速」组合时按视频走、记警告
+                    if audioInserted {
+                        dstAudio?.scaleTimeRange(range, toDuration: target)
+                    } else if let da = dstAudio,
+                              CMTimeGetSeconds(da.timeRange.duration) < cursor.seconds + len {
+                        BKLog.shared.w("块「\(part.name)」变速时音频轨没有对齐素材（无声块），后续音频位置可能偏移")
+                    }
+                }
+
+                table.append((out: cursor.seconds, src: a, dur: outLen, speed: sp))
+                cursor = cursor + CMTime(seconds: outLen, preferredTimescale: 600)
+            }
+        }
+
+        guard !table.isEmpty else { return nil }
+        if skipped > 0 {
+            BKLog.shared.w("主轨拼接跳过 \(skipped) 段（音视频成对，不留半个）")
+        }
         return BKCompositionBuild(comp: comp, table: table)
     }
 
@@ -168,15 +301,15 @@ enum BKCompositionBuilder {
         return mix
     }
 
-    /// 成品时间 → 原片时间
+    /// 成品时间 → 原片时间。变速段里源时间以 speed 倍速推进
     static func sourceTime(_ build: BKCompositionBuild, outputTime: Double) -> Double {
         for seg in build.table {
             if outputTime >= seg.out && outputTime <= seg.out + seg.dur {
-                return seg.src + (outputTime - seg.out)
+                return seg.src + (outputTime - seg.out) * seg.speed
             }
         }
         if let first = build.table.first, outputTime < first.out { return first.src }
-        if let last = build.table.last { return last.src + last.dur }
+        if let last = build.table.last { return last.src + last.dur * last.speed }
         return 0
     }
 }

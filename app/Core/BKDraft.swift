@@ -14,9 +14,9 @@
 //  需要素材名（assetName）这类 UI 层信息时，由外层 UI 用 BKVideoLibrary 取，
 //  本模型只存 localIdentifier。
 //
-//  【Batch 1 临时状态】编辑页（BKEditorViewController）还没迁 v2，仍吃 v1 BKDraftBatch。
-//  起始页点开草稿时由 bridgeToV1 把本模型转成 v1 喂给它（见 BKRootViewController）。
-//  Batch 2 重写编辑页为 v2 后，桥接删除、全工程统一走本模型。
+//  【Batch 2 已完成】编辑页（波剪子页）、主编辑页、导出管线全部改吃本模型。
+//  v2→v1 桥接（bridgeToV1）已删。v1 的 BKModels.swift / Drafts/ 还没删 ——
+//  那是最后的收尾动作，要等老 v1 草稿的去留（Q7）拍板。
 //
 
 import Foundation

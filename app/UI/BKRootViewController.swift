@@ -15,8 +15,8 @@
 //  （定稿 3.1）。判据是 everEdited（曾经动过刀），只置不清。
 //
 //  【Batch 2 已迁 v2】编辑页（BKEditorViewController）现直吃 v2 BKDraft + blockIndex，
-//  点开/导入草稿直接 push，改动落 v2 草稿文件。bridgeToV1 仅剩网格「直接导出」用
-//  （confirmDirectExport，属 2C 导出管线），其余入口不再走桥接。
+//  点开/导入草稿直接 push，改动落 v2 草稿文件。导出也走 v2 主轨
+//  （BKExporter.export(title:sources:)），bridgeToV1 已删。
 //
 
 import UIKit
@@ -411,109 +411,92 @@ extension BKRootViewController: UICollectionViewDataSource, UICollectionViewDele
     }
 
     private func confirmDirectExport(_ draft: BKDraft) {
-        // ★ TEMP 桥接：直接导出走 v1 批量导出逻辑（它也吃 BKDraftBatch）
-        let batch = bridgeToV1(draft)
-        let edited = batch.editedItems
-        guard !edited.isEmpty else {
-            showAlert(title: "这批还没有刀口", message: "先点进去切几刀再导出。")
+        guard !draft.track.blocks.isEmpty else {
+            showAlert(title: "空草稿", message: "这条草稿没有内容可导出。")
             return
         }
+        let msg = String(format: "整条主轨 %d 段 · 成品 %02d:%02d，按各块源规格存入相册。",
+                         draft.track.blocks.count,
+                         Int(draft.track.total) / 60, Int(draft.track.total) % 60)
         let alert = UIAlertController(
-            title: "导出这一批？",
-            message: "\(edited.count) 条动过刀的素材会逐个导出，全部存入相册（默认同源规格）。",
+            title: "导出这条草稿？",
+            message: msg,
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "导出", style: .default) { [weak self] _ in
-            self?.runBatchExport(batch: batch, spec: BKConfig.ExportSpec())
+            self?.runDirectExport(draft: draft, spec: BKConfig.ExportSpec())
         })
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         present(alert, animated: true)
     }
 }
 
-// MARK: - 批量导出（起始页「直接导出」用，v1 逻辑复用）
+// MARK: - 直接导出（起始页网格菜单用）
 
 extension BKRootViewController {
 
-    private func runBatchExport(batch: BKDraftBatch, spec: BKConfig.ExportSpec) {
-        let edited = batch.editedItems
-        guard !edited.isEmpty else { return }
-        var working = batch
+    /// v2：一条草稿 = 一个成品文件。逐块加载素材（顺序链）→ 一次导出 → 存相册。
+    /// v1 的「批量多条各自导出」没了 —— 草稿就是片子，不存在一批多条的概念
+    private func runDirectExport(draft: BKDraft, spec: BKConfig.ExportSpec) {
+        let blocks = draft.track.blocks
+        guard !blocks.isEmpty else { return }
 
+        let title = draft.displayTitle(firstName: blocks.first?.assetName ?? "")
         let hud = UIAlertController(title: "正在导出", message: "准备中…", preferredStyle: .alert)
         present(hud, animated: true)
 
-        var ok = 0
-        var failed: [String] = []
-        var updated: [BKProject] = []
+        var parts: [BKCompositionBuilder.Part] = []
 
-        func step(_ i: Int) {
-            if i >= edited.count {
-                for u in updated {
-                    if let k = working.items.firstIndex(where: { $0.assetLocalID == u.assetLocalID }) {
-                        working.items[k] = u
-                    }
-                }
-                working.lastEditedAt = Date()
-                BKDraftStore.shared.scheduleSave(working)
-                BKDraftStore.shared.flushIfNeeded()
-
-                hud.dismiss(animated: true) { [weak self] in
-                    if failed.isEmpty {
-                        self?.showAlert(title: "导出完成", message: "\(ok) 条已存入相册。")
-                    } else {
-                        self?.showAlert(title: "\(ok) 条成功，\(failed.count) 条失败",
-                                        message: "失败的：\n" + failed.joined(separator: "\n"))
-                    }
-                    self?.reload()
-                }
+        func load(_ i: Int) {
+            if i >= blocks.count {
+                BKExporter.export(title: title, sources: parts, spec: spec,
+                                  progress: { _, _, frac in
+                                      hud.message = String(format: "%d%%", Int(frac * 100))
+                                  },
+                                  completion: { [weak self] result in
+                                      guard let self = self else { return }
+                                      switch result {
+                                      case .failure(let err):
+                                          hud.dismiss(animated: true) {
+                                              self.showAlert(title: "导出失败",
+                                                             message: err.localizedDescription)
+                                          }
+                                      case .success(let url):
+                                          BKRootViewController.saveToPhotos(url: url,
+                                                                            fileName: url.lastPathComponent) { ok in
+                                              hud.dismiss(animated: true) {
+                                                  if ok {
+                                                      self.showAlert(title: "导出完成",
+                                                                     message: "已存入相册。")
+                                                  } else {
+                                                      self.showAlert(title: "导出成功",
+                                                                     message: "但存相册失败，成品留在文件 App 的 Exports 目录里。")
+                                                  }
+                                              }
+                                          }
+                                      }
+                                  })
                 return
             }
-
-            let item = edited[i]
-            hud.message = "正在导出 \(i + 1)/\(edited.count)\n\(item.assetName)"
-            guard let idx = working.items.firstIndex(where: { $0.assetLocalID == item.assetLocalID }) else {
-                step(i + 1)
-                return
-            }
-
-            BKVideoLibrary.loadAVAsset(localID: item.assetLocalID) { asset in
+            let b = blocks[i]
+            hud.message = "读取素材 \(i + 1)/\(blocks.count)…"
+            BKVideoLibrary.loadAVAsset(localID: b.assetLocalID) { [weak self] asset in
+                guard let self = self else { return }
                 guard let asset = asset else {
-                    failed.append(item.assetName)
-                    step(i + 1)
+                    hud.dismiss(animated: true) {
+                        self.showAlert(title: "导出中止",
+                                       message: "「\(b.assetName)」读不到，可能已从相册删除。")
+                    }
                     return
                 }
-                BKExporter.export(project: working.items[idx], asset: asset, spec: spec,
-                                  progress: { _, _, _ in },
-                                  completion: { result in
-                    switch result {
-                    case .failure(let err):
-                        BKLog.shared.e("批量导出失败 \(item.assetName)：\(err.localizedDescription)")
-                        failed.append(item.assetName)
-                        step(i + 1)
-                    case .success(let url):
-                        let name = working.items[idx].nextExportFileName
-                        BKRootViewController.saveToPhotos(url: url, fileName: name) { success in
-                            if success {
-                                ok += 1
-                                var u = working.items[idx]
-                                let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
-                                let rec = BKExportRecord(id: UUID(), date: Date(),
-                                                         fileSize: (attr?[.size] as? Int64) ?? 0,
-                                                         duration: u.outputDuration,
-                                                         fileName: name,
-                                                         elapsedSec: 0)
-                                u.exportHistory.append(rec)
-                                updated.append(u)
-                            } else {
-                                failed.append(item.assetName)
-                            }
-                            step(i + 1)
-                        }
-                    }
-                })
+                parts.append(BKCompositionBuilder.Part(
+                    asset: asset,
+                    name: b.assetName,
+                    keeps: b.keptRanges.map { ($0.start, $0.end) },
+                    speed: b.speed))
+                load(i + 1)
             }
         }
-        step(0)
+        load(0)
     }
 
     /// 存相册。必须用 PHAssetCreationRequest 指定 originalFilename，保住 BK_ 前缀
@@ -549,52 +532,3 @@ extension BKRootViewController {
     }
 }
 
-// MARK: - v2 → v1 桥接（TEMP，Batch 2 删除）
-//
-// 编辑页（BKEditorViewController）还没迁 v2，依旧吃 v1 BKDraftBatch / BKProject。
-// 这里把 v2 的 BKTrackModel（blocks: [BKClipBlock]）转成 v1 批，喂给编辑页。
-// ⚠️ 编辑页的改动会落在 v1 草稿文件（Drafts/），v2 草稿文件（Drafts/v2/）保持创建时状态。
-//   这是 Batch 1「外层三页先 v2、编辑器走桥接」的已知临时状态，Batch 2 统一后消除。
-
-private func bridgeBlockToV1(_ b: BKClipBlock) -> BKProject {
-    let dur = b.srcDuration
-    // 未波剪：整段保留（单段 keptRanges）→ v1 第一阶段（空 keptRanges），
-    // 编辑页打开会跑自动检测，符合 v1 习惯
-    let isUncut = b.keptRanges.count == 1
-        && abs(b.keptRanges[0].start) < 1e-6
-        && abs(b.keptRanges[0].end - dur) < 1e-6
-    let mid = (BKConfig.Detect.clampLow + BKConfig.Detect.clampHigh) / 2
-    let now = Date()
-    var proj = BKProject(id: b.id,
-                         assetLocalID: b.assetLocalID,
-                         assetName: BKVideoLibrary.assetName(localID: b.assetLocalID),
-                         duration: dur,
-                         displayWidth: 0,
-                         displayHeight: 0,
-                         sourceRotationDegrees: 0,
-                         thresholdDb: mid,
-                         autoThresholdDb: nil,
-                         sourceApplicable: true,
-                         marks: [BKMark(start: 0, end: dur, kind: .keep)],
-                         splits: [],
-                         playheadTime: 0,
-                         createdAt: now,
-                         updatedAt: now,
-                         exportHistory: [])
-    // 波剪过的块 → 直接给 v1 第二阶段（绿区），编辑页能接着调长短
-    if !isUncut {
-        proj.keptRanges = b.keptRanges.map { Segment(start: $0.start, end: $0.end) }
-    }
-    return proj
-}
-
-func bridgeToV1(_ draft: BKDraft) -> BKDraftBatch {
-    BKDraftBatch(id: draft.id,
-                 title: draft.title,
-                 items: draft.track.blocks.map(bridgeBlockToV1),
-                 lastAssetId: draft.coverAssetId(),
-                 createdAt: draft.createdAt,
-                 lastEditedAt: draft.lastEditedAt,
-                 everEdited: draft.everEdited,
-                 deletedAt: draft.deletedAt)
-}
