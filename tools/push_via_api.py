@@ -156,11 +156,11 @@ def main():
                 files.append((path, parts[0]))
     else:
         files = []
-        for path in sh("git", "diff", "--name-only", base, "HEAD").splitlines():
+        for path in sh("git", "-c", "core.quotePath=false", "diff", "--name-only", base, "HEAD").splitlines():
             path = path.strip()
             if not path:
                 continue
-            mode = sh("git", "ls-files", "-s", "--", path).split()[0] if sh("git", "ls-files", "-s", "--", path) else "100644"
+            mode = sh("git", "-c", "core.quotePath=false", "ls-files", "-s", "--", path).split()[0] if sh("git", "-c", "core.quotePath=false", "ls-files", "-s", "--", path) else "100644"
             files.append((path, mode))
 
     print("需上传 %d 个文件（%s）" % (len(files), "全量" if full else "增量"))

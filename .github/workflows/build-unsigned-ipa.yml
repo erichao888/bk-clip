@@ -13,6 +13,8 @@ on:
   # 手动触发是主要用法：Actions 页 → 选这个工作流 → Run workflow
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
