@@ -165,12 +165,18 @@ jobs:
         # 可以在下一步或者打包前再翻。管道 + pipefail 保证真实退出码不被吞
         run: |
           set -o pipefail
+          # ★ 把本次构建的 commit 烙进 Info.plist（project.yml 的 BKCommitSHA: $(GIT_SHA)）。
+          #   真机日志头会带上它 —— 排障时先确认「这是哪个提交跑出来的」，靠的就是这一行。
+          #   checkout 默认只拉单个提交（浅克隆），rev-parse 仍能拿到完整 SHA。
+          SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+          echo "GIT_SHA = $SHA"
           xcodebuild \
             -project BKClip.xcodeproj \
             -scheme BKClip \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath build \
+            GIT_SHA="$SHA" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \

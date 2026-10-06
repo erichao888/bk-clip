@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 720" width="680" height="720" role="img">
+  <title>波剪页（波形剪辑页）布局示意图</title>
+  <desc>每个片段专属的气口标记子页面：顶部栏 / 状态行 / 时间刻度尺 / 主波形轨道 / 概览条 / 播放控制 / 底部工具栏，自上而下分区，浅色系，SF 线图标。</desc>
+  <g transform="translate(125,50)">
+
+  <rect x="2" y="2" width="426" height="616" rx="28" fill="#FFFFFF" stroke="#C7C7CC" stroke-width="1"/>
+
+  <text x="10" y="27" font-family="-apple-system,sans-serif" font-size="11" fill="#8E8E93">A</text>
+  <rect x="2" y="2" width="426" height="44" rx="22" fill="#F2F2F7"/>
+  <path d="M22,14 L14,22 L22,30" fill="none" stroke="#8E8E93" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="215" y="27" font-family="-apple-system,sans-serif" font-size="13" fill="#1C1C1E" text-anchor="middle">片段 2/5 · 00:48</text>
+  <circle cx="400" cy="24" r="11" fill="none" stroke="#2F6DF4" stroke-width="1.5"/>
+  <path d="M396,30 L404,22 M400,30 a3,3 0 1 0 0.1,0" fill="none" stroke="#2F6DF4" stroke-width="1.5" stroke-linecap="round"/>
+
+  <text x="10" y="57" font-family="-apple-system,sans-serif" font-size="11" fill="#8E8E93">B</text>
+  <text x="215" y="58" font-family="-apple-system,sans-serif" font-size="11" fill="#8E8E93" text-anchor="middle">已识别 3 段气口，保留 5 段</text>
+
+  <text x="10" y="72" font-family="-apple-system,sans-serif" font-size="11" fill="#8E8E93">C</text>
+  <line x1="16" y1="75" x2="414" y2="75" stroke="#C7C7CC" stroke-width="0.5"/>
+  <g stroke="#C7C7CC" stroke-width="0.5">
+    <line x1="16" y1="75" x2="16" y2="86"/><line x1="98" y1="75" x2="98" y2="86"/>
+    <line x1="180" y1="75" x2="180" y2="86"/><line x1="262" y1="75" x2="262" y2="86"/>
+    <line x1="344" y1="75" x2="344" y2="86"/><line x1="414" y1="75" x2="414" y2="86"/>
+  </g>
+  <g font-family="-apple-system,sans-serif" font-size="11" fill="#8E8E93" text-anchor="middle">
+    <text x="16" y="83">00:00</text><text x="98" y="83">00:05</text><text x="180" y="83">00:10</text>
+    <text x="262" y="83">00:15</text><text x="344" y="83">00:20</text>
+  </g>
+
+  <text x="10" y="120" font-family="-apple-system,sans-serif" font-size="11" fill="#8E8E93">D</text>
+  <rect x="16" y="90" width="398" height="380" fill="#FBFBFD"/>
+  <line x1="16" y1="280" x2="414" y2="280" stroke="#E5E5EA" stroke-width="0.5"/>
+  <polyline points="20,280 30,258 40,302 50,243 60,310 70,228 80,315 90,268 100,318 110,243 120,303 130,223 140,308 150,255 160,293 170,228 180,318 190,242 200,308 210,267 220,298 230,220 240,313 250,252 260,308 270,237 280,303 290,225 300,313 310,255 320,293 330,247 340,308 350,230 360,318 370,258 380,302 390,242 400,280 410,280" fill="none" stroke="#24430F" stroke-width="1.5" stroke-linejoin="round"/>
+  <rect x="90" y="90" width="60" height="380" fill="#D6707A" opacity="0.5"/>
+  <rect x="250" y="90" width="80" height="380" fill="#D6707A" opacity="0.5"/>
+  <g stroke="#D6707A" stroke-width="1.5">
+    <line x1="90" y1="90" x2="90" y2="470"/><line x1="150" y1="90" x2="150" y2="470"/>
+    <line x1="250" y1="90" x2="250" y2="470"/><line x1="330" y1="90" x2="330" y2="470"/>
+  </g>
+  <rect x="84" y="86" width="12" height="14" rx="3" fill="#FFFFFF" stroke="#2F6DF4" stroke-width="1.5"/>
+  <rect x="144" y="86" width="12" height="14" rx="3" fill="#FFFFFF" stroke="#2F6DF4" stroke-width="1.5"/>
+  <rect x="244" y="86" width="12" height="14" rx="3" fill="#FFFFFF" stroke="#2F6DF4" stroke-width="1.5"/>
+  <rect x="324" y="86" width="12" height="14" rx="3" fill="#FFFFFF" stroke="#2F6DF4" stroke-width="1.5"/>
+  <path d="M215,64 L210,74 L220,74 Z" fill="#1C1C1E"/>
+  <line x1="215" y1="74" x2="215" y2="470" stroke="#1C1C1E" stroke-width="1.5"/>
+
+  <text x="10" y="488" font-family="-apple-system,sans-serif" font-size="11" fill="#8E8E93">E</text>
+  <rect x="16" y="470" width="398" height="30" fill="#F2F2F7"/>
+  <polyline points="16,485 36,480 56,490 76,478 96,492 116,481 136,491 156,479 176,493 196,482 216,490 236,478 256,492 276,481 296,491 316,479 336,493 356,482 376,490 396,480 414,485" fill="none" stroke="#4C5049" stroke-width="1"/>
+  <rect x="90" y="470" width="60" height="30" fill="#D6707A" opacity="0.5"/>
+  <rect x="250" y="470" width="80" height="30" fill="#D6707A" opacity="0.5"/>
+  <rect x="90" y="470" width="240" height="30" fill="none" stroke="#FF9500" stroke-width="2"/>
+
+  <text x="10" y="528" font-family="-apple-system,sans-serif" font-size="11" fill="#8E8E93">F</text>
+  <circle cx="215" cy="520" r="14" fill="#FFFFFF" stroke="#2F6DF4" stroke-width="1.5"/>
+  <path d="M210,513 L210,527 L223,520 Z" fill="#2F6DF4"/>
+  <path d="M175,514 L167,520 L175,526 M167,520 L183,520" fill="none" stroke="#8E8E93" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M255,514 L263,520 L255,526 M263,520 L247,520" fill="none" stroke="#8E8E93" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <text x="10" y="585" font-family="-apple-system,sans-serif" font-size="11" fill="#8E8E93">G</text>
+  <g>
+    <circle cx="44" cy="590" r="15" fill="#F2F2F7" stroke="#C7C7CC" stroke-width="1"/>
+    <circle cx="44" cy="590" r="9" fill="none" stroke="#8E8E93" stroke-width="1.2"/>
+    <line x1="44" y1="581" x2="44" y2="599" stroke="#8E8E93" stroke-width="1"/>
+    <circle cx="40" cy="590" r="2" fill="#D6707A"/><circle cx="48" cy="590" r="2" fill="#639922"/>
+
+    <circle cx="101" cy="590" r="15" fill="#F2F2F7" stroke="#C7C7CC" stroke-width="1"/>
+    <circle cx="98" cy="587" r="3" fill="none" stroke="#1C1C1E" stroke-width="1.2"/>
+    <circle cx="104" cy="593" r="3" fill="none" stroke="#1C1C1E" stroke-width="1.2"/>
+    <line x1="96" y1="595" x2="106" y2="585" stroke="#1C1C1E" stroke-width="1.2"/>
+
+    <circle cx="158" cy="590" r="15" fill="#F2F2F7" stroke="#C7C7CC" stroke-width="1"/>
+    <path d="M153,590 a6,6 0 1 1 7,-5" fill="none" stroke="#1C1C1E" stroke-width="1.2" stroke-linecap="round"/>
+    <path d="M153,586 L153,592 L159,590" fill="none" stroke="#1C1C1E" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <circle cx="214" cy="590" r="15" fill="#F2F2F7" stroke="#C7C7CC" stroke-width="1"/>
+    <path d="M219,590 a6,6 0 1 0 -7,-5" fill="none" stroke="#1C1C1E" stroke-width="1.2" stroke-linecap="round"/>
+    <path d="M219,586 L219,592 L213,590" fill="none" stroke="#1C1C1E" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <circle cx="271" cy="590" r="15" fill="#F2F2F7" stroke="#C7C7CC" stroke-width="1"/>
+    <line x1="271" y1="582" x2="271" y2="595" stroke="#2F6DF4" stroke-width="1.5" stroke-linecap="round"/>
+    <ellipse cx="271" cy="597" rx="2.4" ry="3.2" fill="#2F6DF4"/>
+
+    <circle cx="328" cy="590" r="15" fill="#F2F2F7" stroke="#C7C7CC" stroke-width="1"/>
+    <circle cx="324" cy="586" r="5.5" fill="none" stroke="#1C1C1E" stroke-width="1.2"/>
+    <line x1="328" y1="591" x2="333" y2="596" stroke="#1C1C1E" stroke-width="1.2" stroke-linecap="round"/>
+
+    <circle cx="385" cy="590" r="15" fill="#F2F2F7" stroke="#C7C7CC" stroke-width="1"/>
+    <path d="M379,590 L384,595 L392,585" fill="none" stroke="#34C759" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g font-family="-apple-system,sans-serif" font-size="11" fill="#8E8E93" text-anchor="middle">
+    <text x="44" y="614">红绿</text><text x="101" y="614">分割</text><text x="158" y="614">撤销</text>
+    <text x="214" y="614">重做</text><text x="271" y="614">检测</text><text x="328" y="614">缩放</text>    <text x="385" y="614">完成</text>
+  </g>
+  </g>
+</svg>

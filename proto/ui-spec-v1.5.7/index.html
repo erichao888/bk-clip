@@ -1,0 +1,3504 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
+<title>bk剪辑 v1.5 · 界面原型</title>
+<script>window.BUILD="2026-10-05 20:14 · v1.5.7 变速面板仅保留线性";</script>
+<style>
+  /* ============ 设计系统 · 深色简约 ============ */
+  :root{
+    /* 背景层级 */
+    --bg:        #0A0C10;   /* 最底 */
+    --bg-1:      #12151B;   /* 表面/卡片 */
+    --bg-2:      #1A1F27;   /* 浮起：工具栏/面板 */
+    --bg-3:      #232A34;   /* hover */
+    --line:      #2C333D;   /* 描边 */
+    --line-soft: #1F242C;
+    /* 文字 */
+    --text:   #EAF0F7;
+    --text-2: #9AA4B2;
+    --text-3: #5F6B7A;
+    /* 品牌 / 语义 */
+    --accent:   #2F6DF4;    /* 操作主色（BKTheme.accent） */
+    --accent-2: #5B8CFF;
+    --select:   #2F6DF4;    /* 选中框（统一品牌蓝，与悬浮条同色） */
+    --red:      #D8574E;    /* 红区/折叠线·方案C */
+    --green:    #3ECC77;    /* 绿区/保留·方案C */
+    --bed:      #141719;    /* 主轨道底板·方案C */
+    --playhead: #FFFFFF;    /* 播放指针 */
+    /* 间距基准 8pt */
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px;
+    --r: 14px;             /* 圆角 */
+    --r-sm: 10px;
+    --font: -apple-system, "SF Pro Display", "PingFang SC", system-ui, sans-serif;
+  }
+
+  *{box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;}
+  body{
+    font-family:var(--font);
+    background:radial-gradient(1200px 800px at 20% -10%, #11151c 0%, var(--bg) 60%);
+    color:var(--text);
+    display:flex; align-items:flex-start; justify-content:center;
+    gap:28px; padding:24px; min-height:100vh;
+  }
+
+  /* ============ 布局：左手机 + 右规格面板 ============ */
+  .stage{display:flex; gap:28px; align-items:flex-start; flex-wrap:wrap;}
+  .phone-wrap{flex:0 0 auto; transform-origin:top center;}
+
+  /* 顶部切换（在手机外，方便演示） */
+  .nav{display:flex; gap:6px; justify-content:center; margin-bottom:12px;}
+  .nav button{
+    background:var(--bg-1); color:var(--text-2); border:1px solid var(--line);
+    padding:7px 14px; border-radius:999px; font-size:13px; cursor:pointer;
+    transition:.18s; font-family:var(--font);
+  }
+  .nav button:hover{color:var(--text); border-color:var(--accent);}
+  .nav button.on{background:var(--accent); color:#fff; border-color:var(--accent);}
+
+  /* ============ 手机外框 ============ */
+  .phone{
+    width:430px; height:932px; background:var(--bg);
+    border-radius:54px; border:10px solid #05070A;
+    box-shadow:0 30px 80px rgba(0,0,0,.6), inset 0 0 0 2px #1b2029;
+    position:relative; overflow:hidden;
+  }
+  .island{
+    position:absolute; top:11px; left:50%; transform:translateX(-50%);
+    width:122px; height:34px; background:#000; border-radius:20px; z-index:60;
+  }
+  .screen{position:absolute; inset:0; display:none; flex-direction:column;}
+  .screen.active{display:flex;}
+
+  /* ============ 状态栏 ============ */
+  .statusbar{height:54px; display:flex; align-items:center; justify-content:space-between;
+    padding:0 30px; font-size:15px; font-weight:600; color:var(--text); position:relative; z-index:50;}
+  .statusbar .right{display:flex; gap:6px; align-items:center;}
+  .statusbar svg{width:17px; height:17px; stroke:var(--text); fill:none; stroke-width:1.8;}
+
+  /* ============ 通用顶栏 ============ */
+  .topbar{height:44px; display:flex; align-items:center; justify-content:space-between;
+    padding:0 14px; position:relative; z-index:40;}
+  .topbar .title{position:absolute; left:0; right:0; text-align:center; font-size:16px;
+    font-weight:600; pointer-events:none; color:var(--text);}
+  .grp{display:flex; gap:4px; align-items:center;}
+  .ticon{width:38px; height:38px; display:flex; align-items:center; justify-content:center;
+    border-radius:10px; color:var(--text); cursor:pointer; transition:.15s; background:transparent;}
+  .ticon:hover{background:var(--bg-2);}
+  .ticon:active{transform:scale(.92);}
+  .ticon.disabled{opacity:.32; pointer-events:none;}
+  .ic{width:22px; height:22px; stroke:currentColor; fill:none; stroke-width:1.8;
+    stroke-linecap:round; stroke-linejoin:round; display:block;}
+  .ic.solid{fill:currentColor; stroke:none;}
+  .ic.red{stroke:var(--red);}
+  .ic.sm{width:19px; height:19px;}
+
+  /* ============ 起始页（草稿网格 · 参考老版信息架构） ============ */
+  .start{position:relative; flex:1; min-height:0; display:flex; flex-direction:column;
+    background:radial-gradient(680px 320px at 50% -12%, #101725 0%, var(--bg) 58%);}
+  .st-top{height:52px; flex:0 0 auto; display:flex; align-items:center; justify-content:space-between;
+    padding:0 10px 0 6px; position:relative;}
+  .st-top .title{position:absolute; left:0; right:0; text-align:center; font-size:17px; font-weight:700;
+    pointer-events:none; letter-spacing:.3px;}
+  .st-top .title em{font-style:normal; font-weight:600; font-size:14px; color:var(--text-3);}
+  .txtbtn{font-size:14px; color:var(--accent); font-weight:600; padding:8px 10px; cursor:pointer;
+    border-radius:9px; transition:.14s; user-select:none;}
+  .txtbtn:active{opacity:.55;}
+  .txtbtn.warn{color:var(--red);}
+
+  .start-grid{flex:1; min-height:0; overflow:auto; padding:2px 14px 100px;
+    display:grid; grid-template-columns:repeat(3,1fr); gap:16px 10px; align-content:start;}
+  .start-grid::-webkit-scrollbar{width:0;}
+  .dcard{position:relative; cursor:pointer;}
+  .dthumb{position:relative; width:100%; aspect-ratio:4/5; border-radius:12px; overflow:hidden;
+    border:1px solid var(--line-soft); transition:.16s;}
+  .dthumb::after{content:""; position:absolute; inset:0;
+    background:linear-gradient(180deg,rgba(0,0,0,.34) 0%,transparent 24%,transparent 60%,rgba(0,0,0,.44) 100%);}
+  .dbadge{position:absolute; z-index:2; font-size:10.5px; font-weight:700; color:#fff; line-height:1;}
+  .dbadge.cut{top:7px; left:7px; padding:3px 7px; border-radius:7px; background:rgba(47,109,244,.94);
+    box-shadow:0 2px 7px rgba(0,0,0,.4);}
+  .dbadge.dur{bottom:7px; left:7px; padding:2px 6px; border-radius:6px; background:rgba(0,0,0,.5);
+    font-weight:600; font-variant-numeric:tabular-nums;}
+  .dmore{position:absolute; z-index:2; top:6px; right:6px; width:26px; height:26px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.42); color:#fff;}
+  .dmore .ic{width:16px;height:16px; stroke:#fff;}
+  .dmore:active{transform:scale(.9);}
+  .dname{margin-top:7px; font-size:11.5px; color:var(--text-2); white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis;}
+
+  .dcheck{position:absolute; z-index:3; top:7px; left:7px; width:24px; height:24px; border-radius:50%;
+    border:2px solid rgba(255,255,255,.85); background:rgba(0,0,0,.32); display:none; align-items:center;
+    justify-content:center; box-shadow:0 1px 4px rgba(0,0,0,.4);}
+  .dcheck .ic{width:15px;height:15px; stroke:#fff; display:none;}
+  .start.sel-mode .dcheck{display:flex;}
+  .start.sel-mode .dbadge.cut,.start.sel-mode .dmore{display:none;}
+  .dcard.sel .dcheck{background:var(--accent); border-color:var(--accent);}
+  .dcard.sel .dcheck .ic{display:block;}
+  .dcard.sel .dthumb{border-color:var(--accent); box-shadow:0 0 0 2px rgba(47,109,244,.5);}
+
+  .fab{position:absolute; right:20px; bottom:80px; width:58px; height:58px; border-radius:50%; border:none;
+    background:linear-gradient(135deg,var(--accent),#1b4fd0); display:flex; align-items:center; justify-content:center;
+    box-shadow:0 12px 28px rgba(47,109,244,.5); cursor:pointer; z-index:12; color:#fff;}
+  .fab .ic{width:28px;height:28px; stroke:#fff;}
+  .fab:active{transform:scale(.94);}
+
+  .start-foot{position:absolute; left:0; right:0; bottom:0; height:62px; display:flex; align-items:center;
+    justify-content:center; font-size:11px; color:var(--text-3); letter-spacing:.3px; pointer-events:none;
+    background:linear-gradient(180deg,transparent,var(--bg) 60%);}
+  .selbar{position:absolute; left:0; right:0; bottom:0; height:64px; display:none; align-items:center;
+    justify-content:space-between; padding:0 14px; background:var(--bg-1); border-top:1px solid var(--line); z-index:14;}
+  .start.sel-mode .selbar{display:flex;}
+  .start.sel-mode .start-foot{display:none;}
+
+  /* 标签（保留，供他页复用） */
+  .tag{font-size:11px; padding:2px 7px; border-radius:6px;}
+  .tag.g{background:rgba(62,204,119,.14); color:var(--green);}
+  .tag.r{background:rgba(255,77,77,.14); color:var(--red);}
+
+  /* ============ 选视频页 ============ */
+  .picker{flex:1; min-height:0; display:flex; flex-direction:column;}
+  .filters{display:flex; gap:8px; padding:4px 14px 12px; overflow-x:auto; flex:0 0 auto;}
+  .filters::-webkit-scrollbar{height:0;}
+  .chip{flex:0 0 auto; font-size:13px; color:var(--text-2); padding:7px 14px; border-radius:999px;
+    background:var(--bg-1); border:1px solid var(--line-soft); cursor:pointer; transition:.15s;}
+  .chip.on{color:#fff; background:var(--accent); border-color:var(--accent); font-weight:600;}
+  .pick-grid{flex:1; min-height:0; overflow:auto; padding:0 14px 10px;
+    display:grid; grid-template-columns:repeat(3,1fr); gap:12px 8px; align-content:start;}
+  .pick-grid::-webkit-scrollbar{width:0;}
+  .pcard{position:relative;}
+  .pthumb{position:relative; width:100%; aspect-ratio:4/5; border-radius:11px; overflow:hidden;
+    border:1.5px solid transparent; cursor:pointer; transition:.15s;}
+  .pcard.sel .pthumb{border-color:var(--accent); box-shadow:0 0 0 2px rgba(47,109,244,.45);}
+  .pdur{position:absolute; left:6px; bottom:6px; font-size:10.5px; color:#fff; background:rgba(0,0,0,.5);
+    padding:2px 6px; border-radius:6px; font-variant-numeric:tabular-nums; z-index:2;}
+  .pexpand{position:absolute; right:6px; bottom:6px; width:24px; height:24px; border-radius:7px;
+    display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.45); z-index:3;}
+  .pexpand .ic{width:15px;height:15px; stroke:#fff;}
+  .pexpand:active{transform:scale(.88);}
+  .pcheck{position:absolute; top:6px; right:6px; width:24px; height:24px; border-radius:50%;
+    border:2px solid rgba(255,255,255,.9); background:rgba(0,0,0,.3); z-index:3; display:flex;
+    align-items:center; justify-content:center; font-size:12px; font-weight:700; color:#fff;
+    box-shadow:0 1px 4px rgba(0,0,0,.4);}
+  .pcard.sel .pcheck{background:var(--accent); border-color:var(--accent);}
+  .bdg{min-width:26px; height:26px; padding:0 7px; border-radius:13px; background:var(--accent); color:#fff;
+    font-size:13px; font-weight:700; display:flex; align-items:center; justify-content:center;
+    font-variant-numeric:tabular-nums;}
+  .bdg.zero{background:var(--bg-2); color:var(--text-3);}
+  .pick-foot{flex:0 0 auto; padding:10px 16px 20px;}
+  .pbtn{width:100%; height:50px; border-radius:14px; border:none; font-size:16px; font-weight:600;
+    background:var(--accent); color:#fff; cursor:pointer; transition:.15s; font-family:var(--font);}
+  .pbtn:active{transform:scale(.985);}
+  .pbtn:disabled{background:var(--bg-2); color:var(--text-3); cursor:default; transform:none;}
+
+  /* ============ 视频预览页 ============ */
+  .preview{flex:1; min-height:0; position:relative; background:#000; overflow:hidden;}
+  .pv-stage{position:absolute; inset:0;
+    background:radial-gradient(240px 320px at 42% 34%, rgba(91,140,255,.26), transparent 70%),
+      linear-gradient(160deg,#1b2431,#080b10);}
+  .pv-play{position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:74px; height:74px;
+    border-radius:50%; background:rgba(255,255,255,.14); display:flex; align-items:center; justify-content:center;
+    cursor:pointer; border:1px solid rgba(255,255,255,.3); z-index:4;}
+  .pv-play .ic{width:34px;height:34px; stroke:#fff;}
+  .pv-play .ic.solid{fill:#fff;}
+  .pv-top{position:absolute; top:0; left:0; right:0; z-index:5; display:flex; align-items:center;
+    justify-content:space-between; padding:12px 14px; background:linear-gradient(180deg,rgba(0,0,0,.5),transparent);}
+  .pv-btn{width:40px;height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    background:rgba(0,0,0,.42); cursor:pointer; border:1px solid rgba(255,255,255,.14);}
+  .pv-btn .ic{width:20px;height:20px; stroke:#fff;}
+  .pv-btn:active{transform:scale(.92);}
+  .pv-bottom{position:absolute; left:0; right:0; bottom:0; z-index:5; padding:34px 16px 16px;
+    background:linear-gradient(0deg,rgba(0,0,0,.78),transparent);}
+  .pv-transport{display:flex; align-items:center; gap:12px;}
+  /* 图标按钮统一复位：清掉 UA 默认白底 / 边框 / 内边距（否则白图标画在白底上） */
+  .pv-pp,.pv-fs,.clp-pp,.pb .sq,.pb .pl{background:transparent; border:none; padding:0; -webkit-appearance:none; appearance:none;}
+  .pv-pp{width:30px; height:30px; flex:0 0 auto; display:flex; align-items:center; justify-content:center; cursor:pointer;}
+  .pv-pp .ic{width:13px; height:13px; stroke:none; fill:#FFFFFF;}
+  .pv-time{font-size:12px; color:var(--text); font-variant-numeric:tabular-nums; min-width:34px;}
+  .pv-scrub{flex:1; height:24px; display:flex; align-items:center; position:relative; cursor:pointer; touch-action:none;}
+  .pv-scrub .trk{position:absolute; left:0; right:0; height:3px; border-radius:2px; background:rgba(255,255,255,.30);}
+  .pv-scrub .fl{position:absolute; left:0; height:3px; border-radius:2px; background:var(--text);}
+  .pv-scrub .kn{position:absolute; width:13px; height:13px; border-radius:50%; background:#fff;
+    transform:translateX(-50%); box-shadow:0 1px 5px rgba(0,0,0,.5);}
+  .pv-foot{flex:0 0 auto; display:flex; justify-content:flex-end; padding:10px 16px 18px;
+    background:#0A0C10;}
+  .pv-add{height:40px; padding:0 20px; border-radius:9px; border:none; background:var(--accent); color:#fff;
+    font-size:14.5px; font-weight:700; cursor:pointer; font-family:var(--font);}
+  .pv-add:active{transform:scale(.97);}
+
+  /* ============ 截取页（素材预处理 · 只保留 预览 / 帧条把手 / 时长 / 底部三键） ============ */
+  .trim{flex:1; min-height:0; display:flex; flex-direction:column; background:#000;}
+  .trim-stage{flex:1; min-height:0; position:relative;
+    background:radial-gradient(240px 320px at 42% 36%, rgba(91,140,255,.26), transparent 70%),
+      linear-gradient(160deg,#1b2431,#080b10);}
+  .trim-play{position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:66px; height:66px;
+    border-radius:50%; background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.3);
+    display:flex; align-items:center; justify-content:center; cursor:pointer; z-index:3;}
+  .trim-play .ic{width:30px;height:30px; stroke:#fff;}
+  .trim-play .ic.solid{fill:#fff;}
+  .trim-ctl{flex:0 0 auto; padding:20px 16px 26px; background:var(--bg); border-top:1px solid var(--line-soft);}
+  .trim-src{flex:0 0 auto; display:flex; align-items:center; gap:8px; padding:0 0 10px;
+    font-size:12px; color:var(--text-3); line-height:1.5;}
+  .trim-src b{color:var(--text); font-weight:600;}
+  .trim-src .k{color:var(--accent);}
+  .trim-strip{position:relative; height:64px; border-radius:12px; overflow:hidden; background:#0c0f14;
+    display:flex; border:1px solid var(--line-soft);}
+  .trim-strip .fr{flex:1; min-width:0; height:100%;}
+  .trim-frames{position:absolute; inset:0; display:flex; gap:1px; z-index:1; background:#0c0f14;}
+  .trim-frames .fr{background:linear-gradient(180deg,#2a3340,#11161e);}
+  .trim-frames .fr:nth-child(even){background:linear-gradient(180deg,#222a36,#0d1117);}
+  .trim-dim{position:absolute; top:0; bottom:0; background:rgba(8,10,14,.66); z-index:3; pointer-events:none;}
+  .trim-sel{position:absolute; top:0; bottom:0; z-index:4; box-sizing:border-box;
+    background:rgba(47,109,244,.14); border:2.5px solid var(--accent); border-radius:9px;}
+  .trim-sel .hnd{position:absolute; top:-2.5px; bottom:-2.5px; width:22px; background:var(--accent); z-index:2;
+    display:flex; align-items:center; justify-content:center; cursor:ew-resize;
+    box-shadow:0 0 10px rgba(47,109,244,.45);}
+  .trim-sel .hnd.l{left:-2.5px; border-radius:9px 0 0 9px;}
+  .trim-sel .hnd.r{right:-2.5px; border-radius:0 9px 9px 0;}
+  .trim-sel .hnd::after{content:""; width:2px; height:15px; background:#fff; border-radius:1px;
+    box-shadow:4px 0 0 #fff, -4px 0 0 #fff;}
+  .trim-body{position:absolute; top:0; bottom:0; left:19px; right:19px; cursor:grab;}
+  .trim-body:active{cursor:grabbing;}
+  .trim-len{text-align:center; font-size:12.5px; color:var(--text-3); margin-top:14px;
+    font-variant-numeric:tabular-nums; letter-spacing:.3px;}
+  .trim-len b{color:var(--text); font-weight:600;}
+  .trim-acts{display:flex; align-items:center; justify-content:space-between; padding:0 30px; margin-top:18px;}
+  .trim-btn{width:50px; height:50px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    cursor:pointer; color:var(--text-2); transition:.14s;}
+  .trim-btn .ic{width:25px;height:25px; stroke:currentColor;}
+  .trim-btn:active{transform:scale(.9);}
+  .trim-btn.ok{color:var(--accent);}
+
+  /* ============ 波形剪辑页（剪气口 · 老版布局 · 深色方案C） ============ */
+  .wcut{flex:1; min-height:0; display:flex; flex-direction:column; background:var(--bg);}
+  .wc-top{flex:0 0 auto; display:flex; align-items:center; gap:10px; padding:2px 16px 8px;}
+  .wc-tbtn{width:38px; height:38px; border-radius:50%; background:var(--bg-1); border:1px solid var(--line);
+    display:flex; align-items:center; justify-content:center; cursor:pointer; flex:0 0 auto;}
+  .wc-tbtn .ic{width:19px; height:19px; stroke:var(--text);}
+  .wc-tbtn:active{transform:scale(.92);}
+  .wc-title{flex:1; text-align:center; font-size:16.5px; font-weight:700; color:var(--text);
+    letter-spacing:.2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  /* 视频预览 */
+  .wc-stage{flex:0 0 auto; height:336px; background:#000; position:relative; overflow:hidden;}
+  .wc-stage-in{position:absolute; inset:0;
+    background:radial-gradient(220px 300px at 50% 34%, rgba(91,140,255,.20), transparent 72%),
+      linear-gradient(165deg,#1a222d,#07090d);}
+  .wc-fps{position:absolute; left:16px; top:14px; font-size:12.5px; color:var(--text-2);
+    font-variant-numeric:tabular-nums;}
+  /* 时间信息行 */
+  .wc-times{flex:0 0 auto; display:flex; align-items:baseline; justify-content:space-between;
+    padding:12px 18px 8px; gap:12px;}
+  .wc-cur{font-size:15px; font-weight:700; color:var(--text); font-variant-numeric:tabular-nums;}
+  .wc-meta{font-size:11.5px; color:var(--text-3); text-align:right; line-height:1.5;
+    font-variant-numeric:tabular-nums;}
+  .wc-meta b{color:var(--text-2); font-weight:600;}
+  /* 波形主体：白色指针固定中央，拖动波形条滚动 */
+  .wc-wave{position:relative; height:150px; margin:0 18px; background:var(--bed);
+    border:1px solid var(--line-soft); border-radius:10px; overflow:hidden; cursor:grab; touch-action:none;}
+  .wc-wave.dragging{cursor:grabbing;}
+  .wc-wrap{position:absolute; top:0; left:0; height:100%; will-change:left;}
+  .wc-wrap .wave-svg{display:block; height:100%;}
+  .wc-thr{position:absolute; left:0; right:0; border-top:1px dashed rgba(255,255,255,.30);
+    pointer-events:none; z-index:4;}
+  .wc-head{position:absolute; top:0; bottom:0; left:50%; width:2px; margin-left:-1px;
+    background:var(--playhead); z-index:6; pointer-events:none; box-shadow:0 0 6px rgba(255,255,255,.30);}
+  .wc-head::before{content:""; position:absolute; top:0; left:50%; transform:translateX(-50%);
+    border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid var(--playhead);}
+  /* 迷你概览 */
+  .wc-mini{position:relative; height:38px; margin:10px 18px 0; background:var(--bed);
+    border:1px solid var(--line-soft); border-radius:8px; overflow:hidden;}
+  .wc-mini .m-svg{position:absolute; inset:0; width:100%; height:100%;}
+  .wc-mini-view{position:absolute; top:0; bottom:0; border:1.5px solid var(--accent);
+    background:rgba(47,109,244,.10); border-radius:4px; z-index:3; pointer-events:none;}
+  /* 阈值滑杆 */
+  .wc-slider{flex:0 0 auto; display:flex; align-items:center; gap:12px; padding:14px 18px 4px;}
+  .wc-slider .lab{font-size:12.5px; color:var(--text-2); flex:0 0 auto; font-variant-numeric:tabular-nums;}
+  .wc-track{position:relative; flex:1; height:4px; border-radius:2px; background:var(--bg-3); cursor:pointer;}
+  .wc-track .fill{position:absolute; left:0; top:0; bottom:0; border-radius:2px; background:var(--accent);}
+  .wc-track .kn{position:absolute; top:50%; width:22px; height:22px; border-radius:50%; background:#fff;
+    transform:translate(-50%,-50%); box-shadow:0 2px 8px rgba(0,0,0,.5);}
+  .wc-track .kn::after{content:""; position:absolute; left:50%; top:50%; width:2px; height:9px;
+    background:var(--accent); border-radius:1px; transform:translate(-50%,-50%);}
+  .wc-chev{flex:0 0 auto; width:18px; height:18px; stroke:var(--text-3); background:none; border:none; cursor:pointer;}
+  /* 底部操作：沿用编辑页 .bb 风格（无圆圈、线条图标、单行排列） */
+  .wc-acts{flex:0 0 auto; display:flex; align-items:center; justify-content:center; gap:2px;
+    padding:14px 10px 6px; overflow-x:auto;}
+  .wc-acts::-webkit-scrollbar{height:0;}
+  .wc-acts .bb.rg-red{color:var(--red);}
+  .wc-acts .bb.rg-green{color:var(--green);}
+  .wc-acts .bb.rg-red.on{color:var(--red); background:rgba(216,87,78,.14);}
+  .wc-acts .bb.rg-red.on::after{background:var(--red);}
+  .wc-acts .bb.rg-green.on{color:var(--green); background:rgba(62,204,119,.14);}
+  .wc-acts .bb.rg-green.on::after{background:var(--green);}
+
+  /* ============ 素材库页（替换入口 · 参考老版最近项目） ============ */
+  .lib{flex:1; min-height:0; display:flex; flex-direction:column; background:#0C0E12;}
+  .lib-top{flex:0 0 auto; height:44px; display:flex; align-items:center; justify-content:space-between; padding:0 14px;}
+  .lib-x{width:34px; height:34px; display:flex; align-items:center; justify-content:center; cursor:pointer;
+    color:var(--text); border-radius:50%;}
+  .lib-x .ic{width:22px; height:22px; stroke:var(--text);}
+  .lib-x:active{background:var(--bg-2);}
+  .lib-more{width:34px; height:34px; display:flex; align-items:center; justify-content:center; cursor:pointer;
+    color:var(--text-2); border-radius:50%;}
+  .lib-more .ic{width:20px; height:20px; stroke:var(--text-2);}
+  /* 分类 chip */
+  .lib-chips{flex:0 0 auto; display:flex; gap:8px; padding:6px 16px 12px;}
+  .lib-chips .chip{flex:1; text-align:center; font-size:12.5px; color:var(--text-3); padding:7px 0;
+    cursor:pointer; white-space:nowrap;}
+  .lib-chips .chip.on{color:var(--text); font-weight:600;}
+  /* 4 列网格 */
+  .lib-grid{flex:1; min-height:0; overflow-y:auto; display:grid; grid-template-columns:repeat(4,1fr);
+    gap:2px; padding:0 2px 16px;}
+  .lib-grid::-webkit-scrollbar{width:0;}
+  .lcell{position:relative; cursor:pointer;}
+  .lcell .lth{position:relative; width:100%; aspect-ratio:3/4; overflow:hidden;}
+  .lcell .lth .lt2{position:absolute; inset:0;}
+  .lcell .ldur{position:absolute; left:6px; bottom:6px; font-size:11px; color:#fff;
+    font-variant-numeric:tabular-nums; text-shadow:0 1px 3px rgba(0,0,0,.75);}
+  .lcell .lexp{position:absolute; right:5px; bottom:5px; width:14px; height:14px; color:#fff; opacity:.92;
+    display:flex; align-items:center; justify-content:center;}
+  .lcell .lexp .ic{width:14px; height:14px; stroke:#fff; fill:none; stroke-width:2;}
+  .lcell .lused{position:absolute; left:4px; top:4px; font-size:9.5px; padding:2px 5px; border-radius:4px;
+    background:rgba(20,22,26,.82); color:#C8CEDA;}
+  .lcell.on .lth{outline:2px solid var(--accent); outline-offset:-2px;}
+
+  /* ============ 片段选择页（选片段 · 时长锁定 = 被替换视频） ============ */
+  .clp{flex:1; min-height:0; display:flex; flex-direction:column; background:#0A0C10;}
+  .clp-top{flex:0 0 auto; height:48px; display:flex; align-items:center; justify-content:space-between; padding:0 16px;}
+  .clp-back{width:34px;height:34px;border-radius:50%;background:var(--bg-1);display:flex;align-items:center;
+    justify-content:center;cursor:pointer;}
+  .clp-back .ic{width:20px;height:20px;stroke:var(--text);}
+  .clp-ok{font-size:14.5px; font-weight:600; color:var(--text-2); cursor:pointer; padding:6px 2px;}
+  .clp-ok.on{color:var(--accent);}
+  .clp-stage{flex:1; min-height:0; position:relative; background:#000; overflow:hidden;}
+  .clp-stage-in{position:absolute; inset:0;
+    background:radial-gradient(240px 320px at 50% 36%, rgba(91,140,255,.20), transparent 72%),
+      linear-gradient(165deg,#1a222d,#07090d);}
+  .clp-bar{flex:0 0 auto; display:flex; align-items:center; gap:12px; padding:16px 16px 0;}
+  .clp-pp{width:26px;height:26px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;cursor:pointer;}
+  .clp-pp .ic{width:13px;height:13px;stroke:none;fill:#FFFFFF;}
+  .clp-strip{position:relative; flex:1; height:64px; border-radius:8px; overflow:hidden; background:#0c0f14;
+    touch-action:none; cursor:grab;}
+  .clp-strip.dragging{cursor:grabbing;}
+  .clp-frames{position:absolute; inset:0; display:flex; gap:1px;}
+  .clp-frames .cf{flex:1; background:linear-gradient(180deg,#2a3340,#11161e);}
+  .clp-frames .cf:nth-child(even){background:linear-gradient(180deg,#222a36,#0d1117);}
+  .clp-sel{position:absolute; top:0; bottom:0; box-sizing:border-box; border:2.5px solid var(--select);
+    border-radius:6px; overflow:hidden; z-index:3;}
+  .clp-sel .len{position:absolute; left:5px; top:4px; font-size:11px; color:#fff; z-index:2;
+    font-variant-numeric:tabular-nums; text-shadow:0 1px 3px rgba(0,0,0,.8);}
+  .clp-tip{flex:0 0 auto; text-align:center; font-size:12.5px; color:var(--text-3); padding:14px 16px 0;}
+  .clp-tip b{color:var(--accent); font-weight:600;}
+
+  /* ============ 底部动作面板 ============ */
+  .sheet-mask{position:absolute; inset:0; background:rgba(0,0,0,.5); z-index:70; display:none;}
+  .sheet-mask.show{display:block;}
+  .sheet{position:absolute; left:10px; right:10px; bottom:10px; z-index:71; background:var(--bg-2);
+    border:1px solid var(--line); border-radius:18px; overflow:hidden; display:none;}
+  .sheet.show{display:block; animation:sheetup .2s ease;}
+  @keyframes sheetup{from{transform:translateY(22px);opacity:0;} to{transform:translateY(0);opacity:1;}}
+  .sheet .sh{height:52px; display:flex; align-items:center; gap:12px; padding:0 20px; font-size:15px;
+    cursor:pointer; border-bottom:1px solid var(--line-soft); color:var(--text);}
+  .sheet .sh:last-child{border-bottom:none;}
+  .sheet .sh .ic{width:20px;height:20px; stroke:var(--text-2);}
+  .sheet .sh.warn{color:var(--red);} .sheet .sh.warn .ic{stroke:var(--red);}
+  .sheet .sh:active{background:var(--bg-3);}
+
+  /* ============ 编辑页 ============ */
+  .editor{flex:1; min-height:0; display:flex; flex-direction:column; background:var(--bg);
+    position:relative;}
+  .preview-zone{padding:6px 0 0; display:flex; flex-direction:column; align-items:center;}
+  .canvas{width:228px; height:405px; border-radius:12px; overflow:hidden; position:relative;
+    background:#000; box-shadow:0 8px 30px rgba(0,0,0,.5);}
+  .canvas .frame-img{position:absolute; inset:0;
+    background:
+      radial-gradient(120px 80px at 30% 25%, rgba(91,140,255,.35), transparent 70%),
+      radial-gradient(160px 120px at 75% 70%, rgba(62,204,119,.25), transparent 70%),
+      linear-gradient(135deg,#101826,#0a0f17);}
+  .canvas .center-time{position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    font-size:34px; font-weight:300; color:#fff; font-variant-numeric:tabular-nums; opacity:.92;}
+  .canvas .rec{position:absolute; top:10px; left:10px; display:flex; gap:5px; align-items:center;
+    font-size:11px; color:#fff;}
+  .canvas .rec .rd{width:7px;height:7px;border-radius:50%;background:var(--red);}
+
+  /* 进度条：贴在画面底边（细线 + 白色竖把手） */
+  .canvas .scrbar{position:absolute; left:0; right:0; bottom:0; height:16px; z-index:5;
+    cursor:pointer; touch-action:none;}
+  .canvas .scrbar .trk{position:absolute; left:0; right:0; bottom:0; height:2px; background:rgba(255,255,255,.26);}
+  .canvas .scrbar .fill{position:absolute; left:0; bottom:0; height:2px; width:42%; background:var(--accent);}
+  .canvas .scrbar .kn{position:absolute; bottom:-1px; width:3px; height:10px; border-radius:1.5px;
+    background:#fff; transform:translateX(-50%); box-shadow:0 0 4px rgba(0,0,0,.6);}
+
+  /* 播放控制行：左时间 / 中三键 / 右三键（无圆圈，线条图标，省纵向空间） */
+  .pb{width:100%; max-width:392px; height:34px; margin-top:6px; display:flex; align-items:center;
+    justify-content:space-between; gap:10px; color:var(--text-2);}
+  .pb .grp{display:flex; align-items:center; gap:2px;}
+  .pb .t{font-size:11.5px; font-variant-numeric:tabular-nums; color:var(--text-3); white-space:nowrap;}
+  .pb .t b{color:var(--text-2); font-weight:600;}
+  .pb .sq{width:32px; height:32px; display:flex; align-items:center; justify-content:center;
+    cursor:pointer; color:var(--text-2); border-radius:8px; transition:.14s;}
+  .pb .sq .ic{width:19px; height:19px; stroke:currentColor; fill:none;}
+  .pb .sq .ic.solid{fill:currentColor; stroke:none;}
+  .pb .sq:hover{color:var(--text); background:rgba(255,255,255,.07);}
+  .pb .sq:active{transform:scale(.9);}
+  .pb .pl{width:32px; height:32px; display:flex; align-items:center; justify-content:center;
+    cursor:pointer; color:var(--text); transition:.14s;}
+  .pb .pl .ic{width:20px; height:20px; fill:currentColor; stroke:none;}
+  .pb .pl:active{transform:scale(.9);}
+
+  /* 时间线：多轨堆叠（录音/画中画/波形/迷你概览）+ 连续指针 */
+  .timeline{flex:1; display:flex; flex-direction:column; padding:10px 0 0; overflow:hidden; position:relative;}
+  /* 行容器：左列标签 + 右侧可滚动区（并排） */
+  .tl-body{flex:1; min-height:0; display:flex; align-items:stretch; overflow:hidden;}
+  /* 固定左列标签（不随内容滚动） */
+  .tl-labels{flex:0 0 auto; width:52px; display:flex; flex-direction:column; gap:5px;
+    padding:0 6px 0 12px; z-index:35;}
+  .tl-lab{display:flex; align-items:center; justify-content:center; height:34px;
+    color:var(--text-3);}
+  .tl-lab .ic{width:17px; height:17px; stroke:var(--text-3);}
+  .tl-lab.main{margin-top:12px; height:115px; flex-direction:column; gap:6px;}
+  /* 可横向滚动的内容区（所有轨道同步） */
+  .tl-scroll{flex:1; min-width:0; position:relative; overflow:hidden;}
+  .track-stack{position:absolute; top:0; left:0; display:flex; flex-direction:column; gap:5px;
+    will-change:transform;}
+  .trow{display:flex; gap:8px; align-items:center;}
+  /* 固定在可视区中央的指针（不随内容滚动） */
+  .tl-play{position:absolute; top:0; bottom:0; left:50%; width:2px; margin-left:-1px;
+    background:var(--playhead); z-index:38; pointer-events:none;
+    box-shadow:0 0 6px rgba(255,255,255,.35);}
+  .tl-play::before{content:""; position:absolute; top:0; left:50%; transform:translateX(-50%);
+    border-left:5px solid transparent; border-right:5px solid transparent;
+    border-top:7px solid var(--playhead);}
+  /* 标签列：只保留图标（去文字），主轨标签内含「添加视频 / 静音」两个可点按钮 */
+  .tlabel{width:40px; flex:0 0 auto; display:flex; align-items:center; justify-content:center; gap:4px;}
+  .tlabel .ic{width:17px; height:17px; stroke:var(--text-3);}
+  .tlabel.tall{flex-direction:column; gap:6px;}
+  .tlab{width:28px; height:28px; border-radius:8px; background:var(--bg-1); border:1px solid var(--line-soft);
+    display:flex; align-items:center; justify-content:center; cursor:pointer; transition:.14s; padding:0;
+    -webkit-appearance:none; appearance:none;}
+  .tlab .ic{width:16px; height:16px; stroke:var(--text-2);}
+  .tlab:hover{background:var(--bg-3);}
+  .tlab:active{transform:scale(.9);}
+  .tlab.on{background:rgba(47,109,244,.16); border-color:var(--accent);}
+  .tlab.on .ic{stroke:var(--accent);}
+  .tbody{flex:1; min-width:0; position:relative; border-radius:9px; background:var(--bg-1);
+    border:1px solid var(--line-soft); display:flex; align-items:center; padding:0 10px; cursor:pointer;}
+  .tbody:hover{border-color:#3A434E;}
+  .tbody .ph{font-size:12px; color:var(--text-3);}
+  .trow.rec .tbody,.trow.pip .tbody{height:34px;}
+  /* 录音 / 画中画 区块（随内容滚动，用绝对定位） */
+  .rblk,.pblk{position:absolute; top:0; bottom:0; border-radius:7px; overflow:hidden;
+    cursor:pointer; z-index:2;}
+  .rblk{background:linear-gradient(180deg,#2f4a3c,#22332b);}
+  .pblk{background:linear-gradient(180deg,#33405a,#232c3d);}
+  .rblk .lb,.pblk .lb{position:absolute; left:6px; top:50%; transform:translateY(-50%);
+    font-size:10.5px; color:rgba(255,255,255,.9); white-space:nowrap; pointer-events:none;}
+  .pblk .thumbs{position:absolute; inset:0; display:flex; gap:1px; opacity:.85;}
+  .pblk .thumbs div{flex:1; background:linear-gradient(150deg,#3c4a66,#26304a);}
+  /* ★ 2026-10-05 区块左端装饰（竞品式）：画中画缩略图 + 双轨时长 */
+  .pblk .pthumb{position:absolute; left:0; top:0; bottom:0; width:34px; max-width:100%;
+    border-radius:7px 0 0 7px; background:linear-gradient(135deg,#46577a,#2a3450);
+    display:flex; align-items:center; justify-content:center; z-index:1;}
+  .pblk .pthumb .ic{width:15px; height:15px; color:#cdd6ea;}
+  .pblk .lb{left:40px;}                       /* 源名让开左端缩略图 */
+  .bdur{position:absolute; left:4px; bottom:3px; z-index:3; pointer-events:none;
+    font-size:9px; color:#fff; background:rgba(0,0,0,.55); padding:1px 5px; border-radius:5px;}
+  .rblk .wv{position:absolute; left:0; right:0; bottom:0; height:11px; opacity:.85;}
+  .trow.rec .tbody,.trow.pip .tbody{overflow:hidden; background:var(--bed);}
+  .rsel,.psel{position:absolute; top:0; bottom:0; border:2.5px solid var(--accent);
+    border-radius:7px; z-index:4; display:none; pointer-events:none; box-sizing:border-box;}
+  .rsel .dur,.psel .dur{position:absolute; left:4px; top:2px; font-size:9px; color:#fff; z-index:2;
+    background:rgba(10,12,16,.74); padding:1px 4px; border-radius:3px; font-variant-numeric:tabular-nums;}
+  .rblk.sel,.pblk.sel{border:2.5px solid var(--accent); border-radius:7px; box-sizing:border-box;}
+  .rblk .ck,.pblk .ck{position:absolute; right:4px; top:2px; z-index:3; font-size:9px; color:#fff;
+    background:rgba(10,12,16,.6); padding:1px 4px; border-radius:3px;}
+
+  /* 主轨道（单一轨道）：上部画面帧条 + 下部声音包络波形 + 底部时间刻度，三者共享同一时间轴 */
+  /* 主轨道 = 一个整体容器：画面 + 波形 + 时间，三层无缝堆叠、一起滚动 */
+  .trow.main{margin-top:12px;}
+  .trow.main .tbody{padding:0; margin:0; gap:0; overflow:hidden; background:var(--bed);
+    display:flex; flex-direction:column; align-items:stretch; justify-content:flex-start;
+    border-radius:9px;}
+  .m-thumb{position:relative; height:60px; flex:0 0 60px;}
+  .m-wave{position:relative; height:40px; flex:0 0 40px; border-top:1px solid var(--line-soft);}
+  .m-ruler{position:relative; height:13px; flex:0 0 13px; background:#0E1114;
+    border-top:1px solid var(--line-soft);}
+  .m-ruler .tick{position:absolute; bottom:0; width:1px; height:4px; background:var(--text-3);}
+  .m-ruler .tick.major{height:7px; background:var(--text-2);}
+  .m-ruler .rl{position:absolute; bottom:1px; font-size:8px; color:var(--text-3);
+    transform:translateX(3px); font-variant-numeric:tabular-nums; letter-spacing:.2px;}
+
+  .tseg{position:absolute; top:0; bottom:0; border-right:1px solid rgba(0,0,0,.55);
+    box-shadow:inset 0 0 0 .5px rgba(255,255,255,.05);}
+  .tseg:last-of-type{border-right:none;}
+  .thit{position:absolute; top:0; bottom:0; z-index:3; cursor:pointer;}
+  .thit:hover{background:rgba(255,255,255,.06);}
+  .thit.locked{cursor:not-allowed;}
+  .thit.muted::after{content:""; position:absolute; inset:0;
+    background:repeating-linear-gradient(135deg, rgba(255,255,255,.07) 0 5px, transparent 5px 10px);}
+  .tframe{position:absolute; top:0; bottom:0; z-index:4; border:2.5px solid var(--accent);
+    border-radius:5px; display:none; pointer-events:none; box-sizing:border-box;}
+  .tframe .dur{position:absolute; left:4px; top:3px; font-size:9.5px; color:#fff; z-index:2;
+    background:rgba(10,12,16,.72); padding:1px 4px; border-radius:3px; font-variant-numeric:tabular-nums;}
+  .tmutebadge{position:absolute; top:3px; right:4px; z-index:6; width:15px; height:15px; border-radius:4px;
+    background:rgba(10,12,16,.78); border:1px solid rgba(255,255,255,.26);
+    display:flex; align-items:center; justify-content:center; pointer-events:none;}
+  .tmutebadge .ic{width:10px; height:10px; stroke:#EAF0F7; fill:none; stroke-width:2;}
+  .tadd{position:absolute; z-index:5; width:20px; height:20px; border-radius:50%; transform:translate(-50%,-50%);
+    background:rgba(10,12,16,.72); border:1px solid rgba(255,255,255,.28); color:#fff;
+    display:flex; align-items:center; justify-content:center; cursor:pointer; top:50%; padding:0;
+    -webkit-appearance:none; appearance:none;}
+  .tadd .ic{width:12px; height:12px; stroke:currentColor; fill:none;}
+
+  /* 波形轨（核心 · 方案C 低饱和） */
+  .wave-body{position:absolute; inset:0;}
+  .wave-svg{position:absolute; inset:0; width:100%; height:100%; display:block;}
+  .hit{position:absolute; top:0; bottom:0; cursor:pointer;}
+  .hit:hover{background:rgba(255,255,255,.05);}
+  /* 片段上锁标记（轨道内小锁角标） */
+  .lockflag{position:absolute; top:2px; z-index:6; width:16px; height:16px; border-radius:4px;
+    background:rgba(10,12,16,.72); border:1px solid rgba(255,255,255,.22);
+    display:flex; align-items:center; justify-content:center; pointer-events:none;}
+  .lockflag .ic{width:10px; height:10px; stroke:#EAF0F7; fill:none; stroke-width:2;}
+  .hit.locked{cursor:not-allowed;}
+  .hit.locked::after{content:""; position:absolute; inset:0;
+    background:repeating-linear-gradient(135deg, rgba(255,255,255,.05) 0 4px, transparent 4px 8px);}
+
+
+  /* 迷你概览条 */
+  .mini-row{margin:6px 12px 0 64px; height:30px; flex:0 0 auto;}
+  .mini{position:relative; height:100%; border-radius:8px; background:var(--bed);
+    border:1px solid var(--line-soft); overflow:hidden; cursor:grab; touch-action:none;}
+  .mini svg{position:absolute; inset:0; width:100%; height:100%; display:block;}
+  .mini .mk{position:absolute; top:0; bottom:0; width:2px; background:var(--red); pointer-events:none;}
+  .mini .selb{position:absolute; top:2px; bottom:2px; border:1.5px solid var(--accent);
+    background:rgba(47,109,244,.10); border-radius:4px; pointer-events:none; display:none; cursor:grab;}
+
+  /* 连续指针：一根白线从上到下贯穿所有轨道（不断续） */
+  /* 悬浮工具条（蓝底胶囊 + 白线条图标，无文字） */
+  .floatbar{position:absolute; z-index:80; display:none; align-items:center; gap:0;
+    background:var(--accent); border-radius:12px; padding:5px 6px;
+    box-shadow:0 8px 24px rgba(47,109,244,.45); transform:translateX(-50%);
+    pointer-events:none;}              /* 容器不吃点击，避免遮住下方轨道 */
+  .floatbar.show{display:flex; animation:pop .16s ease;}
+  @keyframes pop{from{transform:translate(-50%,6px) scale(.92); opacity:0;} to{transform:translate(-50%,0) scale(1); opacity:1;}}
+  .floatbar .fi{display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:3px; min-width:46px; padding:4px 6px; border-radius:9px; color:#fff; cursor:pointer;
+    transition:.12s; pointer-events:auto;}   /* 只有按钮本体可点 */
+  .floatbar .fi:hover{background:rgba(255,255,255,.16);}
+  .floatbar .fi:active{transform:scale(.92);}
+  .floatbar .fi .ic{stroke:#fff; width:19px; height:19px; fill:none;}
+  .floatbar .fi .tx{font-size:10px; line-height:1; color:#fff; white-space:nowrap; font-weight:500;}
+  /* 删除键：淡红底 + 近白图标（在蓝底胶囊上协调，同时保留危险操作语义） */
+  .floatbar .fi.del{background:rgba(216,87,78,.32);}
+  .floatbar .fi.del:hover{background:rgba(216,87,78,.48);}
+  .floatbar .fi.del .ic{stroke:#FFE3E0;}
+  .floatbar .fi.del .tx{color:#FFE3E0;}
+  .floatbar .sep{width:1.5px; height:26px; background:rgba(255,255,255,.45); margin:0 4px; flex:0 0 auto;}
+
+  /* 底部工具栏（纯线条图标，横滑，无文字）——按选中轨道切换：主轨 6 / 录音 5 / 画中画 9 */
+  .bottombar{height:64px; background:var(--bg-1); border-top:1px solid var(--line);
+    display:flex; align-items:center; justify-content:center; overflow-x:auto; padding:0 4px; gap:1px;
+    scroll-snap-type:x proximity; -webkit-overflow-scrolling:touch;}
+  .bottombar::-webkit-scrollbar{height:0;}
+  .bb{width:42px; height:48px; flex:0 0 auto; display:flex; align-items:center; justify-content:center;
+    border-radius:12px; color:var(--text-2); cursor:pointer; transition:.14s; position:relative; scroll-snap-align:center;}
+  .bb:hover{background:var(--bg-2); color:var(--text);}
+  .bb:active{transform:scale(.9);}
+  .bb.on{color:var(--accent); background:rgba(47,109,244,.12);}
+  .bb.on::after{content:""; position:absolute; bottom:3px; width:16px; height:3px; border-radius:2px;
+    background:var(--accent);}
+  .bb .ic{width:22px; height:22px;}
+  .bb.del .ic{stroke:#E8928A;}
+
+  /* ===== 工具面板（音量 / 变速 / 画面大小）：浮在底栏上方，参考竞品音量条 ===== */
+  .toolpanel{position:absolute; left:0; right:0; bottom:98px; z-index:78;
+    background:var(--bg-1); border-top:1px solid var(--line); border-bottom:1px solid var(--line-soft);
+    padding:16px 18px 10px; display:none; flex-direction:column; gap:16px;
+    box-shadow:0 -10px 30px rgba(0,0,0,.4);}
+  .toolpanel.show{display:flex;}
+  .tp-head{display:flex; align-items:center; gap:11px;}
+  .tp-label{font-size:13px; color:var(--text-2); white-space:nowrap;}
+  .tp-val{font-size:13px; color:var(--text); font-variant-numeric:tabular-nums;
+    background:var(--bg-2); border:1px solid var(--line-soft); border-radius:8px;
+    padding:5px 10px; min-width:46px; text-align:center; flex:0 0 auto;}
+  .tp-track{position:relative; flex:1; min-width:0; height:26px; display:flex; align-items:center;
+    cursor:pointer; touch-action:none;}
+  .tp-track .rail{position:absolute; left:0; right:0; height:4px; border-radius:2px; background:var(--bg-3);}
+  .tp-track .fill{position:absolute; left:0; height:4px; border-radius:2px; background:#EAC54F; width:40%;}
+  .tp-track .knob{position:absolute; width:15px; height:15px; border-radius:50%; background:#fff;
+    transform:translateX(-50%); box-shadow:0 1px 4px rgba(0,0,0,.55); left:40%;}
+  .tp-mute{display:flex; flex-direction:column; align-items:center; gap:2px; cursor:pointer;
+    color:var(--text-3); padding:0 1px; flex:0 0 auto;}
+  .tp-mute .ic{width:20px; height:20px; stroke:var(--text-2);}
+  .tp-mute span{font-size:9.5px; color:var(--text-3); white-space:nowrap;}
+  .tp-mute.on .ic{stroke:var(--accent);}
+  .tp-mute.on span{color:var(--accent);}
+  .tp-acts{position:relative; display:flex; align-items:center; justify-content:space-between; padding:0 4px;}
+  .tp-a{width:44px; height:36px; display:flex; align-items:center; justify-content:center;
+    cursor:pointer; color:var(--text-2); border-radius:10px; transition:.14s;}
+  .tp-a .ic{width:23px; height:23px; stroke:currentColor;}
+  .tp-a:hover{background:var(--bg-2); color:var(--text);}
+  .tp-a:active{transform:scale(.9);}
+  .tp-a.ok{color:var(--accent);}
+  .tp-applyall{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    background:#fff; color:#12161c; font-size:13.5px; font-weight:600; white-space:nowrap;
+    padding:11px 24px; border-radius:12px; box-shadow:0 10px 26px rgba(0,0,0,.55);
+    cursor:pointer; display:none;}
+  .tp-applyall.show{display:block;}
+  .tp-applyall:active{transform:translate(-50%,-50%) scale(.95);}
+
+  /* ===== 变速面板（线性变速：离散档位 + 对数刻度尺 + 时长联动） ===== */
+  .spdpanel{position:absolute; left:0; right:0; bottom:98px; z-index:79;
+    background:var(--bg-1); border-top:1px solid var(--line); display:none;
+    flex-direction:column; box-shadow:0 -10px 30px rgba(0,0,0,.4);}
+  .spdpanel.show{display:flex;}
+  .spd-row{display:flex; align-items:center; gap:10px; padding:15px 18px 0;}
+  .spd-dur{font-size:12.5px; color:var(--text-3); white-space:nowrap; flex:0 0 auto;}
+  .spd-dur b{color:var(--text); font-weight:600; font-variant-numeric:tabular-nums;
+    margin-left:3px; font-size:13px;}
+  .spd-steps{flex:1; min-width:0; display:flex; justify-content:space-between; gap:2px;}
+  .spd-step{flex:0 1 auto; min-width:30px; height:26px; padding:0 6px; border-radius:7px;
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+    font-size:11.5px; color:var(--text-2); font-variant-numeric:tabular-nums;
+    white-space:nowrap; transition:.12s;}
+  .spd-step:hover{background:var(--bg-2); color:var(--text);}
+  .spd-step.on{background:#EAC54F; color:#151A20; font-weight:600;}
+  /* 对数刻度尺：0.1x → 4x 映射到 0→100%，游标可拖 */
+  .spd-scale{position:relative; height:26px; margin:8px 18px 0; cursor:pointer; touch-action:none;
+    display:flex; align-items:flex-end; justify-content:space-between;}
+  .spd-tick{width:1px; background:var(--line); height:5px; flex:0 0 auto;}
+  .spd-tick.maj{height:9px; background:var(--text-3);}
+  .spd-cur{position:absolute; bottom:0; width:2px; height:17px; border-radius:2px; background:#EAC54F;
+    transform:translateX(-50%); box-shadow:0 0 6px rgba(234,197,79,.5); pointer-events:none;}
+  .spd-acts{display:flex; align-items:center; justify-content:space-between; padding:6px 18px 10px;}
+  .spd-a{width:44px; height:36px; display:flex; align-items:center; justify-content:center;
+    cursor:pointer; color:var(--text-2); border-radius:10px; transition:.14s;}
+  .spd-a .ic{width:23px; height:23px; stroke:currentColor;}
+  .spd-a:hover{background:var(--bg-2); color:var(--text);}
+  .spd-a:active{transform:scale(.9);}
+  .spd-a.all{color:var(--text-2);}
+  .spd-a.ok{color:var(--accent);}
+
+  /* 预览画面上的「画中画状态」角标（旋转/镜像/大小） */
+  .pip-badge{position:absolute; top:10px; right:10px; display:none; font-size:10.5px; color:#fff;
+    background:rgba(47,109,244,.85); padding:3px 8px; border-radius:999px; z-index:6;
+    font-variant-numeric:tabular-nums;}
+  .pip-badge.show{display:block;}
+
+  /* ===== 录音浮层：底栏「录音」键原地弹出的录音按钮 ===== */
+  .recpop{position:absolute; left:50%; bottom:92px; transform:translateX(-50%);
+    display:flex; flex-direction:column; align-items:center; gap:7px; z-index:75;
+    opacity:0; pointer-events:none; transition:opacity .16s ease, transform .16s ease;}
+  .recpop.show{opacity:1; pointer-events:auto; transform:translateX(-50%) translateY(0);}
+  .recbtn{position:relative; width:76px; height:76px; border-radius:50%;
+    background:var(--bg-2); border:1.5px solid var(--line); cursor:pointer;
+    display:flex; align-items:center; justify-content:center; color:var(--text);
+    box-shadow:0 10px 28px rgba(0,0,0,.5); touch-action:none; user-select:none;}
+  .recbtn .ic{width:32px; height:32px; stroke:var(--text); position:relative; z-index:3;}
+  .recbtn .ring{position:absolute; inset:-1.5px; width:calc(100% + 3px); height:calc(100% + 3px);
+    transform:rotate(-90deg); z-index:4; pointer-events:none;}
+  .recbtn .ring circle{fill:none; stroke-width:3; opacity:0;}
+  .recbtn .ring .bgc{opacity:1; stroke:var(--line);}
+  .recbtn .ring .fgc{stroke:var(--red); stroke-linecap:round;
+    transition:stroke-dashoffset .95s linear;}
+  .recbtn .cnt{position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    font-size:30px; font-weight:700; color:var(--red); z-index:5; font-variant-numeric:tabular-nums;}
+  .recbtn.counting{background:rgba(216,87,78,.10); border-color:var(--red);}
+  .recbtn.counting .cnt{display:flex;}
+  .recbtn.counting .ic{opacity:0;}
+  .recbtn.recording{background:rgba(216,87,78,.16); border-color:var(--red);}
+  .recbtn.recording .ic{opacity:0;}
+  .recbtn.recording::after{content:""; position:absolute; width:26px; height:26px; border-radius:50%;
+    background:var(--red); z-index:5; animation:pulse 1.1s ease-in-out infinite;}
+  .recbtn.stoprec{background:#fff; border-color:#fff;}
+  .recbtn.stoprec::after{background:var(--red); width:20px; height:20px; border-radius:5px; animation:none;}
+  @keyframes pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(.72);opacity:.55}}
+  .rectip{font-size:11px; color:var(--text-2); white-space:nowrap;
+    background:rgba(10,12,16,.8); padding:4px 9px; border-radius:999px;}
+  .recfmt{font-size:10px; color:var(--text-3); white-space:nowrap; letter-spacing:.2px;
+    background:rgba(10,12,16,.7); padding:3px 8px; border-radius:999px;
+    border:1px solid var(--line-soft); font-variant-numeric:tabular-nums;}
+  .rectip b{color:var(--text); font-weight:600; font-variant-numeric:tabular-nums;}
+  .rec-live{position:absolute; z-index:6; display:none; align-items:center; gap:6px;
+    background:rgba(216,87,78,.14); border:1px solid rgba(216,87,78,.5);
+    padding:3px 9px; border-radius:999px; font-size:11px; color:#F0A9A3;
+    font-variant-numeric:tabular-nums; pointer-events:none;}
+  .rec-live.show{display:flex;}
+  .rec-live .dot{width:6px; height:6px; border-radius:50%; background:var(--red);
+    animation:blink .9s ease-in-out infinite;}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+  /* 分组分隔：短竖线，不贯穿，区分功能簇 */
+  .bb-sep{width:1px; height:26px; flex:0 0 auto; background:var(--line); margin:0 6px; opacity:.75;}
+  .safe{height:34px; display:flex; align-items:center; justify-content:center;}
+  .safe i{width:120px; height:5px; border-radius:3px; background:var(--text-3); display:block;}
+
+  /* ============ 底部抽屉（换素材 / 导出） ============ */
+  .sheet-mask{position:absolute; inset:0; background:rgba(0,0,0,.55); z-index:90; display:none;
+    align-items:flex-end;}
+  .sheet-mask.show{display:flex; animation:fade .2s ease;}
+  @keyframes fade{from{opacity:0} to{opacity:1}}
+  .sheet{width:100%; background:var(--bg-1); border-radius:22px 22px 0 0; padding:8px 18px 22px;
+    max-height:calc(100% - 10px); overflow-y:auto;
+    transform:translateY(0); animation:up .26s cubic-bezier(.2,.8,.2,1); max-height:78%; overflow:auto;}
+  @keyframes up{from{transform:translateY(100%)} to{transform:translateY(0)}}
+  .sheet .grab{width:38px; height:4px; border-radius:3px; background:var(--line); margin:6px auto 14px;}
+  .sheet h3{font-size:17px; font-weight:700; margin-bottom:4px;}
+  .sheet .desc{font-size:12.5px; color:var(--text-2); margin-bottom:14px; line-height:1.5;}
+
+  /* 导出（参考老版：首帧缩略图 / 仅导出音频 / 分辨率 / 帧率 / 预计大小 / 导出） */
+  .ex-first{position:relative; width:116px; margin:0 auto 16px;}
+  .ex-first .fr{position:relative; width:100%; aspect-ratio:9/16; border-radius:8px; overflow:hidden;
+    background:#0d1116; border:1px solid var(--line-soft);}
+  .ex-first .fr .ic{position:absolute; left:50%; top:50%; width:26px; height:26px; transform:translate(-50%,-50%);
+    stroke:rgba(255,255,255,.5); fill:none;}
+  .ex-first .src{position:absolute; left:0; right:0; bottom:0; padding:14px 7px 5px; font-size:9.5px;
+    color:#fff; background:linear-gradient(0deg,rgba(0,0,0,.72),transparent);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .ex-first .tc{position:absolute; left:6px; top:6px; font-size:9.5px; color:#fff; z-index:2;
+    background:rgba(10,12,16,.66); padding:1px 4px; border-radius:3px; font-variant-numeric:tabular-nums;}
+
+  .ex-row{display:flex; align-items:center; justify-content:space-between; padding:13px 0;
+    border-bottom:1px solid var(--line-soft);}
+  .ex-row .lab{font-size:14px; color:var(--text); font-weight:500;}
+  .ex-row select{background:var(--bg-2); color:var(--text-2); border:1px solid var(--line);
+    border-radius:9px; padding:7px 10px; font-size:12.5px; font-family:var(--font); cursor:pointer;}
+
+  /* 开关 */
+  .sw{width:46px; height:27px; border-radius:999px; background:var(--bg-3); position:relative;
+    cursor:pointer; flex:0 0 auto; transition:background .18s;}
+  .sw::after{content:""; position:absolute; left:2.5px; top:2.5px; width:22px; height:22px; border-radius:50%;
+    background:#fff; transition:transform .18s; box-shadow:0 1px 4px rgba(0,0,0,.4);}
+  .sw.on{background:var(--accent);}
+  .sw.on::after{transform:translateX(19px);}
+
+  /* 分辨率 / 帧率 滑杆 */
+  .ex-slider{padding:16px 0 4px;}
+  .ex-slider.off{opacity:.32; pointer-events:none;}
+  .ex-slider .sl-top{display:flex; align-items:baseline; justify-content:space-between; margin-bottom:14px;}
+  .ex-slider .sl-lab{font-size:14px; color:var(--text); font-weight:500;}
+  .ex-slider .sl-val{font-size:13px; color:var(--accent); font-weight:700; font-variant-numeric:tabular-nums;}
+  .ex-slider .tr{position:relative; height:4px; border-radius:2px; background:var(--bg-3); cursor:pointer; touch-action:none;}
+  .ex-slider .fl{position:absolute; left:0; top:0; bottom:0; border-radius:2px; background:var(--accent);}
+  .ex-slider .kn{position:absolute; top:50%; width:20px; height:20px; border-radius:50%; background:#fff;
+    transform:translate(-50%,-50%); box-shadow:0 2px 7px rgba(0,0,0,.5); cursor:grab;}
+  .ex-slider .sc{display:flex; justify-content:space-between; margin-top:11px;}
+  .ex-slider .sc span{font-size:11px; color:var(--text-3); font-variant-numeric:tabular-nums;}
+  .ex-slider .sc span.on{color:var(--text); font-weight:600;}
+
+  .ex-size{display:flex; align-items:baseline; gap:9px; padding:16px 0 4px;}
+  .ex-size .l{font-size:14px; color:var(--text); font-weight:500;}
+  .ex-size .v{font-size:15px; color:var(--text); font-weight:700; font-variant-numeric:tabular-nums;}
+  .ex-go{margin-top:18px;}
+
+  .export-note{display:none;}
+  .btn-primary{width:100%; background:var(--accent); color:#fff; border:none; border-radius:14px;
+    padding:15px; font-size:16px; font-weight:600; cursor:pointer; font-family:var(--font); transition:.15s;}
+  .btn-primary:hover{background:var(--accent-2);}
+  .btn-primary:disabled{opacity:.6; cursor:not-allowed;}
+  .btn-ghost{width:100%; background:transparent; color:var(--text-2); border:1px solid var(--line);
+    border-radius:14px; padding:13px; font-size:15px; cursor:pointer; margin-top:10px; font-family:var(--font);}
+
+  /* 进度 */
+  .prog{display:none;}
+  .prog.show{display:block;}
+  .prog .pstage{font-size:13px; color:var(--text-2); margin-bottom:10px; min-height:18px;}
+  .prog .bar{height:8px; border-radius:5px; background:var(--bg-3); overflow:hidden;}
+  .prog .bar .pf{height:100%; width:0%; background:var(--accent); border-radius:5px; transition:width .25s;}
+  .prog .pct{font-size:12px; color:var(--text-3); margin-top:8px; text-align:right; font-variant-numeric:tabular-nums;}
+  .done-box{text-align:center; padding:6px 0 4px;}
+  .done-box .ok{width:54px;height:54px;border-radius:50%;background:rgba(62,204,119,.15);
+    display:flex;align-items:center;justify-content:center;margin:0 auto 12px;}
+  .done-box .ok .ic{stroke:var(--green); width:30px;height:30px;}
+  .done-box .dt{font-size:15px; font-weight:600; margin-bottom:4px;}
+  .done-box .ds{font-size:12.5px; color:var(--text-2); margin-bottom:16px;}
+
+  /* 提示气泡（操作反馈） */
+  .toast{position:absolute; bottom:90px; left:50%; transform:translateX(-50%); z-index:120;
+    background:rgba(20,24,30,.95); border:1px solid var(--line); color:var(--text);
+    padding:10px 16px; border-radius:12px; font-size:13px; opacity:0; transition:.2s; pointer-events:none;
+    max-width:80%; text-align:center; backdrop-filter:blur(8px);}
+  .toast.show{opacity:1;}
+
+  /* ============ 右侧规格面板 ============ */
+  .panel{flex:1 1 340px; max-width:420px; min-width:320px; background:var(--bg-1);
+    border:1px solid var(--line-soft); border-radius:18px; padding:20px 22px; align-self:flex-start;
+    position:sticky; top:24px; max-height:calc(100vh - 48px); overflow:auto;}
+  .panel h2{font-size:18px; margin-bottom:4px;}
+  .panel .ph-sub{font-size:12.5px; color:var(--text-3); margin-bottom:18px;}
+  .panel section{margin-bottom:18px;}
+  .panel h4{font-size:13px; color:var(--accent-2); margin-bottom:8px; letter-spacing:.4px;
+    display:flex; align-items:center; gap:6px;}
+  .panel h4::before{content:""; width:4px; height:14px; background:var(--accent); border-radius:2px;}
+  .swatches{display:flex; flex-wrap:wrap; gap:8px;}
+  .sw{display:flex; flex-direction:column; gap:4px; font-size:10.5px; color:var(--text-2);}
+  .sw .c{width:46px; height:30px; border-radius:8px; border:1px solid var(--line);}
+  .tbl{width:100%; border-collapse:collapse; font-size:11.5px;}
+  .tbl th,.tbl td{text-align:left; padding:5px 6px; border-bottom:1px solid var(--line-soft); color:var(--text-2);}
+  .tbl th{color:var(--text-3); font-weight:600;}
+  .tbl td b{color:var(--text);}
+  .ul{list-style:none; font-size:12.5px; color:var(--text-2); line-height:1.7;}
+  .ul li{padding-left:16px; position:relative; margin-bottom:3px;}
+  .ul li::before{content:"·"; position:absolute; left:4px; color:var(--accent); font-weight:700;}
+  .checks{list-style:none; font-size:12.5px; line-height:1.8;}
+  .checks li{display:flex; gap:8px; align-items:flex-start; color:var(--text-2);}
+  .checks .box{width:16px; height:16px; border:1.5px solid var(--line); border-radius:5px; flex:0 0 auto;
+    margin-top:1px; display:flex; align-items:center; justify-content:center;}
+  .checks .box.ok{background:var(--accent); border-color:var(--accent);}
+  .checks .box.ok::after{content:""; width:8px;height:4px;border-left:2px solid #fff;border-bottom:2px solid #fff;
+    transform:rotate(-45deg) translateY(-1px);}
+  .note{font-size:11.5px; color:var(--text-3); line-height:1.6; background:var(--bg-2);
+    border-radius:10px; padding:10px 12px;}
+
+  @media (max-width:980px){
+    body{flex-direction:column; align-items:center;}
+    .panel{position:relative; top:0; max-width:none; width:430px;}
+  }
+</style>
+</head>
+<body>
+
+<!-- 图标库（SF 线条风，stroke 渲染） -->
+<svg width="0" height="0" style="position:absolute"><defs>
+  <symbol id="ic-back" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></symbol>
+  <symbol id="ic-plus" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></symbol>
+  <symbol id="ic-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></symbol>
+  <symbol id="ic-video" viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="M16 10.5 21 8v8l-5-2.5z"/></symbol>
+  <symbol id="ic-camera" viewBox="0 0 24 24"><path d="M3 8.5A1.5 1.5 0 0 1 4.5 7H7l1.2-2h7.6L17 7h2.5A1.5 1.5 0 0 1 21 8.5v9A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/><circle cx="12" cy="13" r="3.2"/></symbol>
+  <symbol id="ic-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
+  <symbol id="ic-scissors" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><line x1="8" y1="7.4" x2="20" y2="16.5"/><line x1="8" y1="16.5" x2="20" y2="7.4"/></symbol>
+  <symbol id="ic-split" viewBox="0 0 24 24"><path d="M8 3v6a4 4 0 0 0 4 4h8"/><path d="M16 13l4 4-4 4"/><path d="M16 3v6"/><circle cx="6" cy="3" r="0"/></symbol>
+  <symbol id="ic-swap" viewBox="0 0 24 24"><path d="M4 9a8 8 0 0 1 13-3l3 3"/><path d="M20 5v4h-4"/><path d="M20 15a8 8 0 0 1-13 3l-3-3"/><path d="M4 19v-4h4"/></symbol>
+  <symbol id="ic-text" viewBox="0 0 24 24"><path d="M5 6h14M5 6v-1M19 6v-1M12 6v13M9 19h6"/></symbol>
+  <symbol id="ic-music" viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></symbol>
+  <symbol id="ic-sticker" viewBox="0 0 24 24"><rect x="3" y="4" width="14" height="14" rx="2.5"/><rect x="8" y="9" width="13" height="11" rx="2.5"/></symbol>
+  <symbol id="ic-wand" viewBox="0 0 24 24"><path d="M15 4 19 8M14 9 20 3M5 19l9-9"/><path d="M4 20h.01M8 16h.01M11 13h.01"/></symbol>
+  <symbol id="ic-wave" viewBox="0 0 24 24"><line x1="4" y1="12" x2="4" y2="12"/><line x1="8" y1="8" x2="8" y2="16"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="16" y1="9" x2="16" y2="15"/><line x1="20" y1="7" x2="20" y2="17"/></symbol>
+  <symbol id="ic-undo" viewBox="0 0 24 24"><path d="M9 7 4 12l5 5"/><path d="M4 12h11a5 5 0 0 1 0 10h-3"/></symbol>
+  <symbol id="ic-ellipsis" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
+  <symbol id="ic-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="ic-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></symbol>
+  <symbol id="ic-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></symbol>
+  <symbol id="ic-share" viewBox="0 0 24 24"><path d="M12 15V3M8 7l4-4 4 4"/><path d="M5 12v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7"/></symbol>
+  <symbol id="ic-play" viewBox="0 0 24 24"><polygon points="7 5 19 12 7 19"/></symbol>
+  <symbol id="ic-pause" viewBox="0 0 24 24"><rect x="7" y="5" width="3.5" height="14" rx="1"/><rect x="13.5" y="5" width="3.5" height="14" rx="1"/></symbol>
+  <symbol id="ic-check" viewBox="0 0 24 24"><polyline points="5 12 10 17 19 7"/></symbol>
+  <symbol id="ic-checks" viewBox="0 0 24 24"><polyline points="2 13 6 17 12 8"/><polyline points="10 15 13 18 21 6"/></symbol>
+  <symbol id="ic-x" viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></symbol>
+  <symbol id="ic-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="ic-expand" viewBox="0 0 24 24"><path d="M9 4H4v5"/><path d="M15 4h5v5"/><path d="M15 20h5v-5"/><path d="M9 20H4v-5"/></symbol>
+  <symbol id="ic-sort" viewBox="0 0 24 24"><path d="M4 7h16M6 12h12M9 17h6"/></symbol>
+  <symbol id="ic-redo" viewBox="0 0 24 24"><path d="M15 7l5 5-5 5"/><path d="M20 12H9a5 5 0 0 0 0 10h3"/></symbol>
+  <symbol id="ic-skipstart" viewBox="0 0 24 24"><line x1="6" y1="5" x2="6" y2="19"/><polygon points="19 5 19 19 9 12"/></symbol>
+  <symbol id="ic-mic2" viewBox="0 0 24 24"><rect x="9" y="2.5" width="6" height="11.5" rx="3"/><path d="M5.2 11.4a6.8 6.8 0 0 0 13.6 0M12 18.2v3.3"/></symbol>
+  <symbol id="ic-mute" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4z"/><line x1="16" y1="9" x2="21" y2="15"/><line x1="21" y1="9" x2="16" y2="15"/></symbol>
+  <symbol id="ic-mute2" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/><path d="M19 6a8.5 8.5 0 0 1 0 12"/></symbol>
+  <symbol id="ic-brush" viewBox="0 0 24 24"><path d="M4 20l4.5-1L19 8.5a2.1 2.1 0 0 0-3-3L5.5 16 4 20z"/><path d="M14.5 7.5l3 3"/></symbol>
+  <symbol id="ic-minus" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></symbol>
+  <symbol id="ic-chevron" viewBox="0 0 24 24"><polyline points="9 5 16 12 9 19"/></symbol>
+  <symbol id="ic-rg" viewBox="0 0 24 24"><path d="M4 9h14l-3.5-3.5"/><path d="M20 15H6l3.5 3.5"/></symbol>
+  <symbol id="ic-wavecut" viewBox="0 0 24 24"><path d="M2.5 12 L21.5 12"/><path d="M3 12 L5.25 6.2 L7.5 12 L9.75 17.8 L12 12 L14.25 6.2 L16.5 12 L18.75 17.8 L21 12"/></symbol>
+  <symbol id="ic-wavecut-b" viewBox="0 0 24 24"><path d="M2.5 12 L21.5 12"/><path d="M4.6 8.6 L4.6 15.4"/><path d="M8.05 6.2 L8.05 17.8"/><path d="M11.5 9.4 L11.5 14.6"/><path d="M14.95 6.2 L14.95 17.8"/><path d="M18.4 8.6 L18.4 15.4"/></symbol>
+  <symbol id="ic-wavecut-c" viewBox="0 0 24 24"><path d="M2.5 12 L21.5 12"/><path d="M2.5 12 A5 5 0 0 1 12.5 12 A5 5 0 0 0 22 12"/></symbol>
+  <symbol id="ic-skipend" viewBox="0 0 24 24"><line x1="18" y1="5" x2="18" y2="19"/><polygon points="5 5 5 19 15 12"/></symbol>
+  <symbol id="ic-tune" viewBox="0 0 24 24"><line x1="4" y1="8" x2="20" y2="8"/><circle cx="9.5" cy="8" r="2.3"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="16" r="2.3"/></symbol>
+  <symbol id="ic-folder2" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="15" rx="2.5"/><path d="M3 10h18"/><path d="M7.5 14.5l2.5 2.5 5-5.5"/></symbol>
+  <symbol id="ic-caret-d" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></symbol>
+  <symbol id="ic-crop" viewBox="0 0 24 24"><path d="M6 3v13a2 2 0 0 0 2 2h13"/><path d="M3 6h13a2 2 0 0 1 2 2v13"/></symbol>
+  <symbol id="ic-rotate" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7"/><polyline points="20 4 20 9 15 9"/></symbol>
+  <symbol id="ic-flip" viewBox="0 0 24 24"><line x1="12" y1="3.5" x2="12" y2="20.5"/><path d="M9 6.5 4 12l5 5.5z"/><path d="M15 6.5 20 12l-5 5.5z"/></symbol>
+  <symbol id="ic-speed" viewBox="0 0 24 24"><path d="M4 18a8 8 0 1 1 16 0"/><line x1="12" y1="18" x2="16.2" y2="11.4"/><circle cx="12" cy="18" r="1.4"/></symbol>
+  <symbol id="ic-zoom" viewBox="0 0 24 24"><path d="M9 4H4v5"/><path d="M15 20h5v-5"/><line x1="4" y1="4" x2="10.5" y2="10.5"/><line x1="20" y1="20" x2="13.5" y2="13.5"/></symbol>
+  <symbol id="ic-star" viewBox="0 0 24 24"><path d="M12 3.6l2.5 5.2 5.7.8-4.1 4 1 5.7-5.1-2.7-5.1 2.7 1-5.7-4.1-4 5.7-.8z"/></symbol>
+</defs></svg>
+
+<div class="stage">
+  <!-- 手机 -->
+  <div class="phone-wrap" id="phoneWrap">
+    <div class="nav">
+      <button data-go="start" class="on">起始页</button>
+      <button data-go="picker">选视频</button>
+      <button data-go="preview">视频预览</button>
+      <button data-go="trim">截取</button>
+      <button data-go="lib">素材库</button>
+      <button data-go="clip">片段选择</button>
+      <button data-go="wcut">波形剪辑</button>
+      <button data-go="editor">编辑页</button>
+      <button data-go="export">导出面板</button>
+    </div>
+    <div class="phone" id="phone">
+      <div class="island"></div>
+
+      <!-- ========== 屏幕：波形剪辑页（剪气口 · 老版布局，去项目列表/导出/恢复提示/红色删除） ========== -->
+      <div class="screen" id="screen-wcut">
+        <div class="statusbar">
+          <span>23:44</span>
+          <span class="right">
+            <svg viewBox="0 0 24 24"><path d="M4 13a9 9 0 0 1 16 0M7 16a5 5 0 0 1 10 0"/></svg>
+            <svg viewBox="0 0 24 24"><rect x="3" y="8" width="16" height="8" rx="2"/><rect x="19" y="10" width="2.5" height="4" rx="1"/></svg>
+          </span>
+        </div>
+        <div class="wcut">
+          <div class="wc-top">
+            <div class="wc-tbtn" id="wcBack" role="button" aria-label="返回" title="返回"><svg class="ic"><use href="#ic-back"/></svg></div>
+            <div class="wc-title" id="wcTitle">IMG_5479.MOV</div>
+            <div class="wc-tbtn" id="wcClose" role="button" aria-label="关闭" title="关闭"><svg class="ic"><use href="#ic-x"/></svg></div>
+          </div>
+          <div class="wc-stage">
+            <div class="wc-stage-in"></div>
+            <div class="wc-fps" id="wcFps">00:02 / 00:07</div>
+          </div>
+          <div class="wc-times">
+            <div class="wc-cur" id="wcCur">00:02</div>
+            <div class="wc-meta" id="wcMeta">原 <b>00:07</b> · 剪后 <b>00:06</b> · <b>3</b> 刀 · 删 <b>1.4s</b> (17.6%)</div>
+          </div>
+          <div class="wc-wave" id="wcWave">
+            <div class="wc-wrap" id="wcWrap"></div>
+            <div class="wc-thr" id="wcThr"></div>
+            <div class="wc-head" id="wcHead"></div>
+          </div>
+          <div class="wc-mini" id="wcMini">
+            <div id="wcMiniWrap"></div>
+            <div class="wc-mini-view" id="wcMiniView"></div>
+          </div>
+          <div class="wc-slider">
+            <span class="lab" id="wcThrLab">阈值 -25.0 dB</span>
+            <div class="wc-track" id="wcTrack">
+              <div class="fill" id="wcFill"></div>
+              <div class="kn" id="wcKn"></div>
+            </div>
+            <button class="wc-chev" id="wcChev" aria-label="阈值详情"><svg class="ic"><use href="#ic-chevron"/></svg></button>
+          </div>
+          <div class="wc-acts">
+            <div class="bb" id="wcUndo" role="button" aria-label="撤销" title="撤销"><svg class="ic"><use href="#ic-undo"/></svg></div>
+            <div class="bb" id="wcRedo" role="button" aria-label="重做" title="重做"><svg class="ic"><use href="#ic-redo"/></svg></div>
+            <div class="bb" id="wcPrev" role="button" aria-label="回到开头" title="回到开头"><svg class="ic solid"><use href="#ic-skipstart"/></svg></div>
+            <div class="bb" id="wcPlay" role="button" aria-label="播放" title="播放"><svg class="ic solid" id="wcPlayIc"><use href="#ic-play"/></svg></div>
+            <div class="bb rg-red on" id="wcRg" role="button" aria-label="切换指针处红绿区" title="切换指针处红绿区"><svg class="ic" id="wcRgIc"><use href="#ic-rg"/></svg></div>
+            <div class="bb" id="wcCut" role="button" aria-label="气口切割" title="气口切割"><svg class="ic"><use href="#ic-scissors"/></svg></div>
+            <div class="bb" id="wcBrush" role="button" aria-label="标记气口" title="标记气口"><svg class="ic"><use href="#ic-brush"/></svg></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== 屏幕1：起始页（草稿网格，参考老版） ========== -->
+      <div class="screen active" id="screen-start">
+        <div class="statusbar">
+          <span>23:44</span>
+          <span class="right">
+            <svg viewBox="0 0 24 24"><path d="M4 13a9 9 0 0 1 16 0M7 16a5 5 0 0 1 10 0"/></svg>
+            <svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 14 0v5l2 2H3l2-2z"/></svg>
+            <svg viewBox="0 0 24 24"><rect x="3" y="8" width="16" height="8" rx="2"/><rect x="19" y="10" width="2.5" height="4" rx="1"/></svg>
+          </span>
+        </div>
+        <div class="start" id="startScreen">
+          <div class="st-top">
+            <div class="ticon" title="设置"><svg class="ic" style="stroke:var(--text-2)"><use href="#ic-gear"/></svg></div>
+            <div class="title">草稿 <em>(9)</em></div>
+            <div class="txtbtn" id="selToggle">选择</div>
+          </div>
+          <div class="start-grid" id="drafts"></div>
+          <div class="start-foot" id="buildFoot">bk剪辑 · 专剪口播 v1.5</div>
+          <div class="fab" id="fabNew" title="新建 / 导入"><svg class="ic"><use href="#ic-plus"/></svg></div>
+          <div class="selbar">
+            <div class="txtbtn" id="selCancel">取消</div>
+            <div class="txtbtn warn" id="selDel">删除 <span id="selNum"></span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== 屏幕：选视频（参考老版 + 竞品分类筛选） ========== -->
+      <div class="screen" id="screen-picker">
+        <div class="statusbar">
+          <span>23:44</span>
+          <span class="right">
+            <svg viewBox="0 0 24 24"><path d="M4 13a9 9 0 0 1 16 0M7 16a5 5 0 0 1 10 0"/></svg>
+            <svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 14 0v5l2 2H3l2-2z"/></svg>
+            <svg viewBox="0 0 24 24"><rect x="3" y="8" width="16" height="8" rx="2"/><rect x="19" y="10" width="2.5" height="4" rx="1"/></svg>
+          </span>
+        </div>
+        <div class="picker">
+          <div class="topbar">
+            <div class="grp"><div class="ticon" id="pickBack"><svg class="ic"><use href="#ic-back"/></svg></div></div>
+            <div class="title" id="pickTitle">选视频</div>
+            <div class="grp"><div class="bdg zero" id="pickCount">0</div></div>
+          </div>
+          <div class="filters" id="pickFilters">
+            <div class="chip on">全部</div><div class="chip">视频</div><div class="chip">照片</div>
+            <div class="chip">最近</div><div class="chip">实况</div>
+          </div>
+          <div class="pick-grid" id="pickGrid"></div>
+          <div class="pick-foot"><button class="pbtn" id="pickAdd" disabled>添加 0 条</button></div>
+        </div>
+      </div>
+
+      <!-- ========== 屏幕：视频预览（参考老版：画面 + 底部播放条 + 右下「添加」） ========== -->
+      <div class="screen" id="screen-preview">
+        <div class="statusbar">
+          <span>23:44</span>
+          <span class="right">
+            <svg viewBox="0 0 24 24"><path d="M4 13a9 9 0 0 1 16 0M7 16a5 5 0 0 1 10 0"/></svg>
+            <svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 14 0v5l2 2H3l2-2z"/></svg>
+            <svg viewBox="0 0 24 24"><rect x="3" y="8" width="16" height="8" rx="2"/><rect x="19" y="10" width="2.5" height="4" rx="1"/></svg>
+          </span>
+        </div>
+        <div class="preview">
+          <div class="pv-stage"></div>
+          <div class="pv-top">
+            <div class="pv-btn" id="pvClose"><svg class="ic"><use href="#ic-x"/></svg></div>
+          </div>
+          <div class="pv-bottom">
+            <div class="pv-transport">
+              <button class="pv-pp" id="pvPP" aria-label="播放"><svg class="ic" id="pvPPIc"><use href="#ic-play"/></svg></button>
+              <div class="pv-time" id="pvCur">0:01</div>
+              <div class="pv-scrub" id="pvScrub">
+                <div class="trk"></div><div class="fl" id="pvFl" style="width:3%"></div><div class="kn" id="pvKn" style="left:3%"></div>
+              </div>
+              <div class="pv-time" id="pvDur">0:30</div>
+            </div>
+          </div>
+        </div>
+        <div class="pv-foot"><button class="pv-add" id="pvAdd">添加</button></div>
+      </div>
+
+      <!-- ========== 屏幕：素材库（替换入口 · 参考老版「最近项目 / 素材库」） ========== -->
+      <div class="screen" id="screen-lib">
+        <div class="statusbar">
+          <span>23:44</span>
+          <span class="right">
+            <svg viewBox="0 0 24 24"><path d="M4 13a9 9 0 0 1 16 0M7 16a5 5 0 0 1 10 0"/></svg>
+            <svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 14 0v5l2 2H3l2-2z"/></svg>
+            <svg viewBox="0 0 24 24"><rect x="3" y="8" width="16" height="8" rx="2"/><rect x="19" y="10" width="2.5" height="4" rx="1"/></svg>
+          </span>
+        </div>
+        <div class="lib">
+          <div class="lib-top">
+            <div class="lib-x" id="libClose" title="关闭"><svg class="ic"><use href="#ic-x"/></svg></div>
+            <div class="lib-more" id="libMore" title="更多"><svg class="ic"><use href="#ic-ellipsis"/></svg></div>
+          </div>
+          <div class="lib-chips" id="libChips">
+            <div class="chip on" data-f="all">全部</div>
+            <div class="chip" data-f="video">视频</div>
+            <div class="chip" data-f="photo">照片</div>
+          </div>
+          <div class="lib-grid" id="libGrid"></div>
+        </div>
+      </div>
+
+      <!-- ========== 屏幕：片段选择（时长锁定 = 被替换视频时长） ========== -->
+      <div class="screen" id="screen-clip">
+        <div class="statusbar">
+          <span>23:44</span>
+          <span class="right">
+            <svg viewBox="0 0 24 24"><path d="M4 13a9 9 0 0 1 16 0M7 16a5 5 0 0 1 10 0"/></svg>
+            <svg viewBox="0 0 24 24"><rect x="3" y="8" width="16" height="8" rx="2"/><rect x="19" y="10" width="2.5" height="4" rx="1"/></svg>
+          </span>
+        </div>
+        <div class="clp">
+          <div class="clp-top">
+            <div class="clp-back" id="clpBack"><svg class="ic"><use href="#ic-back"/></svg></div>
+            <div class="clp-ok on" id="clpOk">完成</div>
+          </div>
+          <div class="clp-stage"><div class="clp-stage-in"></div></div>
+          <div class="clp-bar">
+            <button class="clp-pp" id="clpPP" aria-label="播放"><svg class="ic" id="clpPPIc"><use href="#ic-play"/></svg></button>
+            <div class="clp-strip" id="clpStrip">
+              <div class="clp-frames" id="clpFrames"></div>
+              <div class="clp-sel" id="clpSel"><span class="len" id="clpLen">3.00</span></div>
+            </div>
+          </div>
+          <div class="clp-tip" id="clpTip">拖动选择片段</div>
+        </div>
+      </div>
+
+      <!-- ========== 屏幕：截取（素材预处理 · 只保留 预览 / 帧条把手 / 时长比 / 底部三键） ========== -->
+      <div class="screen" id="screen-trim">
+        <div class="statusbar">
+          <span>23:44</span>
+          <span class="right">
+            <svg viewBox="0 0 24 24"><path d="M4 13a9 9 0 0 1 16 0M7 16a5 5 0 0 1 10 0"/></svg>
+            <svg viewBox="0 0 24 24"><rect x="3" y="8" width="16" height="8" rx="2"/><rect x="19" y="10" width="2.5" height="4" rx="1"/></svg>
+          </span>
+        </div>
+        <div class="trim">
+          <div class="trim-stage">
+            <div class="trim-play" id="trimPlay"><svg class="ic solid" id="trimPlayIc"><use href="#ic-play"/></svg></div>
+          </div>
+          <div class="trim-ctl">
+            <div class="trim-src" id="trimSrc"></div>
+            <div class="trim-strip" id="trimStrip">
+              <div class="trim-frames" id="trimFrames"></div>
+              <div class="trim-dim" id="trimDimL"></div>
+              <div class="trim-sel" id="trimSel">
+                <div class="hnd l" id="trimHL"></div>
+                <div class="trim-body" id="trimBody"></div>
+                <div class="hnd r" id="trimHR"></div>
+              </div>
+              <div class="trim-dim" id="trimDimR"></div>
+            </div>
+            <div class="trim-len" id="trimLen"><b>10.76</b> / 53.81</div>
+            <div class="trim-acts">
+              <div class="trim-btn" id="trimCancel"><svg class="ic"><use href="#ic-x"/></svg></div>
+              <div class="trim-btn" id="trimPlay2"><svg class="ic solid" id="trimPlay2Ic"><use href="#ic-play"/></svg></div>
+              <div class="trim-btn ok" id="trimOk"><svg class="ic"><use href="#ic-check"/></svg></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 动作面板（列表项 ··· 菜单） -->
+      <div class="sheet-mask" id="sheetMask"></div>
+      <div class="sheet" id="sheet"></div>
+
+      <!-- ========== 屏幕2：编辑页 ========== -->
+      <div class="screen" id="screen-editor">
+        <div class="statusbar">
+          <span>23:44</span>
+          <span class="right">
+            <svg viewBox="0 0 24 24"><path d="M4 13a9 9 0 0 1 16 0M7 16a5 5 0 0 1 10 0"/></svg>
+            <svg viewBox="0 0 24 24"><rect x="3" y="8" width="16" height="8" rx="2"/><rect x="19" y="10" width="2.5" height="4" rx="1"/></svg>
+          </span>
+        </div>
+
+        <div class="editor">
+          <!-- 顶栏 -->
+          <div class="topbar">
+            <div class="grp">
+              <div class="ticon" onclick="goStart()" title="返回"><svg class="ic"><use href="#ic-back"/></svg></div>
+            </div>
+            <div class="title">未命名项目</div>
+            <div class="grp">
+              <div class="ticon" title="导出" onclick="openExport()"><svg class="ic"><use href="#ic-share"/></svg></div>
+            </div>
+          </div>
+
+          <!-- 预览 -->
+          <div class="preview-zone">
+            <div class="canvas">
+              <div class="frame-img"></div>
+              <div class="rec"><span class="rd"></span>REC</div>
+              <div class="pip-badge" id="pipBadge"></div>
+              <div class="center-time" id="centerTime">00:12</div>
+              <div class="scrbar" id="pbScr">
+                <div class="trk"></div>
+                <div class="fill" id="scrFill"></div>
+                <div class="kn" id="scrKn"></div>
+              </div>
+            </div>
+            <div class="pb">
+              <div class="grp"><span class="t" id="pbTime">00:12 / <b>00:30</b></span></div>
+              <div class="grp">
+                <button class="sq" id="pbPrev" aria-label="上一段" title="上一段"><svg class="ic solid"><use href="#ic-skipstart"/></svg></button>
+                <button class="pl" id="pbPlay" aria-label="播放" title="播放"><svg class="ic" id="pbPlayIc"><use href="#ic-play"/></svg></button>
+                <button class="sq" id="pbNext" aria-label="下一段" title="下一段"><svg class="ic solid"><use href="#ic-skipend"/></svg></button>
+              </div>
+              <div class="grp">
+                <button class="sq" id="pbTune" aria-label="调节" title="调节"><svg class="ic"><use href="#ic-tune"/></svg></button>
+                <button class="sq" id="pbUndo" aria-label="撤销" title="撤销"><svg class="ic"><use href="#ic-undo"/></svg></button>
+                <button class="sq" id="pbRedo" aria-label="重做" title="重做"><svg class="ic"><use href="#ic-redo"/></svg></button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 时间线：固定左列标签 + 可滚动三轨 + 固定中央指针 -->
+          <div class="timeline">
+            <div class="tl-body">
+            <!-- 固定左列（不随内容滚动） -->
+            <div class="tl-labels">
+              <div class="tl-lab"><svg class="ic"><use href="#ic-mic"/></svg></div>
+              <div class="tl-lab"><svg class="ic"><use href="#ic-sticker"/></svg></div>
+              <div class="tl-lab main">
+                <button class="tlab" id="mainAdd" title="在指针处的片段之前插入视频"><svg class="ic"><use href="#ic-video"/></svg></button>
+                <button class="tlab" id="mainMute" title="静音指针处的区块"><svg class="ic"><use href="#ic-mute2"/></svg></button>
+              </div>
+            </div>
+
+            <!-- 可横向滚动的内容区（三轨同步） + 固定中央指针 -->
+            <div class="tl-scroll" id="tlScroll">
+              <div class="track-stack" id="trackStack">
+                <!-- 1 录音轨 -->
+                <div class="trow rec">
+                  <div class="tbody" id="recBody"></div>
+                </div>
+                <!-- 2 画中画轨 -->
+                <div class="trow pip">
+                  <div class="tbody" id="pipBody"></div>
+                </div>
+                <!-- 3 主轨道：上部画面帧条 + 下部声音包络波形 + 底部时间刻度（同一时间轴） -->
+                <div class="trow main">
+                  <div class="tbody" id="mainBody">
+                    <div class="m-thumb" id="thumbBody"></div>
+                    <div class="m-wave"><div class="wave-body" id="waveBody"></div></div>
+                    <div class="m-ruler" id="ruler"></div>
+                  </div>
+                </div>
+              </div>
+              <!-- 固定在可视区中央的指针（不随内容滚动） -->
+              <div class="tl-play" id="tlPlay"></div>
+            </div>
+            </div>
+
+            <!-- 迷你概览条（全局，不随滚动） -->
+            <div class="mini-row"><div class="mini" id="mini"></div></div>
+
+            <!-- 片段悬浮工具条：水平以指针为参照居中，垂直紧贴所点轨道上方 -->
+            <div class="floatbar" id="floatbar"></div>
+          </div>
+
+          <!-- 录音浮层：底栏「录音」键原地弹出 -->
+          <div class="recpop" id="recPop">
+            <div class="recfmt" id="recFmt">WAV · 16bit · 48kHz · 单声道 · 5.6 MB/分</div>
+            <div class="rectip" id="recTip">点按录音 · 长按直接录</div>
+            <div class="recbtn" id="recBtn">
+              <svg class="ring" viewBox="0 0 80 80">
+                <circle class="bgc" cx="40" cy="40" r="38"/>
+                <circle class="fgc" id="recRing" cx="40" cy="40" r="38"
+                        stroke-dasharray="238.8" stroke-dashoffset="238.8"/>
+              </svg>
+              <span class="cnt" id="recCnt">2</span>
+              <svg class="ic" id="recIc"><use href="#ic-mic2"/></svg>
+            </div>
+          </div>
+          <div class="rec-live" id="recLive"><span class="dot"></span><span id="recLiveTx">录音中 0.0s</span></div>
+
+          <!-- 工具面板（音量 / 变速 / 画面大小）：底栏上方的浮层，参考竞品音量条 -->
+          <div class="toolpanel" id="toolPanel"></div>
+          <div class="spdpanel" id="spdPanel"></div>
+
+          <!-- 底部工具栏（纯线条图标，横滑，无文字）——按选中轨道切换 -->
+          <div class="bottombar" id="bottombar"><!-- JS 注入 --></div>
+          <div class="safe"><i></div>
+        </div>
+
+        <!-- 导出抽屉 -->
+        <div class="sheet-mask" id="exportMask">
+          <div class="sheet">
+            <div class="grab"></div>
+            <h3>导出</h3>
+            <div class="desc">按时间标记逐段导出，视频轨与音频轨分别生成后再合成，自动校验音画长度。</div>
+
+            <!-- 缩略图 = 视频主轨道第一帧 -->
+            <div class="ex-first">
+              <div class="fr" id="exThumb">
+                <svg class="ic"><use href="#ic-video"/></svg>
+                <span class="tc" id="exTc">00:00.00</span>
+                <span class="src" id="exSrc">IMG_5479.MOV</span>
+              </div>
+            </div>
+
+            <!-- 仅导出音频 -->
+            <div class="ex-row">
+              <span class="lab">仅导出音频</span>
+              <div class="sw" id="exAudio" role="switch" aria-checked="false" tabindex="0"></div>
+            </div>
+
+            <!-- 分辨率 -->
+            <div class="ex-slider" id="exResWrap">
+              <div class="sl-top">
+                <span class="sl-lab">分辨率</span>
+                <span class="sl-val" id="exResVal">1080p</span>
+              </div>
+              <div class="tr" id="exRes">
+                <div class="fl" id="exResFl"></div>
+                <div class="kn" id="exResKn"></div>
+              </div>
+              <div class="sc" id="exResScale"></div>
+            </div>
+
+            <!-- 帧率 -->
+            <div class="ex-slider" id="exFpsWrap">
+              <div class="sl-top">
+                <span class="sl-lab">帧率</span>
+                <span class="sl-val" id="exFpsVal">30 fps</span>
+              </div>
+              <div class="tr" id="exFps">
+                <div class="fl" id="exFpsFl"></div>
+                <div class="kn" id="exFpsKn"></div>
+              </div>
+              <div class="sc" id="exFpsScale"></div>
+            </div>
+
+            <!-- 预计生成文件大小 -->
+            <div class="ex-size">
+              <span class="l">预计生成文件大小</span>
+              <span class="v" id="exSize">31.45 MB</span>
+            </div>
+
+            <button class="btn-primary ex-go" id="exportBtn" onclick="doExport()">导出</button>
+
+            <div class="prog" id="prog">
+              <div class="pstage" id="pstage">准备中…</div>
+              <div class="bar"><div class="pf" id="pf"></div></div>
+              <div class="pct" id="pct">0%</div>
+            </div>
+
+            <div class="done-box" id="doneBox" style="display:none">
+              <div class="ok"><svg class="ic"><use href="#ic-check"/></svg></div>
+              <div class="dt">导出完成</div>
+              <div class="ds" id="doneSub">1080p · 30fps · 26.0s</div>
+              <button class="btn-primary" onclick="toast('分享到…')">分享</button>
+              <button class="btn-ghost" onclick="closeExport(true)">完成</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="toast" id="toast"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ========== 右侧规格面板 ========== -->
+  <div class="panel">
+    <h2>bk剪辑 v1.5 · 界面设计规范 <span style="font-size:12px;color:var(--accent);font-weight:500;">定版基线</span></h2>
+    <div class="ph-sub">依据 docs/ 竞品分析移交 · 折叠模型设计定稿 · 竞品布局实测（2026-10-04）</div>
+
+    <section>
+      <h4>移交基线 · v1.5.7（已验证，可作为开发基准）</h4>
+      <table class="tbl">
+        <tr><th>项</th><th>内容</th></tr>
+        <tr><td>构建号</td><td><code>2026-10-05 20:14 · v1.5.7（变速面板仅保留线性，移除曲线 Tab）</code>（起始页底部实时显示，可据此确认是否为最新）</td></tr>
+        <tr><td>交付物</td><td><code>bk-clip-v15-ui/index.html</code>（单文件，含全部页面/图标/交互）<br><code>bk-clip-v15-ui/波剪图标.html</code>（波剪图标规格）<br><code>bk-clip-v15-ui/移交说明.md</code>（本文档）<br><code>bk-clip-v15-ui/verify/</code>（五套自动化测试 + 验证截图）</td></tr>
+        <tr><td>页面清单</td><td>起始页 / 选视频 / 视频预览 / 截取 / <b>素材库</b> / <b>片段选择</b> / 波形剪辑 / 编辑页（8 屏）＋ <b>导出抽屉</b>（浮层，非独立页）</td></tr>
+        <tr><td>自动化验证</td><td>① 静态：div 平衡 · 符号存在性 · id 差集<br>② 交互冒烟 <code>smoke.mjs</code>：遍历全部可点元素，<b>零 JS 错误</b><br>③ 角色工作流 <code>wf.mjs</code>：剪辑师三条真实流程，<b>57/57 业务断言通过</b><br>④ 导出入口 <code>ex.mjs</code>：4 个入口全通<br>⑤ 录音流程 <code>rec.mjs</code>：30/30<br>⑥ 编辑页交互 <code>recmini.mjs</code>：5/5<br>⑦ CSS 恢复校验 <code>cssverify.mjs</code>：7/7（菜单损坏修复后回归）<br>⑧ 三轨菜单验证 <code>menushot.mjs</code>：3/3（主/画中画/录音菜单均水平胶囊、落于手机内）<br>⑨ 上下文底栏 <code>bar.mjs</code>：22/22（主轨 10 键 / 画中画 9 键 / 录音 5 键、拖动自动蓝框、音量·画面大小面板、旋转/镜像、画中画替换）<br>⑩ 变速面板 <code>spd.mjs</code>：18/18（0.1~4x 离散档位、对数刻度尺、时长联动、片段时长改写与后续平移、取消/应用全部；<b>已移除曲线 Tab</b>）</td></tr>
+        <tr><td>设计铁律</td><td>工具栏图标 = <b>单线条、无文字</b>（悬浮菜单例外，按竞品用图标+文字）；<b>第三色相已清除</b>，选中/强调统一 <code>#2F6DF4</code>，红绿只用于波剪页的气口语义</td></tr>
+      </table>
+      <p style="font-size:11px;color:var(--text-3);line-height:1.7;margin-top:10px;">
+        <b style="color:#A32D2D">开发注意</b>：本原型为<b>纯静态演示</b>，数据全在内存（<code>regions</code> / <code>pipItems</code> / <code>recItems</code> / <code>wcSeg</code>），刷新即重置。接入真实数据时需替换这几处数据源与 <code>render*</code> 渲染函数，<b>不要改动 UI 结构与 CSS 变量</b>。
+      </p>
+    </section>
+
+    <section>
+      <h4>底部工具栏 · 按轨道上下文切换（v1.5.5）</h4>
+      <table class="tbl">
+        <tr><th>轨道</th><th>按钮（左→右）</th></tr>
+        <tr><td>主轨（默认）</td><td>切割 · 波剪 · 音量 · 画面大小 · 旋转 · 左右镜像 · 变速 · 复制 · 删除 · 录音　<b>10 键</b></td></tr>
+        <tr><td>录音轨选中</td><td>切割 · 音量 · 复制 · 录音 · 删除　<b>5 键</b></td></tr>
+        <tr><td>画中画选中</td><td>切割 · 音量 · 替换 · 画面大小 · 旋转 · 左右镜像 · 变速 · 复制 · 删除　<b>9 键</b></td></tr>
+      </table>
+      <ul class="ul">
+        <li>主轨区块<b>被拖动经过中央指针时自动出现蓝框</b>，底部按钮随即作用于该框选区块</li>
+        <li>音量 / 画面大小 = 底部浮出<b>连续滑块</b>面板，含静音键与「应用到全部」</li>
+        <li>变速 = <b>线性变速</b>面板：0.1~4x 七档离散 · 对数刻度尺可拖 · 时长实时联动（<b>无曲线变速</b>）</li>
+        <li>变速会<b>真实改变轨道结构</b>：片段时长 = 原始时长 ÷ 倍速，后续片段平移，总时长同步</li>
+        <li>画面大小 / 旋转 / 左右镜像 = <b>逐片段</b>参数，实时反映在预览画面上（主轨与画中画通用）</li>
+        <li>底栏按键数较多时<b>横向可滑</b>（<code>overflow-x:auto</code>），不换行</li>
+        <li>侧轨（录音/画中画）需<b>选中</b>（蓝框＋悬浮菜单）后，底栏才切到对应键组</li>
+        <li>导出键已移出底栏，入口剩 <b>nav</b> 与 <b>编辑页顶栏 ⬆</b></li>
+      </ul>
+    </section>
+
+    <section>
+      <h4>设计基调</h4>
+      <ul class="ul">
+        <li>自定义简约风 · 深色为主（突出视频画面）</li>
+        <li>工具栏按钮 = SF Symbols <b>单线条图标、无文字</b>（aria-label 兜底无障碍）</li>
+        <li>颜色唯一归属 <code>BKTheme.accent = #2F6DF4</code></li>
+        <li>区块间距统一 8pt，无大留白</li>
+      </ul>
+    </section>
+
+    <section>
+      <h4>配色系统</h4>
+      <div class="swatches">
+        <div class="sw"><div class="c" style="background:#0A0C10"></div>bg #0A0C10</div>
+        <div class="sw"><div class="c" style="background:#12151B"></div>surface</div>
+        <div class="sw"><div class="c" style="background:#2F6DF4"></div>accent</div>
+        <div class="sw"><div class="c" style="background:#2F6DF4"></div>select 蓝（=accent）</div>
+        <div class="sw"><div class="c" style="background:#3ECC77"></div>green 绿·方案C</div>
+        <div class="sw"><div class="c" style="background:#D8574E"></div>red 红·方案C</div>
+        <div class="sw"><div class="c" style="background:#FFFFFF"></div>playhead</div>
+      </div>
+      <p style="font-size:11px;color:var(--text-3);line-height:1.7;margin-top:10px;">
+        主轨道波形 / 红罩 / 折叠线 / 迷你标记已采用 <b style="color:var(--text-2)">方案 C 低饱和</b>：保留绿 <code>#3ECC77</code>、气口红 <code>#D8574E</code>（红罩 <code>rgba(190,70,64,.30)</code>）、底板 <code>#141719</code>。全局品牌色 <code>#2F6DF4</code>；<b style="color:var(--text-2)">选中框已由黄 <code>#FFD60A</code> 统一为品牌蓝 <code>#2F6DF4</code></b>（与片段悬浮条同色，去第三色相）。
+      </p>
+    </section>
+
+    <section>
+      <h4>布局尺寸（iPhone 15PM · 430×932pt）</h4>
+      <table class="tbl">
+        <tr><th>区域</th><th>尺寸</th><th>备注</th></tr>
+        <tr><td>预览画布</td><td><b>255×454</b></td><td>精确 9:16，居中</td></tr>
+        <tr><td>播放控制条</td><td>~27</td><td>贴预览下 8pt</td></tr>
+        <tr><td>添加行 ×3</td><td>30 / 距38</td><td>通栏</td></tr>
+        <tr><td>主视频轨</td><td>61</td><td>缩略图，通栏滚动</td></tr>
+        <tr><td>音频波形</td><td>20</td><td>贴主轨下 2pt</td></tr>
+        <tr><td>时间刻度尺</td><td>11</td><td>秒+帧</td></tr>
+        <tr><td>底部工具栏</td><td>图标24·高64</td><td>横滑，无文字，分 4 组（短竖线分隔）</td></tr>
+        <tr><td>折叠线宽</td><td>~2pt</td><td>= 指针宽</td></tr>
+      </table>
+    </section>
+
+    <section>
+      <h4>新页面（起始 / 选视频 / 预览 / 截取 / 波形剪辑）</h4>
+      <table class="tbl">
+        <tr><th>页面</th><th>结构</th><th>来源</th></tr>
+        <tr><td>起始页</td><td>顶栏 齿轮·草稿(N)·选择；3 列草稿网格（N刀角标 + ··· + 时长）；右下 ＋FAB；底部版本行</td><td>老版起始页（信息架构保留，视觉重做）</td></tr>
+        <tr><td>选视频</td><td>返回·选视频·已选徽标；分类 chip；3 列网格（选择框=顺序号 / 时长 / 放大）；底部「添加 N 条」</td><td>老版选视频 + 竞品分类筛选行</td></tr>
+        <tr><td>视频预览</td><td>全屏画面 + 中央播放；底部两行 = 时间·进度拖拽·全屏 / 截取·添加</td><td>老版预览 + 竞品底部两行</td></tr>
+        <tr><td>截取</td><td>全屏画面 + 中央播放；底部帧条（暗区遮罩 + 蓝色选区 + 蓝把手）；时长比（选中/总时长）；底部三键 ✕ ▷ ✓（✓=品牌蓝确认）</td><td>竞品截取页（仅保留 预览/帧条把手/时长比/底部三键，去掉 素材切换·单独时长·快捷预设）</td></tr>
+        <tr><td>波形剪辑<br><span style="color:var(--text-3)">（剪气口）</span></td><td>顶栏 <b>返回 + 标题 + 关闭</b>（返回与关闭都回主轨道编辑页）；视频预览；时间行（指针处时间 + 剪后统计）；<b>主波形：白色指针固定中央（顶带三角标），拖动波形条左右滚动</b>；绿=保留 / 红=气口，<b>点红变绿、点绿变红</b>；迷你概览（蓝框=当前视窗）；阈值滑杆；底部 7 键单行（撤销/重做/回开头/播放/<b>红绿切换</b>/剪刀/画笔，<b>无圆圈·同编辑页图标风格</b>）</td><td>老版剪气口页（布局保留，去项目列表/导出/恢复提示黄字/红色删除键，配色改深色方案C）</td></tr>
+      </table>
+      <p style="font-size:11px;color:var(--text-3);line-height:1.7;margin-top:10px;">
+        交互决策：① 选视频页<b style="color:var(--text-2)">点缩略图=勾选/取消</b>（选择框显<b style="color:var(--text-2)">顺序号</b>，便于拼多段），点右下放大=进预览（比老版省一步）。② 老版橙色「N刀」角标 → 改<b style="color:var(--text-2)">品牌蓝</b>（清除第三色相）。③ 预览页「截取」→ 进截取页做素材预处理（拖蓝把手选区 / 拖中段移动选区）。④ 截取页把手与选区边框 = <b style="color:var(--accent)">品牌蓝</b>，✓ 确认键蓝色，去掉第三色相。⑤ 起始页草稿 ··· → iOS 动作面板（重命名/复制/导出/删除）。⑥ <b style="color:var(--text-2)">波形剪辑页</b>指针逻辑=<b style="color:var(--text-2)">固定中央不移动</b>，拖波形条滚动（110px/秒，总长 7s 约 770px 宽，右侧可继续滚），波形随播放自动滚动；<b style="color:var(--text-2)">点红区→绿区、点绿区→红区</b>（28 段离散，0.25s/段），第 5 键对<b style="color:var(--text-2)">指针处</b>做同样切换并按「下一步结果」染红/绿；剪后时长/刀数/删除量实时重算。⑦ 底部 7 键去掉圆圈，直接复用编辑页 <code>.bb</code> 样式（无边框、线条图标、24px、选中底部蓝条），单行排列。
+      </p>
+    </section>
+
+    <section>
+      <h4>交互模型（已定稿）</h4>
+      <ul class="ul">
+        <li>红绿切换 = 界面独立按钮，切当前选中区块 红⇄绿（不放轨道上）</li>
+        <li>点选片段 = 进编辑态：蓝框 + 两端把手 + 片段上方蓝色悬浮条（同色）</li>
+        <li>拖把手 = 改标记点，从折叠区露/收一截，轨道总长实时变</li>
+        <li>退出编辑 = 点空白处</li>
+        <li>底部工具栏 = 最下方，可左右滑动</li>
+      </ul>
+    </section>
+
+    <section>
+      <h4>片段悬浮工具条（5 个动作）</h4>
+      <table class="tbl">
+        <tr><th>顺序</th><th>动作</th><th>行为</th></tr>
+        <tr><td>1</td><td>替换<br><code style="font-size:11px">ic-swap</code></td><td>三段式流程：<b>素材库（图1）→ 单视频预览（图2）→ 片段选择（图3）</b>；点「完成」回填。<b>无论怎么拖动，替换进来的片段时长恒等于被替换视频时长</b></td></tr>
+        <tr><td>2</td><td>波剪<br><code style="font-size:11px">ic-wavecut</code></td><td>打开「波形剪辑」页（白指针固定中央 · 拖波形滚动 · 点红绿切换）</td></tr>
+        <tr><td>3</td><td>上锁<br><code style="font-size:11px">ic-lock</code></td><td>锁定该片段：轨道内显示小锁角标 + 斜纹底；<b>不可拖出 / 移动 / 替换 / 切红绿</b>；再点解锁</td></tr>
+        <tr><td>4</td><td>复制<br><code style="font-size:11px">ic-copy</code></td><td>在主轨道上再复制一段：<b>同为折叠状态</b>，并深拷贝原片段的<b>红区覆盖数据 cuts</b>；原片段之后的片段整体后移</td></tr>
+        <tr><td>5</td><td>删除<br><code style="font-size:11px">ic-trash</code></td><td>删除选中片段（白底红图标，分隔线右侧独立区）</td></tr>
+      </table>
+      <p style="font-size:11px;color:var(--text-3);line-height:1.7;margin-top:10px;">
+        已去掉：<b>添加帧</b>、<b>曲线/调速</b>。数据模型上每个片段新增 <code style="font-size:11px">src</code>（素材名）、<code style="font-size:11px">locked</code>（锁）、<code style="font-size:11px">cuts[]</code>（折叠状态下保留的红区覆盖，<b>复制时随片段一起带走</b>，波形轨与迷你概览都会画出这些红罩）。
+      </p>
+    </section>
+
+    <section>
+      <h4>替换流程三段式（参考老版）</h4>
+      <table class="tbl">
+        <tr><th>段</th><th>页面</th><th>结构</th></tr>
+        <tr><td>①</td><td>素材库</td><td>顶栏 ✕ / ⋯；分类 chip <b>全部 · 视频 · 照片</b>（<b>已按反馈去掉「最近项目 / 素材库」两个来源 tab 与「时光」筛选项</b>）；<b>4 列竖版缩略图网格</b>，每张 = 时长 + 右下裁剪角标，已用素材左上打「已使用」标签</td></tr>
+        <tr><td>②</td><td>单视频预览</td><td>画面 + 顶栏 ✕；<b>画面底部一行播放条</b>：▶ / 当前时间 / 可拖进度条 / 总时长 / 全屏；画面下方右侧<b>品牌蓝「添加」</b>按钮</td></tr>
+        <tr><td>③</td><td>片段选择</td><td>顶栏 ‹ / <b>完成</b>；画面；下方 ▶ + <b>帧条选区</b>（选区描边 + 左上角显示秒数）；底部提示「拖动选择片段」</td></tr>
+      </table>
+      <p style="font-size:11px;color:var(--text-3);line-height:1.7;margin-top:10px;">
+        <b style="color:var(--text-2)">时长锁定规则（硬约束）</b>：进入第③段时读目标片段的 <code style="font-size:11px">(b-a)</code> 写入 <code style="font-size:11px">clpLock</code>，<b>选区宽度 = clpLock / 素材总时长</b>，之后<b>拖动只改变起点 <code style="font-size:11px">clpPos</code>，长度恒定</b>（<code style="font-size:11px">t - clpLock/2</code> 并夹在合法区间内），底部实时提示「选区时长已锁定 X.XXs（与被替换视频一致）」。回填时<b>只换 <code style="font-size:11px">src</code>，不改 <code style="font-size:11px">a/b</code></b>，所以成片时长与被替换片段完全一致。<br>
+        选区描边用 <code style="font-size:11px">var(--select)</code> = <b style="color:#2F6DF4">品牌蓝</b>（沿用此前「选中框统一为品牌蓝、清除第三色相」的决策，未采用参考图里的黄色框）；若这一处要跟参考图用黄框，说一声即可改回。
+      </p>
+    </section>
+
+    <section>
+      <h4>预览区播放控制条（参考老版布局）</h4>
+      <table class="tbl">
+        <tr><th>区域</th><th>内容</th><th>规格</th></tr>
+        <tr><td>画面底边</td><td>进度条（细线 + 白色竖把手，<b>可拖动</b>）</td><td>高 16px 命中区 / 轨道 2px / 把手 3×10px 圆角</td></tr>
+        <tr><td>控制行 · 左</td><td>时间 <code>00:12 / 00:30</code>（总时长加粗）</td><td>11.5px tabular-nums，<code>--text-3</code> / 总时长 <code>--text-2</code></td></tr>
+        <tr><td>控制行 · 中</td><td><code>⏮</code> <b>▶</b> <code>⏭</code></td><td>三键<b>全部无圆圈</b>（32pt 方形命中区 + 圆角 8 hover 底）；跳转键实心 19pt，<b>播放键 20pt 实心三角</b>为主键</td></tr>
+        <tr><td>控制行 · 右</td><td>调节 <code>↩</code> <code>↪</code></td><td>三个 32pt 无圆圈线条图标（调节 = 双滑块 <code>ic-tune</code>）</td></tr>
+      </table>
+      <p style="font-size:11px;color:var(--text-3);line-height:1.7;margin-top:10px;">
+        控制行高度由 46pt 压到 <b>34pt</b>（margin-top 10→6），七个按钮<b>全部去掉圆圈底与描边</b>，只留线条图标 + hover 淡底 —— 纵向省下的空间给了波形主轨。图标按语义分两类：<code>⏮ ▶ ⏭</code> 实心（<code>fill</code>），调节/撤销/重做线条（<code>stroke</code>），不混用。<br>
+        <b style="color:var(--text-2)">视频预览页</b>与<b style="color:var(--text-2)">片段选择页</b>的播放键统一为竞品样式：<b>13pt 纯白实心小三角</b>（<code>stroke:none; fill:#FFF</code>），垂直居中于播放条；按反馈删除预览页右端全屏键。<br>
+        <b style="color:var(--text-2)">踩坑记录</b>：去掉按钮圆圈时连 <code>background/border</code> 一起删了，<code>&lt;button&gt;</code> 退回 UA 默认白底（ButtonFace），白三角画在白底上完全看不见 → 表现为一个<b>白色方块</b>。修法：给所有图标按钮加统一复位 <code>background:transparent; border:none; padding:0; appearance:none</code>。已排查全文件按钮（nav / pbtn / pv-add / btn-primary / btn-ghost / wc-chev）均有显式背景，无同类隐患。
+      </p>
+    </section>
+
+    <section>
+      <h4>悬浮菜单交互（参考竞品：指针固定 + 内容滚动）</h4>
+      <table class="tbl">
+        <tr><th>规则</th><th>说明</th></tr>
+        <tr><td>指针固定</td><td>白色指针 <code>.tl-play</code> 固定在<b>可视区正中央</b>（<code>left:50%</code>），<b>永远不随内容移动</b></td></tr>
+        <tr><td>内容滚动</td><td>三轨装在 <code>.track-stack</code> 里，整体 <code>translateX()</code>；<code>PPS=26px/秒</code>，30s ≈ 780px 宽，可视约 358px ≈ 13.8s。<b>拖空白处可横向拖动</b></td></tr>
+        <tr><td>点选联动</td><td>点任意轨道的任意区块 → <b>三轨同步滚动</b>，使该区块<b>中心对准中央指针</b> → 该区块显示品牌蓝框 + 时长标签</td></tr>
+        <tr><td>菜单水平</td><td><code>left:50%</code> + <code>translateX(-50%)</code> → <b>永远以指针为参照居中</b>（不跟随区块）</td></tr>
+        <tr><td>菜单垂直</td><td>紧贴<b>所点的那条轨道</b>上方 <b>6pt</b>；顶轨（录音）上方没空间时自动落到轨道下方</td></tr>
+        <tr><td>菜单样式</td><td>改用<b>竞品的「图标 + 文字标签」</b>（圆角 12 蓝底胶囊，每个键 = 19pt 白线条图标 + 10pt 文字），删除键为白底红字</td></tr>
+        <tr><td>预览联动</td><td>预览区画面与中央文字<b>跟随选中轨道切换</b>（主轨=时间码 / 画中画=蓝色调 / 录音=绿色调）</td></tr>
+      </table>
+      <p style="font-size:11px;color:var(--text-3);line-height:1.7;margin-top:10px;">
+        <b style="color:var(--text-2)">三轨菜单内容</b>（各 5 个）：<br>
+        · <b>主轨</b>：替换 / 波剪 / 上锁 / 复制 / 删除<br>
+        · <b>画中画</b>：替换 / <b style="color:#A32D2D">切开</b> / 上锁 / 复制 / 删除<br>
+        · <b>录音</b>：<b style="color:#A32D2D">切开</b> / 音量 / 上锁 / 复制 / 删除
+      </p>
+    </section>
+
+    <section>
+      <h4>轨道区分布（主轨道合并为单轨三层）</h4>
+      <table class="tbl">
+        <tr><th>轨道</th><th>高度</th><th>说明</th></tr>
+        <tr><td>1 录音</td><td>34pt</td><td>固定左列仅图标；轨内 3 段演示录音（名称 + 绿色波形）</td></tr>
+        <tr><td>2 画中画</td><td>34pt</td><td>固定左列仅图标；轨内 3 段演示画中画（缩略画面 + 名称）</td></tr>
+        <tr><td><b>3 主轨道</b></td><td><b>121pt</b><br>66+42+13</td><td><b>画面帧条</b> + <b>声音包络波形</b> + <b>时间刻度</b>，三层共享同一时间轴；左列含「摄像机=插入视频」「喇叭=静音指针处区块」</td></tr>
+        <tr><td>迷你概览</td><td>34pt</td><td>全局红罩 + 视窗框（不随滚动）</td></tr>
+      </table>
+      <p style="font-size:11px;color:var(--text-3);line-height:1.7;margin-top:10px;">
+        纵向预算：固定区 642pt，时间线可用 <b>290pt</b>，内容 265pt，<b>余 25pt 不溢出</b>。左列标签固定（52pt）不随内容滚动，可视区宽度 = 430 − 52 ≈ 378pt。<br>
+        <b style="color:#A32D2D">编辑页不出现红区</b>：主轨道的画面条与波形条都是<b>纯净中性色</b>（画面=素材渐变帧、波形=单一绿色包络），<b>没有红罩、没有红色折叠线</b>；迷你概览条同理为中性灰波形 + 蓝色视窗框。<b style="color:var(--text-2)">红绿气口标记只在「波形剪辑」页表达</b>。<br>
+        <b style="color:var(--text-2)">主轨道是一个整体</b>：画面(64pt) + 波形(44pt) + 时间刻度(14pt) 三层在同一个容器里无缝堆叠（层间 1px 分隔线），<b>拖动哪一层都是同一块在滚动</b>。<br>
+        <b style="color:var(--text-2)">菜单关闭规则</b>：点区块弹菜单；点<b>菜单之外的空白处</b>（轨道空隙 / 迷你条 / 标签列 / 预览区 / 顶栏等）<b>即关闭菜单</b>；点菜单本身不关闭。
+      </p>
+    </section>
+
+    <section>
+      <h4>防雷同约束</h4>
+      <ul class="ul">
+        <li>✅ 借鉴：功能布局 / 交互范式（行业必要场景）</li>
+        <li>❌ 规避：竞品琥珀黄胶囊精确外观、填充图标、专属配色、GUI 外观专利、插画/动效</li>
+        <li>我方差异：声音包络折叠模型 · SF 线条图标 · 底栏横滑 · 独立红绿按钮 · 折叠线=指针宽 · 蓝色悬浮条</li>
+      </ul>
+    </section>
+
+    <section>
+      <h4>待确认清单（均已确认）</h4>
+      <ul class="checks">
+        <li><span class="box ok"></span>选中框统一品牌蓝 <code>#2F6DF4</code>（与悬浮条同色，去第三色相；原黄框已废弃）</li>
+        <li><span class="box ok"></span>悬浮工具条锚定：<b>水平以中央指针为参照居中</b>（<code>left:50%</code> + <code>translateX(-50%)</code>），<b>垂直紧贴所点轨道上方 6pt</b>；改用竞品的<b>图标 + 文字标签</b>（5 项 + 分隔 + 删除）</li>
+        <li><span class="box ok"></span>底部工具栏：纯线条图标、无文字、横滑，分 4 组（剪辑/媒体/调节/系统）以短竖线分隔</li>
+        <li><span class="box ok"></span>轨道标签列<b>只保留图标、去掉文字</b>（录音 / 画中画 / 主轨道）；主轨道标签内含「摄像机=插入视频」「喇叭=静音指针处区块」两个可点按钮</li>
+        <li><span class="box ok"></span>顶栏按反馈<b>只保留「导出」</b>（红绿切换球与撤销已移除）。<b>红绿气口标记改由「波剪」页承载</b>，编辑页不再显示红区</li>
+      </ul>
+    </section>
+
+    <section>
+      <h4>定版基线 · 交互说明</h4>
+      <div class="note">
+        <b style="color:var(--accent)">编辑页</b>：点任意轨道的任意区块 → 三轨同步滚动使该区块中心对齐<b>固定在可视区中央的白色指针</b> → 该区块出现品牌蓝框 + 时长标签 → 悬浮菜单弹出（水平以指针为参照居中，垂直紧贴所点轨道上方 6pt，图标+文字）。<b>点菜单之外的空白处即关闭菜单</b>。<br/>
+        <b style="color:var(--accent)">悬浮菜单按轨道切换内容</b>：主轨 = 替换/波剪/上锁/复制/删除；画中画 = 替换/切开/上锁/复制/删除；录音 = 切开/音量/上锁/复制/删除。<br/>
+        <b style="color:var(--accent)">两条素材流程</b>：<b>替换</b> = 素材库 → 预览 → 片段选择（时长锁定为被替换片段时长）→ 完成；<b>插入</b> = 选视频 → 截取 → ✓ 插到指针处区块之前。两者都只换 <code>src</code> 或插入新段，<b>不改已有片段时长</b>。<br/>
+        <b style="color:var(--accent)">红区只在波剪页</b>：编辑页主轨与迷你条均为中性色（无红罩/无折叠线）；红绿气口标记仅在「波形剪辑」页表达。<br/>
+        <b style="color:var(--accent)">导出</b>：顶栏 ⬆ 或底部工具栏「导出」均可唤起导出抽屉（首帧缩略图 / 仅导出音频 / 分辨率 / 帧率 / 预计大小 / 导出）。<br/>
+        <b style="color:var(--accent)">底部工具栏</b>：纯线条图标、无文字、横滑，分 4 组（剪辑 / 媒体 / 调节 / 系统），选中项底部蓝条高亮；「波剪」「导出」「调节」为可跳转的真实功能。<br/>
+        <b style="color:var(--accent)">顶部 9 个页面切换按钮</b>仅供演示聚焦，真实产品中不存在。
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+  /* ====== 全局流程状态（须在其它初始化之前声明，避免 TDZ） ====== */
+  let replaceTargetId=null;   // 替换流程的目标片段 id（选视频/截取页都要读）
+  let replaceTrack='main';    // 替换流程作用轨道：'main' | 'pip'
+  let insertMode=false;      // 「指针处前插入视频」流程
+  let insertBeforeId=null;   // 插入位置 = 该片段之前
+  let pickClipName='';       // 流程中选中的素材名
+  let libPreviewDur='0:30';  // 素材库里选中素材的时长（mm:ss）
+  let uid=10;                // 新片段 id 自增
+
+  /* ====== 屏幕切换 ====== */
+  const navBtns = document.querySelectorAll('.nav button');
+  navBtns.forEach(b=>b.addEventListener('click',()=>{
+    // 「导出面板」不是独立页面：进编辑页后直接弹出真正的导出抽屉
+    if(b.dataset.go==='export'){ showScreen('editor'); setTimeout(()=>openExport(),80); return; }
+    showScreen(b.dataset.go);
+  }));
+  function showScreen(name){
+    document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+    const map={start:'screen-start',picker:'screen-picker',preview:'screen-preview',
+      trim:'screen-trim',lib:'screen-lib',clip:'screen-clip',wcut:'screen-wcut',
+      editor:'screen-editor'};
+    document.getElementById(map[name]).classList.add('active');
+    navBtns.forEach(b=>b.classList.toggle('on', b.dataset.go===name));
+    if(name==='editor'){ renderEditor(); }
+    if(name==='picker'){ renderPicker(); }
+    if(name==='preview'){ initPreview(); }
+    if(name==='trim'){ initTrim(); }
+    if(name==='lib'){ renderLib(); }
+    if(name==='clip'){ renderClip(); }
+    if(name==='wcut'){ initWcut(); }
+  }
+  function goEditor(){ showScreen('editor'); }
+  function goStart(){ showScreen('start'); }
+  function goPicker(){ showScreen('picker'); }
+  function goPreview(){ showScreen('preview'); }
+  function goTrim(){ showScreen('trim'); }
+
+  /* ====== 底部动作面板（通用） ====== */
+  const sheetEl=document.getElementById('sheet'), sheetMask=document.getElementById('sheetMask');
+  function openSheet(items){
+    sheetEl.innerHTML='';
+    items.forEach(it=>{
+      const row=document.createElement('div'); row.className='sh'+(it.warn?' warn':'');
+      row.innerHTML=`<svg class="ic"><use href="#${it.ic}"/></svg>${it.t}`;
+      row.onclick=()=>{ closeSheet(); it.on&&it.on(); };
+      sheetEl.appendChild(row);
+    });
+    sheetMask.classList.add('show'); sheetEl.classList.add('show');
+  }
+  function closeSheet(){ sheetMask.classList.remove('show'); sheetEl.classList.remove('show'); }
+  sheetMask.addEventListener('click',closeSheet);
+
+  /* ====== 起始页：草稿网格（3列 + N刀角标 + ··· 菜单 + 文件名） ====== */
+  const drafts=[
+    {nm:'IMG_5479.MOV',   cut:3,  dur:'00:12', d1:'#243042', d2:'#2a3a22'},
+    {nm:'IMG_5475.MOV',   cut:9,  dur:'00:31', d1:'#2b2535', d2:'#22303a'},
+    {nm:'92dc452dc8564…', cut:12, dur:'00:30', d1:'#20303a', d2:'#2a2a20'},
+    {nm:'IMG_5469.MOV',   cut:22, dur:'00:07', d1:'#2a2a34', d2:'#33272a'},
+    {nm:'IMG_5469.MOV',   cut:3,  dur:'00:03', d1:'#223040', d2:'#2a3a2a'},
+    {nm:'92dc452dc8564…', cut:22, dur:'00:31', d1:'#2b2535', d2:'#22303a'},
+    {nm:'IMG_5479.MOV',   cut:3,  dur:'00:12', d1:'#243042', d2:'#2a3a22'},
+    {nm:'92dc452dc8564…', cut:22, dur:'00:30', d1:'#2a2530', d2:'#20303a'},
+    {nm:'92dc452dc8564…', cut:13, dur:'00:29', d1:'#1f2a33', d2:'#2a2230'},
+  ];
+  let selMode=false; const selSet=new Set();
+  const startEl=document.getElementById('startScreen');
+  function renderDrafts(){
+    const el=document.getElementById('drafts'); el.innerHTML='';
+    drafts.forEach((d,i)=>{
+      const c=document.createElement('div'); c.className='dcard'; c.dataset.i=i;
+      c.innerHTML=`
+        <div class="dthumb" style="background:linear-gradient(135deg,${d.d1},${d.d2})">
+          <span class="dbadge cut">${d.cut}刀</span>
+          <div class="dmore" data-more="${i}"><svg class="ic"><use href="#ic-ellipsis"/></svg></div>
+          <span class="dbadge dur">${d.dur}</span>
+        </div>
+        <div class="dname">${d.nm}</div>
+        <div class="dcheck"><svg class="ic"><use href="#ic-check"/></svg></div>`;
+      c.onclick=(e)=>{
+        if(e.target.closest('[data-more]')) return;
+        if(selMode){ selSet.has(i)?selSet.delete(i):selSet.add(i); refreshSel(); }
+        else goEditor();
+      };
+      c.querySelector('[data-more]').onclick=(e)=>{
+        e.stopPropagation();
+        openSheet([
+          {ic:'ic-text',  t:'重命名'},
+          {ic:'ic-copy',  t:'复制草稿'},
+          {ic:'ic-share', t:'导出 / 分享'},
+          {ic:'ic-trash', t:'删除', warn:true, on:()=>toast('已删除（示意）')},
+        ]);
+      };
+      el.appendChild(c);
+    });
+    refreshSel();
+  }
+  function refreshSel(){
+    startEl.classList.toggle('sel-mode', selMode);
+    document.getElementById('selToggle').textContent = selMode?'完成':'选择';
+    document.querySelectorAll('#drafts .dcard').forEach(c=>c.classList.toggle('sel', selSet.has(+c.dataset.i)));
+    document.getElementById('selNum').textContent = selSet.size?`(${selSet.size})`:'';
+  }
+  document.getElementById('selToggle').onclick=()=>{ selMode=!selMode; if(!selMode)selSet.clear(); refreshSel(); };
+  document.getElementById('selCancel').onclick=()=>{ selMode=false; selSet.clear(); refreshSel(); };
+  document.getElementById('selDel').onclick=()=>{ if(selSet.size) toast('删除 '+selSet.size+' 项（示意）'); selMode=false; selSet.clear(); refreshSel(); };
+  document.getElementById('fabNew').onclick=goPicker;
+  renderDrafts();
+
+  /* ====== 选视频页：3列网格 + 选择顺序 + 分类筛选 ====== */
+  const clips=[
+    {dur:'00:31', d1:'#233246', d2:'#2b3a2a'}, {dur:'00:31', d1:'#2b2535', d2:'#22303a'},
+    {dur:'00:29', d1:'#20303a', d2:'#2a2a20'}, {dur:'00:42', d1:'#2a2530', d2:'#1f2a33'},
+    {dur:'00:31', d1:'#223040', d2:'#2a3a2a'}, {dur:'00:28', d1:'#2b2535', d2:'#2a2230'},
+    {dur:'00:29', d1:'#243042', d2:'#2a3a22'}, {dur:'00:30', d1:'#2a2a34', d2:'#33272a'},
+    {dur:'00:30', d1:'#1f2a33', d2:'#2a2230'}, {dur:'00:16', d1:'#233246', d2:'#22303a'},
+    {dur:'00:07', d1:'#2b2535', d2:'#2a3a22'}, {dur:'00:32', d1:'#20303a', d2:'#2a2a20'},
+    {dur:'00:03', d1:'#2a2530', d2:'#2b3a2a'}, {dur:'00:02', d1:'#223040', d2:'#1f2a33'},
+    {dur:'00:04', d1:'#243042', d2:'#2a2230'}, {dur:'00:06', d1:'#2a2a34', d2:'#2a3a2a'},
+    {dur:'00:22', d1:'#2b2535', d2:'#20303a'}, {dur:'00:19', d1:'#1f2a33', d2:'#33272a'},
+  ];
+  let pickSel=[];
+  function clipName(i){ return 'VID_'+String(i+1).padStart(2,'0')+'.MOV'; }
+  function renderPicker(){
+    const g=document.getElementById('pickGrid'); g.innerHTML='';
+    const rep=replaceTargetId!=null||insertMode;
+    clips.forEach((c,i)=>{
+      const idx=pickSel.indexOf(i);
+      const el=document.createElement('div'); el.className='pcard'+(idx>=0?' sel':''); el.dataset.i=i;
+      el.innerHTML=`
+        <div class="pthumb" style="background:linear-gradient(135deg,${c.d1},${c.d2})">
+          <span class="pdur">${c.dur}</span>
+          <div class="pexpand" data-exp="${i}"><svg class="ic"><use href="#ic-expand"/></svg></div>
+          <div class="pcheck">${idx>=0?(rep?'✓':(idx+1)):''}</div>
+        </div>`;
+      el.querySelector('.pthumb').onclick=(e)=>{
+        if(e.target.closest('[data-exp]')){ goPreview(); return; }
+        const k=pickSel.indexOf(i);
+        if(k>=0) pickSel.splice(k,1);
+        else { if(rep||insertMode) pickSel=[i]; else pickSel.push(i); }   // 替换 / 插入模式 = 单选
+        renderPicker();
+      };
+      g.appendChild(el);
+    });
+    updatePickFoot();
+  }
+  function updatePickFoot(){
+    const n=pickSel.length;
+    const rep=replaceTargetId!=null, ins=insertMode;
+    document.getElementById('pickTitle').textContent = ins?'插入视频':(rep?'替换素材':'选视频');
+    const bdg=document.getElementById('pickCount');
+    bdg.textContent=n; bdg.className='bdg'+(n?'':' zero');
+    const btn=document.getElementById('pickAdd');
+    btn.textContent = ins? (n? '截取并插入':'请选择素材')
+                : rep? (n? '截取并替换':'请选择素材') : ('添加 '+n+' 条');
+    btn.disabled=(n===0);
+  }
+  document.getElementById('pickAdd').onclick=()=>{
+    if(!pickSel.length) return;
+    // 插入 / 替换 两种流程都先进入截取页
+    if(insertMode || replaceTargetId!=null){ pickClipName=clipName(pickSel[0]); goTrim(); return; }
+    goEditor();
+  };
+  document.getElementById('pickBack').onclick=()=>{
+    if(insertMode){ insertMode=false; insertBeforeId=null; goEditor(); return; }
+    if(replaceTargetId!=null){ replaceTargetId=null; goEditor(); return; }   // 取消替换回编辑页
+    goStart();
+  };
+  document.getElementById('pickFilters').addEventListener('click',e=>{
+    const c=e.target.closest('.chip'); if(!c)return;
+    document.querySelectorAll('#pickFilters .chip').forEach(x=>x.classList.remove('on'));
+    c.classList.add('on');
+  });
+  renderPicker();
+
+  /* ====== 视频预览页：播放 + 进度拖拽 ====== */
+  let pvPlaying=false, pvCur=1, PVDUR=30, pvTimer=null;
+  function fmt(s){ s=Math.max(0,Math.round(s)); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); }
+  function setScrub(){
+    const r=Math.min(1,pvCur/PVDUR);
+    document.getElementById('pvFl').style.width=(r*100)+'%';
+    document.getElementById('pvKn').style.left=(r*100)+'%';
+    document.getElementById('pvCur').textContent=fmt(pvCur);
+    document.getElementById('pvDur').textContent=fmt(PVDUR);
+  }
+  function setPlayIcon(){
+    document.getElementById('pvPPIc').innerHTML =`<use href="#ic-${pvPlaying?'pause':'play'}"/>`;
+  }
+  function initPreview(){ pvPlaying=false; pvCur=1; if(pvTimer){clearInterval(pvTimer);pvTimer=null;} setPlayIcon(); setScrub(); }
+
+  /* ====== 截取页（素材预处理 · 只保留 预览 / 帧条把手 / 时长比 / 底部三键） ====== */
+  const TRIM_TOTAL=53.81;            // 素材总时长（秒）
+  let trimStart=0.14, trimW=0.20, trimPlaying=false;
+  function buildTrimFrames(){
+    const f=document.getElementById('trimFrames'); f.innerHTML='';
+    for(let i=0;i<28;i++){ const d=document.createElement('div'); d.className='fr'; f.appendChild(d); }
+  }
+  function renderTrim(){
+    const sel=document.getElementById('trimSel'), dL=document.getElementById('trimDimL'), dR=document.getElementById('trimDimR');
+    sel.style.left=(trimStart*100)+'%'; sel.style.width=(trimW*100)+'%';
+    dL.style.left='0%'; dL.style.width=(trimStart*100)+'%';
+    dR.style.left=((trimStart+trimW)*100)+'%'; dR.style.width=((1-trimStart-trimW)*100)+'%';
+    const selSec=trimW*TRIM_TOTAL;
+    document.getElementById('trimLen').innerHTML='<b>'+selSec.toFixed(2)+'</b> / '+TRIM_TOTAL.toFixed(2);
+  }
+  function trimSetPlay(on){
+    trimPlaying=on;
+    const ic1=document.getElementById('trimPlayIc'), ic2=document.getElementById('trimPlay2Ic');
+    const name=on?'pause':'play', cls=on?'':' solid';
+    ic1.innerHTML='<use href="#ic-'+name+'"/>'; ic1.className='ic'+cls;
+    ic2.innerHTML='<use href="#ic-'+name+'"/>'; ic2.className='ic'+cls;
+  }
+  function initTrim(){
+    buildTrimFrames(); renderTrim(); trimSetPlay(false);
+    const rep=replaceTargetId!=null, ins=insertMode;
+    document.getElementById('trimSrc').innerHTML = ins
+      ? ('插入视频 · <b>'+pickClipName+'</b> → 拖动 <span class="k">蓝色把手</span> 选段，点 ✓ 插到主轨道')
+      : rep
+      ? ('替换素材 · <b>'+pickClipName+'</b> → 拖动 <span class="k">蓝色把手</span> 设定开头 / 结尾，点 ✓ 回填')
+      : '素材预处理 · 拖动 <span class="k">蓝色把手</span> 设定开头 / 结尾';
+  }
+  (function(){
+    const strip=document.getElementById('trimStrip');
+    const HL=document.getElementById('trimHL'), HR=document.getElementById('trimHR'), body=document.getElementById('trimBody');
+    const MINW=0.02;
+    function startDrag(mode,e){
+      e.preventDefault();
+      const r=strip.getBoundingClientRect(), sx=e.clientX, s0=trimStart, w0=trimW;
+      try{ e.target.setPointerCapture(e.pointerId); }catch(_){}
+      function move(ev){
+        const dx=(ev.clientX-sx)/r.width;
+        if(mode==='l'){ const ns=Math.min(Math.max(s0+dx,0), s0+w0-MINW); trimW=w0-(ns-s0); trimStart=ns; }
+        else if(mode==='r'){ trimW=Math.min(Math.max(w0+dx,MINW), 1-s0); }
+        else { const ns=Math.min(Math.max(s0+dx,0), 1-w0); trimStart=ns; }
+        renderTrim();
+      }
+      function up(){ try{ e.target.releasePointerCapture(e.pointerId); }catch(_){}
+        strip.removeEventListener('pointermove',move); strip.removeEventListener('pointerup',up); strip.removeEventListener('pointercancel',up); }
+      strip.addEventListener('pointermove',move); strip.addEventListener('pointerup',up); strip.addEventListener('pointercancel',up);
+    }
+    HL.addEventListener('pointerdown',e=>startDrag('l',e));
+    HR.addEventListener('pointerdown',e=>startDrag('r',e));
+    body.addEventListener('pointerdown',e=>startDrag('m',e));
+  })();
+  document.getElementById('trimCancel').onclick=goPreview;
+  document.getElementById('trimPlay').onclick=()=>trimSetPlay(!trimPlaying);
+  document.getElementById('trimPlay2').onclick=()=>trimSetPlay(!trimPlaying);
+  document.getElementById('trimOk').onclick=()=>{
+    // 插入流程：确定 → 把截取结果插到指针处区块之前
+    if(insertMode){ finishInsert(); return; }
+    // 替换流程：确定 → 把截取结果回填到目标片段
+    if(replaceTargetId!=null){
+      const seg=((trimW)*TRIM_TOTAL).toFixed(1);
+      applyReplace(pickClipName, '（截取 '+seg+'s）');
+      pickSel=[]; pickClipName='';
+      return;
+    }
+    toast('已截取片段'); goEditor();
+  };
+
+  function goLib(){ showScreen('lib'); }
+  function goWcut(){ showScreen('wcut'); }
+  /* ====== 素材库页（替换入口）· 4 列网格 + 已使用标记 ====== */
+  const libUsed={0:1,5:1,9:1,12:1,13:1,17:1};   // 标记「已使用」
+  (function(){
+    const f=document.getElementById('buildFoot');
+    if(f) f.textContent='bk剪辑 · 专剪口播 v1.5 · 已导出 2 条 · 构建 '+(window.BUILD||'?');
+  })();
+  function renderLib(){
+    const g=document.getElementById('libGrid'); g.innerHTML='';
+    clips.forEach((c,i)=>{
+      const el=document.createElement('div'); el.className='lcell';
+      el.innerHTML=`
+        <div class="lth">
+          <div class="lt2" style="background:linear-gradient(160deg,${c.d1},${c.d2})"></div>
+          ${libUsed[i]?'<span class="lused">已使用</span>':''}
+          <span class="ldur">${c.dur}</span>
+          <span class="lexp"><svg class="ic"><use href="#ic-crop"/></svg></span>
+        </div>`;
+      el.onclick=()=>{ pickClipName=clipName(i); libPreviewDur=c.dur; goPreview(); };
+      g.appendChild(el);
+    });
+  }
+  document.getElementById('libChips').addEventListener('click',e=>{
+    const c=e.target.closest('.chip'); if(!c)return;
+    document.querySelectorAll('#libChips .chip').forEach(x=>x.classList.remove('on'));
+    c.classList.add('on');
+  });
+  document.getElementById('libMore').onclick=()=>toast('更多（示意）');
+  document.getElementById('libClose').onclick=()=>{ replaceTargetId=null; goEditor(); };
+  renderLib();
+
+  /* ====== 主轨道左端两个功能键：喇叭（静音指针处区块） / 摄像机（指针处前插入视频） ====== */
+  function regionAtPlayhead(){
+    const t=centerT();                       // 指针固定中央 → 指针时间 = 可视区中心时间
+    return regions.find(r=>t>=r.a && t<r.b) || regions[0];
+  }
+  // 喇叭：静音 / 取消静音「指针经过的区块」
+  document.getElementById('mainMute').onclick=()=>{
+    const r=regionAtPlayhead(); if(!r) return;
+    if(r.locked){ toast('片段已上锁，无法静音'); return; }
+    r.muted=!r.muted;
+    renderWave(); renderThumbs(); renderMini(); renderSideTrack('pip'); renderSideTrack('rec');
+    syncMuteBtn(r);
+    toast(r.muted? ('已静音 '+r.src+'（'+r.a+'-'+r.b+'s）') : ('已取消静音 '+r.src));
+  };
+  function syncMuteBtn(r){
+    document.getElementById('mainMute').classList.toggle('on', !!(r&&r.muted));
+  }
+  // 摄像机：打开选视频页 → 选片 → 截取页 → 对号 → 插入到指针处区块「之前」
+  document.getElementById('mainAdd').onclick=()=>{
+    const r=regionAtPlayhead();
+    insertBeforeId = r? r.id : null;
+    insertMode=true; pickSel=[];
+    goPicker();
+    toast('选择视频，将插入到 '+fmtT(r?r.a:0)+' 之前');
+  };
+  function finishInsert(){
+    const cut=(trimW)*TRIM_TOTAL;
+    const idx=regions.findIndex(x=>x.id===insertBeforeId);
+    const start = idx<0 ? TOTAL : regions[idx].a;
+    regions.filter(x=>x.a>=start).forEach(x=>{ x.a+=cut; x.b+=cut; });
+    const np={id:++uid, type:'keep', a:start, b:start+cut, src:pickClipName||'新素材',
+              locked:false, muted:false, cuts:[]};
+    regions.push(np); regions.sort((a,b)=>a.a-b.a);
+    TOTAL+=cut;
+    insertMode=false; insertBeforeId=null; pickSel=[]; pickClipName='';
+    renderWave(); renderThumbs(); renderMini(); renderSideTrack('pip'); renderSideTrack('rec'); syncTotal();
+    goEditor(); selectBlock('main', np.id);
+    toast('已插入「'+np.src+' '+cut.toFixed(1)+'s」到 '+fmtT(start));
+  }
+
+  /* ====== 片段选择页（时长锁定 = 被替换视频时长） ====== */
+  let clpPos=0;          // 选区起点（秒）
+  let clpTotal=30;       // 新素材总时长（秒）
+  let clpLock=3;         // 锁定的选区时长 = 被替换片段时长
+  function clpSelPct(){ return clpLock/clpTotal*100; }
+  function buildClpFrames(){
+    const f=document.getElementById('clpFrames'); f.innerHTML='';
+    for(let i=0;i<26;i++){ const d=document.createElement('div'); d.className='cf'; f.appendChild(d); }
+  }
+  function renderClip(){
+    buildClpFrames();
+    const w=clpSelPct();
+    const maxPct=100-w;
+    clpPos=Math.max(0, Math.min(clpTotal-clpLock, clpPos));
+    const sel=document.getElementById('clpSel');
+    sel.style.width=w+'%';
+    sel.style.left=(clpPos/clpTotal*100)+'%';
+    document.getElementById('clpLen').textContent=clpLock.toFixed(2);
+    const t=document.getElementById('clpTip');
+    if(replaceTargetId!=null){
+      t.innerHTML='拖动选择片段 · 选区时长已锁定 <b>'+clpLock.toFixed(2)+'s</b>（与被替换视频一致）';
+    }else{
+      t.innerHTML='拖动选择片段 · 当前 <b>'+clpLock.toFixed(2)+'s</b>';
+    }
+  }
+  function goClip(){
+    if(replaceTargetId!=null){
+      const r=regions.find(x=>x.id===replaceTargetId);
+      clpLock = r? (r.b-r.a) : 3;      // ★ 时长锁定：等于被替换片段的时长
+    }
+    // 新素材时长：从素材库带过来（解析 mm:ss），至少要够长
+    const m=/^(\d+):(\d+)$/.exec(libPreviewDur||'0:30');
+    clpTotal = m? (parseInt(m[1],10)*60+parseInt(m[2],10)) : 30;
+    if(clpTotal<=clpLock) clpTotal=clpLock*2;
+    clpPos=0;
+    showScreen('clip');
+  }
+  (function(){
+    const strip=document.getElementById('clpStrip'); let dg=false;
+    function at(e){
+      const r=strip.getBoundingClientRect();
+      const t=(e.clientX-r.left)/r.width*clpTotal;   // ★ 拖动只改起点，长度恒为 clpLock
+      clpPos=Math.max(0, Math.min(clpTotal-clpLock, t-clpLock/2));
+      renderClip();
+    }
+    strip.addEventListener('pointerdown',e=>{dg=true;strip.classList.add('dragging');
+      try{strip.setPointerCapture(e.pointerId);}catch(_){} at(e);});
+    strip.addEventListener('pointermove',e=>{if(dg)at(e);});
+    strip.addEventListener('pointerup',()=>{dg=false;strip.classList.remove('dragging');});
+    strip.addEventListener('pointercancel',()=>{dg=false;strip.classList.remove('dragging');});
+  })();
+  document.getElementById('clpPP').onclick=()=>{
+    const ic=document.getElementById('clpPPIc');
+    ic.innerHTML='<use href="#'+(ic.innerHTML.includes('ic-pause')?'ic-play':'ic-pause')+'"/>';
+  };
+  document.getElementById('clpBack').onclick=()=>goPreview();
+  document.getElementById('clpOk').onclick=()=>{
+    if(replaceTargetId!=null){
+      // ★ 回填：只换素材，时长恒等于被替换片段（不因拖动而变）
+      applyReplace(pickClipName, '（选段 '+clpPos.toFixed(2)+'–'+(clpPos+clpLock).toFixed(2)+'s / '+clpLock.toFixed(2)+'s）');
+      pickClipName='';
+    }else{
+      toast('已选取 '+clpLock.toFixed(2)+'s 片段'); goEditor();
+    }
+  };
+
+  /* ====== 波形剪辑页（剪气口） · 指针固定中央 + 拖动波形滚动 + 点击红绿切换 ====== */
+  const WC_TOTAL=7, WC_PPS=110, WC_SEGN=28;
+  const WC_SEGD=WC_TOTAL/WC_SEGN;          // 每段秒数
+  let wcScroll=0, wcView=3.6, wcThrDb=-25, wcPlaying=false, wcTimer=null, wcMark=false;
+  let wcSeg=new Array(WC_SEGN).fill(0);    // 0=绿区(保留) 1=红区(气口)
+  [5,13,21].forEach(i=>wcSeg[i]=1);
+  let WC_ENV=null;
+  function wfmt(s){const m=Math.floor(s/60),ss=Math.floor(s%60);return '0'+m+':'+(ss<10?'0':'')+ss;}
+  function wcMeasure(){ const el=document.getElementById('wcWave'); if(el) wcView=el.clientWidth/WC_PPS; }
+  function wcBlobPx(W,H,n,x0,x1){
+    const E=WC_ENV,bw=W/n,mid=H/2,amp=H*0.44;
+    const i0=Math.max(0,Math.floor(x0/bw)), i1=Math.min(n-1,Math.ceil(x1/bw));
+    if(i1<i0) return '';
+    let top='',bot='';
+    for(let i=i0;i<=i1;i++){const x=i*bw,h=Math.max(2,E[i]*amp);top+=`${i===i0?'M':'L'}${x.toFixed(1)} ${(mid-h).toFixed(1)} `;}
+    for(let i=i1;i>=i0;i--){const x=i*bw,h=Math.max(2,E[i]*amp);bot+=`L${x.toFixed(1)} ${(mid+h).toFixed(1)} `;}
+    return top+bot+'Z';
+  }
+  function wcSegIndexAt(t){ return Math.min(WC_SEGN-1, Math.max(0, Math.floor(t/WC_SEGD))); }
+  function wcCenterT(){ return wcScroll + wcView/2; }
+  function renderWcut(){
+    if(!WC_ENV) WC_ENV=genEnv(200);
+    wcMeasure();
+    const W=WC_TOTAL*WC_PPS, H=100, n=200;
+    let red='';
+    for(let s=0;s<WC_SEGN;s++){ if(!wcSeg[s]) continue;
+      red+=`<path d="${wcBlobPx(W,H,n,s*WC_SEGD*WC_PPS,(s+1)*WC_SEGD*WC_PPS)}" fill="url(#wcr)"/>`; }
+    document.getElementById('wcWrap').innerHTML=
+      `<svg class="wave-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+        <defs>
+          <linearGradient id="wcg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3ECC77"/><stop offset="1" stop-color="#239554"/></linearGradient>
+          <linearGradient id="wcr" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#D8574E"/><stop offset="1" stop-color="#8E3A34"/></linearGradient>
+        </defs>
+        <path d="${wcBlobPx(W,H,n,0,W)}" fill="url(#wcg)"/>${red}
+      </svg>`;
+    let mred='';
+    const sw=W/WC_SEGN;
+    for(let s=0;s<WC_SEGN;s++){ if(!wcSeg[s]) continue;
+      mred+=`<rect x="${(s*sw).toFixed(1)}" y="0" width="${(sw+0.8).toFixed(1)}" height="${H}" fill="#7E3B37"/>`; }
+    document.getElementById('wcMiniWrap').innerHTML=
+      `<svg class="m-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        <path d="${wcBlobPx(W,H,n,0,W)}" fill="#3C474B"/>${mred}</svg>`;
+    placeWcut();
+  }
+  function placeWcut(){
+    const maxS=Math.max(0, WC_TOTAL-wcView);
+    wcScroll=Math.min(maxS, Math.max(0, wcScroll));
+    document.getElementById('wcWrap').style.left=(-wcScroll*WC_PPS)+'px';
+    const cT=wcCenterT();
+    document.getElementById('wcCur').textContent=wfmt(cT);
+    document.getElementById('wcFps').textContent=wfmt(cT)+' / '+wfmt(WC_TOTAL);
+    const mv=document.getElementById('wcMiniView');
+    mv.style.left=(wcScroll/WC_TOTAL*100)+'%';
+    mv.style.width=(wcView/WC_TOTAL*100)+'%';
+    const v=(wcThrDb+40)/30;
+    document.getElementById('wcThr').style.top=(18+(1-v)*40)+'%';
+    document.getElementById('wcFill').style.width=(v*100)+'%';
+    document.getElementById('wcKn').style.left=(v*100)+'%';
+    document.getElementById('wcThrLab').textContent='阈值 '+wcThrDb.toFixed(1)+' dB';
+    let cut=0,kn=0; wcSeg.forEach(v2=>{ if(v2){ cut+=WC_SEGD; kn++; } });
+    document.getElementById('wcMeta').innerHTML='原 <b>'+wfmt(WC_TOTAL)+'</b> · 剪后 <b>'+wfmt(WC_TOTAL-cut)+'</b> · <b>'+kn+'</b> 刀 · 删 <b>'+cut.toFixed(1)+'s</b> ('+(cut/WC_TOTAL*100).toFixed(1)+'%)';
+    // 第5键：显示「下一步动作」的颜色（当前为绿→点了变红）
+    const btn=document.getElementById('wcRg');
+    const willRed=!wcSeg[wcSegIndexAt(cT)];
+    btn.classList.toggle('rg-red',willRed);
+    btn.classList.toggle('rg-green',!willRed);
+    btn.classList.add('on');
+  }
+  function setWcPlay(on){
+    wcPlaying=on;
+    document.getElementById('wcPlayIc').innerHTML='<use href="#ic-'+(on?'pause':'play')+'"/>';
+    document.getElementById('wcPlay').classList.toggle('on',on);
+    if(wcTimer){clearInterval(wcTimer);wcTimer=null;}
+    if(on){ wcTimer=setInterval(()=>{
+      wcScroll+=0.05;
+      if(wcScroll>=WC_TOTAL-wcView) wcScroll=0;
+      placeWcut(); },50); }
+  }
+  function wcToggleAt(clientX){
+    const r=document.getElementById('wcWave').getBoundingClientRect();
+    const t=wcScroll+(clientX-r.left)/WC_PPS;
+    const s=wcSegIndexAt(t);
+    wcSeg[s]=wcSeg[s]?0:1;
+    renderWcut();
+    toast((wcSeg[s]?'红区（气口）':'绿区（保留）')+' · '+wfmt(t));
+  }
+  function initWcut(){
+    wcMeasure();
+    wcScroll=Math.max(0, Math.min(WC_TOTAL-wcView, 2-wcView/2));
+    renderWcut(); setWcPlay(false);
+  }
+  (function(){
+    const el=document.getElementById('wcWave');
+    let dragging=false, moved=false, sx=0, ss=0;
+    el.addEventListener('pointerdown',e=>{dragging=true;moved=false;sx=e.clientX;ss=wcScroll;
+      try{el.setPointerCapture(e.pointerId);}catch(_){}});
+    el.addEventListener('pointermove',e=>{ if(!dragging)return;
+      const dx=e.clientX-sx;
+      if(Math.abs(dx)>3){ moved=true; el.classList.add('dragging'); }
+      wcScroll=ss-dx/WC_PPS; placeWcut(); });
+    const end=e=>{ if(!dragging)return; dragging=false; el.classList.remove('dragging');
+      try{el.releasePointerCapture(e.pointerId);}catch(_){}
+      if(!moved) wcToggleAt(e.clientX); };
+    el.addEventListener('pointerup',end);
+    el.addEventListener('pointercancel',()=>{dragging=false;el.classList.remove('dragging');});
+  })();
+  (function(){
+    const tr=document.getElementById('wcTrack'); let dg=false;
+    function at(e){const r=tr.getBoundingClientRect();const x=e.clientX-r.left;
+      let v=Math.min(1,Math.max(0,x/r.width)); wcThrDb=-40+v*30; placeWcut();}
+    tr.addEventListener('pointerdown',e=>{dg=true;try{tr.setPointerCapture(e.pointerId);}catch(_){}at(e);});
+    tr.addEventListener('pointermove',e=>{if(dg)at(e);});
+    tr.addEventListener('pointerup',()=>{dg=false;});
+    tr.addEventListener('pointercancel',()=>{dg=false;});
+  })();
+  document.getElementById('wcPlay').onclick=()=>setWcPlay(!wcPlaying);
+  document.getElementById('wcPrev').onclick=()=>{wcScroll=0;placeWcut();};
+  document.getElementById('wcRg').onclick=()=>{
+    const cT=wcCenterT(), s=wcSegIndexAt(cT);
+    wcSeg[s]=wcSeg[s]?0:1; renderWcut();
+    toast('指针处 → '+(wcSeg[s]?'红区（气口）':'绿区（保留）'));
+  };
+  document.getElementById('wcCut').onclick=()=>{
+    const cT=wcCenterT(), s=wcSegIndexAt(cT);
+    wcSeg[s]=1; renderWcut(); toast('指针处标记气口 · '+wfmt(cT));
+  };
+  document.getElementById('wcBrush').onclick=(e)=>{wcMark=!wcMark;e.currentTarget.classList.toggle('on',wcMark);
+    toast(wcMark?'标记气口模式 开':'标记气口模式 关');};
+  document.getElementById('wcUndo').onclick=()=>toast('撤销（示意）');
+  document.getElementById('wcRedo').onclick=()=>toast('重做（示意）');
+  document.getElementById('wcChev').onclick=()=>toast('阈值详情（示意）');
+  document.getElementById('wcBack').onclick=goEditor;
+  document.getElementById('wcClose').onclick=goEditor;
+  document.getElementById('pvPP').onclick=()=>{
+    pvPlaying=!pvPlaying; setPlayIcon();
+    if(pvTimer){clearInterval(pvTimer); pvTimer=null;}
+    if(pvPlaying){
+      pvTimer=setInterval(()=>{
+        pvCur+=0.1;
+        if(pvCur>=PVDUR){ pvCur=PVDUR; pvPlaying=false; clearInterval(pvTimer); pvTimer=null; setPlayIcon(); }
+        setScrub();
+      },100);
+    }
+  };
+  (function(){
+    const sc=document.getElementById('pvScrub'); let dragging=false;
+    function at(e){ const r=sc.getBoundingClientRect(); const x=e.clientX-r.left;
+      pvCur=Math.min(PVDUR,Math.max(0,x/r.width*PVDUR)); setScrub(); }
+    sc.addEventListener('pointerdown',e=>{ dragging=true; try{sc.setPointerCapture(e.pointerId);}catch(_){} at(e); });
+    sc.addEventListener('pointermove',e=>{ if(dragging) at(e); });
+    sc.addEventListener('pointerup',()=>{ dragging=false; });
+    sc.addEventListener('pointercancel',()=>{ dragging=false; });
+  })();
+  document.getElementById('pvClose').onclick=()=>{ goStart(); };
+  document.getElementById('pvAdd').onclick=()=>{
+    // 替换流程 → 进「片段选择」页（时长锁定）；普通流程 → 回编辑页
+    if(replaceTargetId!=null) goClip(); else goEditor();
+  };
+
+  /* ==========================================================================
+     编辑页时间线：固定中央指针 + 内容滚动（三轨同步）
+     PPS  = 每秒像素；contentW = 总时长 × PPS；viewW = 可视宽度
+     点击区块 → 所有轨道同步滚动，使该区块中心对齐中央指针 → 弹悬浮菜单
+     ========================================================================== */
+  /* ---------- 编辑页数据模型 ---------- */
+  let TOTAL=30;                 // 轨道总时长（秒）—— 复制 / 插入片段后动态增长
+  // a,b = 秒区间。type: keep=绿(保留) / cut=红(气口/待剪)
+  // src=素材名  locked=上锁  muted=静音  cuts[]=折叠态保留的红区覆盖（相对片段起点的秒偏移）
+  let regions=[
+    {id:1, type:'keep', a:0,  b:7,  src:'IMG_5479.MOV', locked:false, muted:false, cuts:[], vol:100, speed:1},
+    {id:2, type:'cut',  a:7,  b:11, src:'IMG_5479.MOV', locked:false, muted:false, cuts:[0,4], vol:100, speed:1},
+    {id:3, type:'keep', a:11, b:18, src:'IMG_5479.MOV', locked:false, muted:false, cuts:[[1.2,1.9],[4.4,5.0]], vol:100, speed:1},
+    {id:4, type:'keep', a:18, b:30, src:'IMG_5479.MOV', locked:false, muted:true,  cuts:[[2.0,3.1]], vol:0, speed:1},
+  ];
+  let selectedId=null;
+  let ENV=null;
+  function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+  function genEnv(n){const r=mulberry32(7);let h=0.8;const H=[];for(let i=0;i<n;i++){h+=(r()-0.5)*0.16;if(r()<0.07)h-=0.28;h=Math.max(0.14,Math.min(0.99,h));H.push(h);}return H;}
+
+  let   PPS=26;                           // 像素/秒（双指缩放动态；默认 26）
+  const PPS_MIN=8, PPS_MAX=80;            // 缩放范围（纯视图层，不进数据模型）
+  let   isPinching=false;                 // 双指缩放中：禁用单指拖动
+  const X=t=>t*PPS;                       // 秒 → 内容像素（PPS 变化即整体重绘）
+  let tlScrollPx=0;                       // 内容左边缘对应的像素
+  let selTrack='main';                    // 'main' | 'pip' | 'rec'
+  let pipItems=[
+    {id:101, a:2.5, b:9.0,  src:'画中画_特写.mp4', locked:false, vol:100, speed:1, scale:100, rot:0, flip:false},
+    {id:102, a:13.0,b:17.5, src:'画中画_空镜.mp4', locked:false, vol:100, speed:1, scale:100, rot:0, flip:false},
+    {id:103, a:22.0,b:28.0, src:'画中画_产品.mp4', locked:false, vol:100, speed:1, scale:100, rot:0, flip:false},
+  ];
+  let recItems=[
+    {id:201, a:0,    b:6.2,  src:'口播_主录音.wav', locked:false, vol:100},
+    {id:202, a:8.4,  b:15.0, src:'补录_第2条.wav',  locked:false, vol:100},
+    {id:203, a:19.5, b:26.0, src:'环境音.wav',      locked:false, vol:100},
+  ];
+  const thumbPal=[
+    ['#31405a','#1d2836'], ['#3a3326','#2a241c'], ['#2a3a2e','#1e2a22'],
+    ['#3a2a30','#2a1f24'], ['#2a2a3a','#1f1f2c'], ['#33402a','#242c1e'],
+  ];
+
+  function viewW(){ const el=document.getElementById('tlScroll'); return el? el.clientWidth : 358; }
+  function contentW(){ return TOTAL*PPS; }
+  // ★ 2026-10-05 竞品式边界（皓哥拍板）：起点/终点静止时可到中央指针下，两端各留半屏空腔
+  function minScrollPx(){ return -viewW()/2; }
+  function maxScrollPx(){ return Math.max(minScrollPx(), contentW()-viewW()/2); }
+  function clampScroll(v){ return Math.max(minScrollPx(), Math.min(maxScrollPx(), v)); }
+  function rbOver(){ return viewW()*0.3; }               // 橡皮筋最大可视过拖
+  function rubberScroll(raw){                            // 手指拖动越界：tanh 阻尼，越拖越紧
+    const mn=minScrollPx(), mx=maxScrollPx(), ov=rbOver();
+    if(raw<mn) return mn-ov*Math.tanh((mn-raw)/ov);
+    if(raw>mx) return mx+ov*Math.tanh((raw-mx)/ov);
+    return raw;
+  }
+  let rbRaf=0;
+  function bounceBack(){                                 // 松手回弹：~250ms ease-out 弹回最近静止边界
+    const mn=minScrollPx(), mx=maxScrollPx();
+    if(tlScrollPx>=mn-0.5 && tlScrollPx<=mx+0.5) return;
+    const from=tlScrollPx, to=tlScrollPx<mn?mn:mx, t0=performance.now(), D=250;
+    cancelAnimationFrame(rbRaf);
+    const step=now=>{ const p=Math.min(1,(now-t0)/D), e=1-Math.pow(1-p,3);
+      tlScrollPx=from+(to-from)*e; applyScroll();
+      if(p<1) rbRaf=requestAnimationFrame(step); };
+    rbRaf=requestAnimationFrame(step);
+  }
+  function applyScroll(){
+    const st=document.getElementById('trackStack'); if(!st)return;
+    tlScrollPx=Math.max(minScrollPx()-rbOver()-2, Math.min(maxScrollPx()+rbOver()+2, tlScrollPx)); // 安全界（橡皮筋映射后不会越）
+    st.style.transform='translateX('+(-tlScrollPx)+'px)';
+    ['mainBody','recBody','pipBody'].forEach(id=>{
+      const el=document.getElementById(id); if(el) el.style.width=contentW()+'px';
+    });
+    const mn=document.getElementById('mini');
+    if(mn){
+      const vw=viewW(), cw=contentW();
+      let l=Math.max(0,Math.min(100-vw, tlScrollPx/cw*100)), w=vw/cw*100;
+      if(w>100){ l=0; w=100; }
+      mn.style.setProperty('--vw', l+'%');
+      const box=document.getElementById('miniView');
+      if(box){ box.style.left=l+'%'; box.style.width=Math.min(w,100)+'%'; }
+    }
+    const rt=document.getElementById('ruler');
+    if(rt) rt.style.background='linear-gradient(90deg,#0E1114 '+Math.max(0,Math.min(100, tlScrollPx/contentW()*100))+'%, #171B21 0)';
+    autoFrameMain();
+  }
+  // 自动蓝框：主轨区块经过中央指针时，自动框选，底部按钮随即作用于该区块
+  function autoFrameMain(){
+    if(autoFrameLock) return;                          // 程序化滚动期间不覆盖选中
+    if(selTrack==='pip' || selTrack==='rec') return;   // 侧轨选中时让位
+    const t=centerT();
+    const r=regions.find(x=> t>=x.a && t<=x.b);
+    const id=r? r.id : null;
+    if(id===selectedId) return;                        // 框选未变，跳过（避免每像素重绘）
+    selectedId=id;
+    renderThumbs();                                    // 重绘主轨蓝框（仅在跨边界时触发）
+    updateBarContext();
+    if(id!=null){
+      setPreviewTrack('main');
+      updateMiniSel(regions.find(x=>x.id===id));
+    } else {
+      updateMiniSel(null);
+    }
+  }
+  // 指针处时间 = 可视区中心对应的时间
+  function centerT(){ return (tlScrollPx + viewW()/2)/PPS; }
+
+  // 滚动到让 t 时刻对准中央指针
+  // ★ autoFrame=false：程序化滚动（如 selectBlock 对准区块）不触发自动蓝框，
+  //    否则滚动被夹紧时自动蓝框会把显式选中（如复制出的新段）覆盖回指针下的旧段。
+  let autoFrameLock=false;
+  function scrollToT(t, autoFrame){
+    autoFrameLock = (autoFrame===false);
+    tlScrollPx = clampScroll(t*PPS - viewW()/2);   // 程序化滚动：硬夹取静止边界（不走橡皮筋）
+    applyScroll();
+    autoFrameLock = false;
+  }
+
+  // ★ 双指缩放：改 PPS（纯视图层）并保持焦点处 trackT 不变，整体重绘
+  function zoomTo(np, focusX){
+    np = Math.max(PPS_MIN, Math.min(PPS_MAX, np));
+    if(Math.abs(np-PPS) < 1e-6) return;
+    const focusT = (tlScrollPx + focusX)/PPS;        // 缩放前焦点处 trackT
+    PPS = np;
+    tlScrollPx = clampScroll(focusT*PPS - focusX);    // 保持该 trackT 在焦点屏位（夹取到边界）
+    rerenderAll();          // 三轨用 X() 重绘（缩略图/波形随 PPS 变）
+    buildRuler();           // 刻度用 X() 重排
+    applyScroll();          // 设 body 宽 + translate + mini 同步
+    renderMini();
+  }
+
+  /* ==========================================================================
+     录音：底栏「录音」键原地弹出大按钮
+       点按   → 红圈 2 秒倒计时 → 从指针处开始录 → 再点停止
+       长按   → 跳过倒计时立即录 → 松开停止
+       录音中 → 轨道跟随滚动 + 实时波形
+     ========================================================================== */
+  // ★ 录音格式：已定版 = 方案 A「标准」（改此处可切换，详见「移交说明.md · 录音格式」）
+  const REC_FMT = {
+    codec : 'WAV',        // 'WAV' | 'AAC'
+    bits  : 16,           // WAV 位深 16/24/32f；有损时改用 bitrate
+    rate  : 48000,        // 采样率 Hz（须与视频一致，iPhone 原生 48k）
+    ch    : 1,            // 声道 1=单声道（对口播足够）/ 2=立体声
+    bitrate: 0            // >0 表示有损码率 kbps（codec='AAC' 时生效）
+  };
+  // 已定版：方案 A = WAV PCM 16bit / 48kHz / 单声道（详见「移交说明.md · 录音格式」）
+  function recFmtText(){
+    return REC_FMT.codec==='WAV'
+      ? ('WAV · '+REC_FMT.bits+'bit · '+(REC_FMT.rate/1000)+'kHz · '+(REC_FMT.ch===1?'单声道':'立体声'))
+      : ('AAC · '+REC_FMT.bitrate+'kbps · '+(REC_FMT.rate/1000)+'kHz · '+(REC_FMT.ch===1?'单声道':'立体声'));
+  }
+  function recMBPerMin(){ return recBytesPerSec()*60/1024/1024; }
+  function recBytesPerSec(){   // 每秒字节（用于体积估算）
+    return REC_FMT.codec==='WAV'
+      ? REC_FMT.rate*REC_FMT.ch*(REC_FMT.bits/8)
+      : REC_FMT.bitrate*1000/8;
+  }
+
+  let recState='idle';        // idle | counting | recording
+  let recT0=0, recElapsed=0, recPeaks=[], recItemId=null;
+  let recTimer=null, recCdTimer=null, recHoldTimer=null, recEnv=0.6;
+
+  // 录音轨的实时包络（模拟人声：带停顿的随机游走，比纯随机更像真实录音）
+  function nextPeak(){
+    recEnv += (Math.random()-0.5)*0.34;
+    if(Math.random()<0.06) recEnv -= 0.30;          // 换气/停顿
+    if(Math.random()<0.03) recEnv += 0.26;          // 句首冲高
+    recEnv = Math.max(0.08, Math.min(1, recEnv));
+    return recEnv;
+  }
+  function recWavePath(w,h,peaks){
+    if(!peaks.length) return '';
+    let d='', n=Math.max(2,Math.min(peaks.length, Math.max(2, Math.round(w/2))));
+    for(let k=0;k<n;k++){
+      const x=k/(n-1)*w, p=peaks[Math.floor(k/(n-1)*(peaks.length-1))]||0, y=h-p*(h-1.5);
+      d+=(k?'L':'M')+x.toFixed(1)+' '+y.toFixed(1)+' ';
+    }
+    return d;
+  }
+  function renderRecLive(){
+    if(recState!=='recording'||recItemId==null) return;
+    const it=recItems.find(x=>x.id===recItemId); if(!it) return;
+    it.b = recT0 + recElapsed;
+    it.peaks = recPeaks.slice();
+    // 只重绘录音轨，代价小
+    const body=document.getElementById('recBody');
+    const w=X(it.b-it.a);
+    let html='';
+    recItems.forEach(x=>{
+      const bw=X(x.b-x.a);
+      const pk=x.peaks && x.peaks.length ? x.peaks : (function(){ if(!ENV)ENV=genEnv(240);
+        const E=ENV, a=[]; for(let k=0;k<80;k++) a.push(E[k%E.length]); return a; })();
+      const dd=recWavePath(bw,11,pk);
+      const tip = x.fmt ? ` title="${x.fmt} · ${x.size||''}"` : '';
+      html+=`<div class="rblk" data-id="${x.id}"${tip} style="left:${X(x.a)}px;width:${bw}px">
+        <span class="lb">${x.src}</span>
+        <svg class="wv" viewBox="0 0 ${bw} 11" preserveAspectRatio="none">
+          <path d="${dd}L${bw} 11 L0 11 Z" fill="#3ECC77" opacity="${x.id===recItemId?0.95:0.55}"/></svg></div>`;
+    });
+    const s=recItems.find(x=>x.id===recSelId);
+    if(s) html+=`<div class="rsel" style="display:block;left:${X(s.a)}px;width:${X(s.b-s.a)}px">
+      <span class="dur">${(s.b-s.a).toFixed(2)}s</span></div>`;
+    body.innerHTML=html;
+  }
+
+  function recUI(state){
+    const pop=document.getElementById('recPop'), btn=document.getElementById('recBtn');
+    const tip=document.getElementById('recTip'), live=document.getElementById('recLive');
+    const ring=document.getElementById('recRing'), cnt=document.getElementById('recCnt');
+    btn.classList.remove('counting','recording','stoprec');
+    document.getElementById('recFmt').textContent = recFmtText()+' · '+recMBPerMin().toFixed(1)+' MB/分';
+    if(state==='idle'){
+      pop.classList.add('show');
+      tip.textContent='点按录音 · 长按直接录';
+      ring.style.strokeDashoffset=238.8; live.classList.remove('show');
+    }else if(state==='counting'){
+      pop.classList.add('show');
+      btn.classList.add('counting');
+      tip.innerHTML='准备录音…';
+      cnt.textContent='2';
+      ring.style.transition='none';
+      ring.style.strokeDashoffset=0;      // 2 秒画满一圈
+    }else if(state==='recording'){
+      pop.classList.add('show');
+      btn.classList.add('recording');
+      ring.style.strokeDashoffset=238.8;
+      tip.innerHTML='<b>'+recElapsed.toFixed(1)+'s</b> · 再点停止';
+      live.classList.add('show');
+      document.getElementById('recLiveTx').textContent='录音中 '+recElapsed.toFixed(1)+'s';
+    }
+  }
+  function recHide(){ document.getElementById('recPop').classList.remove('show');
+                      document.getElementById('recLive').classList.remove('show'); }
+
+  // 开始录音（从指针处）
+  function recStart(){
+    if(recState==='recording') return;
+    clearInterval(recCdTimer);
+    recState='recording';
+    recT0=centerT();
+    recElapsed=0; recPeaks=[]; recEnv=0.6;
+    const id=++uid;
+    recItems.push({ id, a:recT0, b:recT0+0.01, src:'录音_'+(recItems.length+1)+'.wav',
+                    locked:false, fmt:recFmtText(), peaks:[] });
+    recItemId=id;
+    recUI('recording');
+    recTimer=setInterval(()=>{
+      recElapsed+=0.1;
+      recPeaks.push(nextPeak());
+      // 视图跟随录音右端，保持指针仍在中央
+      tlScrollPx = clampScroll((recT0+recElapsed)*PPS - viewW()/2);
+      applyScroll();
+      renderRecLive();
+      const tip=document.getElementById('recTip');
+      if(tip) tip.innerHTML='<b>'+recElapsed.toFixed(1)+'s</b> · 再点停止';
+      const lt=document.getElementById('recLiveTx');
+      if(lt) lt.textContent='录音中 '+recElapsed.toFixed(1)+'s';
+    },100);
+  }
+  // 停止录音
+  function recStop(){
+    if(recState!=='recording') return;
+    clearInterval(recTimer);
+    recState='idle';
+    const it=recItems.find(x=>x.id===recItemId);
+    if(it){
+      it.b=Math.max(it.a+0.2, recT0+recElapsed);   // 最短 0.2s
+      it.peaks=recPeaks.slice();
+      const sec=(it.b-it.a);
+      const kb=recBytesPerSec()*sec/1024;
+      it.size=kb<1024? (kb.toFixed(0)+' KB') : (kb/1024).toFixed(2)+' MB';
+      TOTAL=Math.max(TOTAL, it.b);
+      buildRuler(); renderMini(); syncTotal();
+      recSelId=it.id; recItems.sort((a,b)=>a.a-b.a);
+      renderSideTrack('rec');
+      selectBlock('rec', it.id);
+      toast('录音完成 '+sec.toFixed(1)+'s · '+it.src+' · '+it.size);
+    }
+    recItemId=null; recPeaks=[];
+    recUI('idle');
+    // 不自动收起：保留浮层让用户可连续录下一段，点浮层外才关
+    const tip=document.getElementById('recTip');
+    if(tip) tip.innerHTML='再点继续录 · 点外部关闭';
+  }
+  // 2 秒倒计时
+  function recCountdown(cb){
+    recState='counting'; recUI('counting');
+    let n=2;
+    recCdTimer=setInterval(()=>{
+      n--;
+      const el=document.getElementById('recCnt');
+      if(n>0){ el.textContent=String(n); }
+      else{
+        clearInterval(recCdTimer);
+        recUI('idle');
+        cb();
+      }
+    },1000);
+  }
+
+  // ---- 交互：点按 = 倒计时录音；长按 = 立即录音、松开停止 ----
+  (function(){
+    const btn=document.getElementById('recBtn');
+    let holdFired=false, downAt=0, stopHandled=false;
+    btn.addEventListener('pointerdown',e=>{
+      e.preventDefault();
+      try{btn.setPointerCapture(e.pointerId);}catch(_){}
+      downAt=Date.now(); holdFired=false; stopHandled=false;
+      if(recState==='recording'){ recStop(); stopHandled=true; return; }  // 录音中再点 = 停止
+      if(recState==='counting'){                                          // 倒计时中再点 = 取消
+        clearInterval(recCdTimer); recState='idle'; recUI('idle'); stopHandled=true; return;
+      }
+      // 长按 300ms 直接开录（跳过倒计时）
+      recHoldTimer=setTimeout(()=>{ holdFired=true; recStart(); }, 300);
+    });
+    const up=()=>{
+      clearTimeout(recHoldTimer);
+      if(holdFired){                        // 长按结束 → 松开停止
+        holdFired=false;
+        if(recState==='recording') recStop();
+        return;
+      }
+      if(stopHandled) return;               // ★ 本次按下已用于「停止/取消」，不要再触发倒计时
+      if(Date.now()-downAt<300 && recState==='idle'){
+        recCountdown(()=>recStart());       // 短按 → 2 秒倒计时后开录
+      }
+    };
+    btn.addEventListener('pointerup',up);
+    btn.addEventListener('pointercancel',()=>{ clearTimeout(recHoldTimer); holdFired=false; stopHandled=true; });
+  })();
+  function toggleRecPop(){
+    const pop=document.getElementById('recPop');
+    if(recState!=='idle'){ pop.classList.add('show'); placeRecPop(); return; }
+    placeRecPop();
+    pop.classList.toggle('show');
+  }
+  // 真正「原地」：浮层水平中心对准底栏「录音」键（底栏可横滑，故每次动态算）
+  function placeRecPop(){
+    const pop=document.getElementById('recPop');
+    const key=document.querySelector('#bottombar .bb[aria-label="录音"]');
+    const ed=document.querySelector('.editor');
+    if(!key||!ed||!pop) return;
+    const r=key.getBoundingClientRect(), e=ed.getBoundingClientRect();
+    // 贴住屏幕边缘时收敛，避免浮层被裁掉
+    const half=pop.offsetWidth/2 || 92;
+    let x=r.x + r.width/2 - e.x;
+    x=Math.max(half+4, Math.min(e.width-half-4, x));
+    pop.style.left=x+'px';
+  }
+  // 点浮层外关闭
+  (function(){
+    const pop=document.getElementById('recPop');
+    document.getElementById('screen-editor').addEventListener('pointerdown',e=>{
+      if(e.target.closest('#recPop')||e.target.closest('#recLive')) return;
+      if(e.target.closest('.bb[aria-label="录音"]')) return;   // 录音键自己处理
+      if(pop.classList.contains('show') && recState==='idle') pop.classList.remove('show');
+    });
+  })();
+
+  /* ==========================================================================
+     底部工具栏：按选中轨道切换
+       主轨（默认）  : 切割 · 波剪 · 音量 · 删除 · 变速 · 录音        （6）
+       录音选中      : 切割 · 音量 · 复制 · 录音 · 删除               （5）
+       画中画选中    : 切割 · 音量 · 替换 · 画面大小 · 旋转 · 左右镜像 · 变速 · 复制 · 删除（9）
+     ========================================================================== */
+  const TOOLBARS={
+    main:[
+      {ic:'ic-scissors', t:'切割', fn:()=>cutAtPointer('main')},
+      {ic:'ic-wavecut',  t:'波剪', fn:()=>goWcut()},
+      {ic:'ic-mute2',    t:'音量', fn:()=>openVolume('main')},
+      {ic:'ic-zoom',     t:'画面大小', fn:()=>openSize('main')},
+      {ic:'ic-rotate',   t:'旋转', fn:()=>rotateVis('main')},
+      {ic:'ic-flip',     t:'左右镜像', fn:()=>flipVis('main')},
+      {ic:'ic-speed',    t:'变速', fn:()=>openSpeed('main')},
+      {ic:'ic-copy',     t:'复制', fn:()=>dupFramed('main')},
+      {ic:'ic-trash',    t:'删除', fn:()=>delFramed('main'), del:true},
+      {ic:'ic-mic2',     t:'录音', fn:()=>toggleRecPop()},
+    ],
+    rec:[
+      {ic:'ic-scissors', t:'切割', fn:()=>cutAtPointer('rec')},
+      {ic:'ic-mute2',    t:'音量', fn:()=>openVolume('rec')},
+      {ic:'ic-copy',     t:'复制', fn:()=>dupFramed('rec')},
+      {ic:'ic-mic2',     t:'录音', fn:()=>toggleRecPop()},
+      {ic:'ic-trash',    t:'删除', fn:()=>delFramed('rec'), del:true},
+    ],
+    pip:[
+      {ic:'ic-scissors', t:'切割', fn:()=>cutAtPointer('pip')},
+      {ic:'ic-mute2',    t:'音量', fn:()=>openVolume('pip')},
+      {ic:'ic-swap',     t:'替换', fn:()=>startReplace()},
+      {ic:'ic-zoom',     t:'画面大小', fn:()=>openSize('pip')},
+      {ic:'ic-rotate',   t:'旋转', fn:()=>rotateVis('pip')},
+      {ic:'ic-flip',     t:'左右镜像', fn:()=>flipVis('pip')},
+      {ic:'ic-speed',    t:'变速', fn:()=>openSpeed('pip')},
+      {ic:'ic-copy',     t:'复制', fn:()=>dupFramed('pip')},
+      {ic:'ic-trash',    t:'删除', fn:()=>delFramed('pip'), del:true},
+    ],
+  };
+  let barTrack='main';
+  function currentBarTrack(){
+    if(selTrack==='pip' && pipSelId!=null) return 'pip';
+    if(selTrack==='rec' && recSelId!=null) return 'rec';
+    return 'main';
+  }
+  function renderBottombar(){
+    const b=document.getElementById('bottombar'); if(!b)return;
+    b.innerHTML='';
+    (TOOLBARS[barTrack]||TOOLBARS.main).forEach(it=>{
+      const el=document.createElement('div');
+      el.className='bb'+(it.del?' del':'');
+      el.setAttribute('role','button'); el.setAttribute('aria-label',it.t); el.title=it.t;
+      el.innerHTML=`<svg class="ic"><use href="#${it.ic}"/></svg>`;
+      el.onclick=()=>{ closeToolPanel(false); closeSpdPanel(false); it.fn(); };
+      b.appendChild(el);
+    });
+  }
+  function updateBarContext(){
+    const t=currentBarTrack();
+    if(t!==barTrack) barTrack=t;
+    renderBottombar();
+  }
+
+  /* ---------- 上下文动作（按轨道） ---------- */
+  function arrOf(track){ return track==='pip'? pipItems : track==='rec'? recItems : regions; }
+  function idOf(track){ return track==='pip'? pipSelId : track==='rec'? recSelId : selectedId; }
+  function setSelId(track,v){ if(track==='pip') pipSelId=v; else if(track==='rec') recSelId=v; else selectedId=v; }
+  function ensureItemFields(){
+    regions.forEach(r=>{ if(r.vol==null)r.vol=100; if(r.speed==null)r.speed=1; if(r.scale==null)r.scale=100; if(r.rot==null)r.rot=0; if(r.flip==null)r.flip=false; });
+    pipItems.forEach(p=>{ if(p.vol==null)p.vol=100; if(p.speed==null)p.speed=1; if(p.scale==null)p.scale=100; if(p.rot==null)p.rot=0; if(p.flip==null)p.flip=false; });
+    recItems.forEach(r=>{ if(r.vol==null)r.vol=100; });
+  }
+
+  // 切割：在指针处把当前区块一分为二
+  function cutAtPointer(track){
+    const t=centerT(), arr=arrOf(track);
+    const i=arr.findIndex(it=> t>it.a+0.06 && t<it.b-0.06);
+    if(i<0){ toast('指针处没有可切分的区块，先把区块拖到指针下'); return; }
+    const r=arr[i], nb=JSON.parse(JSON.stringify(r));
+    nb.id=++uid; nb.a=+t.toFixed(2); nb.b=r.b; r.b=+t.toFixed(2);
+    arr.splice(i+1,0,nb);
+    selTrack=track; setSelId(track, track==='main'? r.id : nb.id);
+    if(track==='main') buildRuler();
+    rerenderAll(); renderMini(); updateBarContext();
+    toast('已在 '+fmtT(t)+' 处切开「'+(r.src||'')+'」');
+  }
+  // 删除：删掉当前选中区块，后续区块左移补空位
+  function delFramed(track){
+    if(track==='main'){ delRegion(); return; }
+    const arr=arrOf(track), i=arr.findIndex(x=>x.id===idOf(track));
+    if(i<0){ toast('请先选中一个'+(track==='pip'?'画中画':'录音')+'区块'); return; }
+    const r=arr[i], len=+(r.b-r.a).toFixed(2);
+    arr.splice(i,1);
+    arr.forEach(x=>{ if(x.a>=r.b){ x.a=+(x.a-len).toFixed(2); x.b=+(x.b-len).toFixed(2); } });
+    clearSel(); renderMini();
+    toast('已删除'+(track==='pip'?'画中画':'录音')+'片段（'+(r.src||'')+' · '+len+'s）');
+  }
+  // 复制：在片段之后插入一份，后面区块右移
+  function dupFramed(track){
+    if(track==='main'){ dupRegion(); return; }
+    const arr=arrOf(track), i=arr.findIndex(x=>x.id===idOf(track));
+    if(i<0){ toast('请先选中一个'+(track==='pip'?'画中画':'录音')+'区块'); return; }
+    const r=arr[i], len=+(r.b-r.a).toFixed(2);
+    arr.forEach(x=>{ if(x.a>=r.b){ x.a=+(x.a+len).toFixed(2); x.b=+(x.b+len).toFixed(2); } });
+    const cp=JSON.parse(JSON.stringify(r)); cp.id=++uid; cp.locked=false;
+    arr.push(cp); arr.sort((a,b)=>a.a-b.a);
+    selTrack=track; setSelId(track, cp.id);
+    rerenderAll(); renderMini(); updateBarContext();
+    toast('已复制'+(track==='pip'?'画中画':'录音')+'片段（'+len+'s）');
+  }
+
+  /* ---------- 工具面板：音量 / 变速 / 画面大小（参考竞品音量条） ---------- */
+  let panelCfg=null, panelVal=0, panelAll=false;
+  function openToolPanel(cfg){
+    closeToolPanel(false);
+    closeSpdPanel(false);   // 音量/画面大小与变速面板互斥
+    panelCfg=cfg; panelVal=cfg.value; panelAll=false;
+    const p=document.getElementById('toolPanel');
+    p.innerHTML=
+      `<div class="tp-head">
+         <span class="tp-label">${cfg.label}：</span>
+         <span class="tp-val" id="tpVal"></span>
+         <div class="tp-track" id="tpTrack"><div class="rail"></div><div class="fill" id="tpFill"></div><div class="knob" id="tpKnob"></div></div>
+         ${cfg.withMute? `<div class="tp-mute" id="tpMute"><svg class="ic"><use href="#ic-mute"/></svg><span>静音</span></div>`:''}
+       </div>
+       <div class="tp-acts">
+         <div class="tp-a" id="tpCancel" title="取消"><svg class="ic"><use href="#ic-x"/></svg></div>
+         <div class="tp-a ok" id="tpOk" title="确定"><svg class="ic"><use href="#ic-check"/></svg></div>
+         <div class="tp-a" id="tpMore" title="更多"><svg class="ic"><use href="#ic-caret-d"/></svg></div>
+         <div class="tp-applyall" id="tpApplyAll">应用到全部</div>
+       </div>`;
+    const track=document.getElementById('tpTrack');
+    const setFromX=x=>{
+      const r=track.getBoundingClientRect();
+      let f=Math.max(0,Math.min(1,(x-r.left)/r.width));
+      let v=cfg.min+f*(cfg.max-cfg.min);
+      v=Math.round(v/cfg.step)*cfg.step;
+      panelVal=Math.max(cfg.min,Math.min(cfg.max,+v.toFixed(4)));
+      syncPanel();
+    };
+    track.addEventListener('pointerdown',e=>{ e.preventDefault(); try{track.setPointerCapture(e.pointerId);}catch(_){} track._dg=true; setFromX(e.clientX); });
+    track.addEventListener('pointermove',e=>{ if(track._dg) setFromX(e.clientX); });
+    const endT=()=>{ track._dg=false; };
+    track.addEventListener('pointerup',endT); track.addEventListener('pointercancel',endT);
+    document.getElementById('tpCancel').onclick=()=>closeToolPanel(false);
+    document.getElementById('tpOk').onclick=()=>closeToolPanel(true);
+    document.getElementById('tpMore').onclick=()=>{
+      panelAll=!panelAll;
+      document.getElementById('tpApplyAll').classList.toggle('show',panelAll);
+      document.getElementById('tpOk').style.visibility=panelAll?'hidden':'visible';
+    };
+    document.getElementById('tpApplyAll').onclick=()=>{ panelAll=true; closeToolPanel(true); };
+    const mute=document.getElementById('tpMute');
+    if(mute) mute.onclick=()=>{ panelVal=cfg.min; syncPanel(); };
+    p.classList.add('show');
+    syncPanel();
+  }
+  function syncPanel(){
+    const cfg=panelCfg; if(!cfg) return;
+    const f=(cfg.max>cfg.min)? (panelVal-cfg.min)/(cfg.max-cfg.min) : 0;
+    document.getElementById('tpFill').style.width=(f*100)+'%';
+    document.getElementById('tpKnob').style.left=(f*100)+'%';
+    document.getElementById('tpVal').textContent=cfg.fmt(panelVal);
+    const mute=document.getElementById('tpMute');
+    if(mute) mute.classList.toggle('on', cfg.min===0 && panelVal<=cfg.min+0.001);
+  }
+  function closeToolPanel(commit){
+    const p=document.getElementById('toolPanel'); if(p) p.classList.remove('show');
+    const cfg=panelCfg; panelCfg=null;
+    if(commit && cfg) cfg.onCommit(panelVal, panelAll);
+  }
+
+  function openVolume(track){
+    ensureItemFields(); selTrack=track; updateBarContext();
+    const it=(track==='pip'? pipItems.find(x=>x.id===pipSelId)
+            : track==='rec'? recItems.find(x=>x.id===recSelId)
+            : regions.find(x=>x.id===selectedId));
+    if(!it){ toast('请先选中一个区块'); return; }
+    openToolPanel({
+      label:'音量', min:0, max:100, step:1, value:(it.vol==null?100:it.vol), withMute:true,
+      fmt:v=>String(Math.round(v)),
+      onCommit:(v,all)=>applyVol(track, all? null : it.id, v),
+    });
+  }
+  function applyVol(track,id,v){
+    const arr=arrOf(track), V=Math.round(v);
+    (id==null? arr : arr.filter(x=>x.id===id)).forEach(x=>{ x.vol=V; x.muted=(V===0); });
+    rerenderAll(); renderMini();
+    toast(id==null? ('音量 '+V+' 已应用到全部 '+arr.length+' 段') : ('音量 → '+V));
+  }
+  /* ---------- 变速面板（线性变速：离散档位 · 对数刻度尺 · 时长联动） ---------- */
+  // 竞品档位：0.1 / 0.5 / 1.0 / 1.5 / 2 / 3 / 4
+  const SPD_STEPS=[0.1,0.5,1,1.5,2,3,4];
+  // 对数映射：把 0.1~4x 铺满刻度尺（低倍区更宽，高倍区压缩，符合听觉直觉）
+  const SPD_LO=Math.log(0.1), SPD_HI=Math.log(4);
+  const spdToPct=v=>{ const t=(Math.log(Math.max(0.1,Math.min(4,v)))-SPD_LO)/(SPD_HI-SPD_LO); return t*100; };
+  const pctToSpd=p=>Math.exp(SPD_LO+(SPD_HI-SPD_LO)*(p/100));
+  // 吸附到最近档位（差值 < 0.06 视为吸附），否则允许连续值
+  const snapSpd=v=>{
+    let best=SPD_STEPS[0], bd=1e9;
+    SPD_STEPS.forEach(s=>{ const d=Math.abs(s-v); if(d<bd){ bd=d; best=s; } });
+    return bd<0.06? best : +v.toFixed(2);
+  };
+  const spdLabel=v=>{ const s=snapSpd(v); return (Math.abs(s-Math.round(s))<0.001? Math.round(s) : s)+'x'; };
+  let spdCtx=null;
+  function closeSpdPanel(commit){
+    const p=document.getElementById('spdPanel'); if(p) p.classList.remove('show');
+    const c=spdCtx; spdCtx=null;
+    if(commit && c) applySpeed(c.track, c.all? null : c.id, c.v);
+  }
+  function openSpeed(track){
+    ensureItemFields(); selTrack=track; updateBarContext();
+    const it=(track==='pip'? pipItems.find(x=>x.id===pipSelId)
+            : track==='rec'? recItems.find(x=>x.id===recSelId)
+            : regions.find(x=>x.id===selectedId));
+    if(!it){ toast('请先选中一个区块'); return; }
+    if(track==='rec'){ toast('录音片段暂不支持变速'); return; }
+    closeToolPanel(false);
+    // ★ 必须用锁存的 bBase（speed=1 时的原始时长），不能用当前 b-a：
+    //   变速后 b-a 已缩短，二次打开会再除一次 → 时长被重复累乘（2x → 1.75s）。
+    const baseDur=+(it.bBase!=null? it.bBase : (it.b-it.a)).toFixed(2);
+    spdCtx={track, id:it.id, base:baseDur, v:(it.speed==null?1:it.speed), all:false};
+    const p=document.getElementById('spdPanel'); if(!p) return;
+    let steps='';
+    SPD_STEPS.forEach(s=>{ steps+=`<div class="spd-step" data-v="${s}">${spdLabel(s)}</div>`; });
+    let ticks='';
+    for(let i=0;i<=40;i++){ ticks+=`<div class="spd-tick${i%5===0?' maj':''}"></div>`; }
+    p.innerHTML=
+      `<div class="spd-row">
+         <div class="spd-dur">时长<b id="spdDur"></b></div>
+         <div class="spd-steps">${steps}</div>
+       </div>
+       <div class="spd-scale" id="spdScale">${ticks}<div class="spd-cur" id="spdCur"></div></div>
+       <div class="spd-acts">
+         <div class="spd-a" id="spdCancel" title="取消"><svg class="ic"><use href="#ic-x"/></svg></div>
+         <div class="spd-a all" id="spdAll" title="应用到全部"><svg class="ic"><use href="#ic-checks"/></svg></div>
+         <div class="spd-a ok" id="spdOk" title="确定"><svg class="ic"><use href="#ic-check"/></svg></div>
+       </div>`;
+    const scale=document.getElementById('spdScale');
+    const setFromX=x=>{
+      const r=scale.getBoundingClientRect();
+      const pct=Math.max(0,Math.min(100,(x-r.left)/r.width*100));
+      spdCtx.v=+pctToSpd(pct).toFixed(2);
+      syncSpdPanel();
+    };
+    scale.addEventListener('pointerdown',e=>{ e.preventDefault(); try{scale.setPointerCapture(e.pointerId);}catch(_){} scale._dg=true; setFromX(e.clientX); });
+    scale.addEventListener('pointermove',e=>{ if(scale._dg) setFromX(e.clientX); });
+    const endT=()=>{ scale._dg=false; };
+    scale.addEventListener('pointerup',endT); scale.addEventListener('pointercancel',endT);
+    p.querySelectorAll('.spd-step').forEach(el=>{
+      el.onclick=()=>{ spdCtx.v=+el.dataset.v; syncSpdPanel(); };
+    });
+    // ★ v1.5.7：只保留线性（常规）变速，曲线变速已移除，故不再有 Tab 栏与 Tab 切换。
+    document.getElementById('spdCancel').onclick=()=>closeSpdPanel(false);
+    document.getElementById('spdOk').onclick=()=>closeSpdPanel(true);
+    document.getElementById('spdAll').onclick=()=>{ spdCtx.all=true; closeSpdPanel(true); };
+    p.classList.add('show');
+    syncSpdPanel();
+  }
+  function syncSpdPanel(){
+    const c=spdCtx; if(!c) return;
+    const v=c.v;
+    // ★ 时长联动：时长 = 原始时长 / 倍速
+    const dur=c.base/ v;
+    const dEl=document.getElementById('spdDur');
+    if(dEl) dEl.textContent=dur.toFixed(2)+'s';
+    const cur=document.getElementById('spdCur');
+    if(cur) cur.style.left=spdToPct(v)+'%';
+    document.querySelectorAll('#spdPanel .spd-step').forEach(el=>{
+      el.classList.toggle('on', Math.abs(+el.dataset.v - v)<0.001);
+    });
+  }
+  function applySpeed(track,id,v){
+    const arr=arrOf(track), V=+v;
+    const list=(id==null? arr : arr.filter(x=>x.id===id));
+    if(!list.length) return;
+    // 逐段应用：时长 = 原时长 / 倍速；后续片段按差值平移（主轨片段连续）
+    list.forEach(it=>{
+      const base=it.bBase!=null? it.bBase : +(it.b-it.a).toFixed(2);  // 锁存 speed=1 时的时长
+      const nd=+(base/V).toFixed(2);
+      const oldB=it.b, delta=+(nd-(it.b-it.a)).toFixed(2);
+      it.speed=V; it.bBase=base; it.b=+(it.a+nd).toFixed(2);
+      if(Math.abs(delta)>0.001){
+        arr.filter(x=>x.a>=oldB-0.001 && (id!=null || x.id!==it.id))
+           .forEach(x=>{ x.a=+(x.a+delta).toFixed(2); x.b=+(x.b+delta).toFixed(2); });
+      }
+    });
+    if(track==='main'){
+      TOTAL=Math.max(1, +arr.reduce((s,x)=>s+(x.b-x.a),0).toFixed(2));
+      buildRuler(); syncTotal();
+    }
+    // ★ 变速会改 TOTAL → 触发 applyScroll → autoFrameMain 重新框选指针下的区块。
+    //   若不重锁，用户刚编辑完的区块会被「自动蓝框」抢走选中态（下次开面板回显错档位）。
+    //   故这里锁住自动蓝框并显式重新选中目标区块。
+    if(id!=null){
+      const keep=id;
+      autoFrameLock=true;
+      rerenderAll(); renderMini();
+      setSelId(track, keep);
+      if(track==='main'){
+        const r=arr.find(x=>x.id===keep);
+        if(r){ scrollToT((r.a+r.b)/2, false); rerenderAll(); }
+      }
+      autoFrameLock=false;
+    }else{
+      rerenderAll(); renderMini();
+    }
+    const tgt=id==null? ('全部 '+arr.length+' 段') : '当前区块';
+    // 注意：closeSpdPanel 已把 spdCtx 置空，时长要从片段的 bBase 取，不能读 spdCtx
+    const shown=(id==null||!list[0])? '' : ((list[0].bBase||0)/V).toFixed(2)+'s · ';
+    toast('变速 → '+spdLabel(V)+'（时长 '+shown+tgt+'）');
+  }
+  /* ---------- 画面类参数：画面大小 / 旋转 / 左右镜像（主轨 + 画中画通用） ---------- */
+  // 取「画面参数载体」：主轨区块或画中画块（录音轨无画面，返回 null）
+  function visualOf(track){
+    const t=track||currentBarTrack();
+    return arrOf(t).find(x=>x.id===idOf(t))||null;
+  }
+  function openSize(track){
+    ensureItemFields();
+    const t=track||currentBarTrack(), it=visualOf(t);
+    if(!it){ toast('请先选中区块'); return; }
+    const arr=arrOf(t);
+    openToolPanel({
+      label:'画面大小', min:50, max:200, step:1, value:(it.scale==null?100:it.scale), withMute:false,
+      fmt:v=>Math.round(v)+'%',
+      onCommit:(v,all)=>{ (all? arr : [it]).forEach(x=>{ x.scale=Math.round(v); }); applyCanvasTransform(); rerenderAll(); renderMini(); toast('画面大小 → '+Math.round(v)+'%'+(all?'（全部）':'')); },
+    });
+  }
+  function rotateVis(track){
+    ensureItemFields();
+    const t=track||currentBarTrack(), it=visualOf(t);
+    if(!it){ toast('请先选中区块'); return; }
+    const nm=(t==='main')? '主轨画面' : '画中画';
+    it.rot=((it.rot||0)+90)%360; applyCanvasTransform(); rerenderAll();
+    toast(nm+'旋转 '+it.rot+'°');
+  }
+  function flipVis(track){
+    ensureItemFields();
+    const t=track||currentBarTrack(), it=visualOf(t);
+    if(!it){ toast('请先选中区块'); return; }
+    const nm=(t==='main')? '主轨画面' : '画中画';
+    it.flip=!it.flip; applyCanvasTransform(); rerenderAll();
+    toast(it.flip? (nm+'已左右镜像') : '已取消左右镜像');
+  }
+  // 画面参数 → 预览画面（大小/旋转/镜像）+ 角标（主轨 / 画中画都走这里）
+  function applyCanvasTransform(){
+    const f=document.querySelector('.canvas .frame-img');
+    const badge=document.getElementById('pipBadge');
+    const t=currentBarTrack();
+    const it=(t==='main'||t==='pip')? visualOf(t) : null;
+    if(!f) return;
+    if(!it){ f.style.transform=''; if(badge) badge.classList.remove('show'); return; }
+    const s=(it.scale||100)/100;
+    f.style.transform='scale('+s+') rotate('+(it.rot||0)+'deg)'+(it.flip?' scaleX(-1)':'');
+    if(badge){
+      const parts=[]; if(it.rot) parts.push(it.rot+'°');
+      if(it.flip) parts.push('镜像'); if((it.scale||100)!==100) parts.push(it.scale+'%');
+      badge.textContent=parts.join(' · '); badge.classList.toggle('show', parts.length>0);
+    }
+  }
+
+  /* ---------- 录音轨 / 画中画轨 ---------- */
+  function renderSideTrack(kind){
+    const items = kind==='pip'? pipItems : recItems;
+    const bodyId = kind==='pip'? 'pipBody' : 'recBody';
+    const body=document.getElementById(bodyId); if(!body) return;
+    let html='';
+    items.forEach((it,i)=>{
+      const w=X(it.b-it.a);
+      if(kind==='pip'){
+        let th='';
+        const n=Math.max(1,Math.round((it.b-it.a)/0.8));
+        for(let k=0;k<n;k++) th+='<div></div>';
+        const dur=(it.b-it.a).toFixed(2)+'s';
+        html+=`<div class="pblk" data-id="${it.id}" style="left:${X(it.a)}px;width:${w}px">
+          <div class="pthumb"><svg class="ic"><use href="#ic-play"/></svg></div>
+          <div class="thumbs">${th}</div><span class="lb">${it.src}</span><span class="bdur">${dur}</span></div>`;
+      }else{
+        const dur=(it.b-it.a).toFixed(2)+'s';
+        html+=`<div class="rblk" data-id="${it.id}" title="${it.fmt||''}${it.size?' · '+it.size:''}" style="left:${X(it.a)}px;width:${w}px">
+          <span class="lb">${it.src}</span>
+          <svg class="wv" viewBox="0 0 ${w} 11" preserveAspectRatio="none">${
+            (function(){ if(!ENV) ENV=genEnv(240); const E=ENV; let d='';
+              for(let k=0;k<60;k++){ const x=k/59*w, h=1+E[k%E.length]*9; d+=(k?'L':'M')+x.toFixed(1)+' '+(11-h).toFixed(1)+' '; }
+              return '<path d="'+d+'L'+w+' 11 L0 11 Z" fill="#3ECC77" opacity=".55"/>'; })()
+          }</svg><span class="bdur">${dur}</span></div>`;
+      }
+    });
+    // 选中框
+    const selId = kind==='pip'? pipSelId : recSelId;
+    const s=items.find(x=>x.id===selId);
+    // ★ 必须显式 display:block —— .psel/.rsel 默认 display:none，否则蓝框永远不显示
+    if(s) html+=`<div class="${kind==='pip'?'psel':'rsel'}" style="display:block;left:${X(s.a)}px;width:${X(s.b-s.a)}px">
+      <span class="dur">${(s.b-s.a).toFixed(2)}s</span></div>`;
+    body.innerHTML=html;
+    body.querySelectorAll('.pblk,.rblk').forEach(el=>{
+      el.onclick=(e)=>{ e.stopPropagation();
+        const id=+el.dataset.id;
+        if(kind==='pip') selectBlock('pip',id); else selectBlock('rec',id);
+      };
+    });
+  }
+  let pipSelId=null, recSelId=null;
+
+  /* ---------- 主轨道：缩略图帧条 ---------- */
+  function renderThumbs(){
+    const el=document.getElementById('thumbBody'); if(!el)return;
+    let html='';
+    regions.forEach((r,i)=>{
+      const c=thumbPal[i%thumbPal.length];
+      const n=Math.max(1, Math.round((r.b-r.a)/1.2));
+      for(let k=0;k<n;k++){
+        const a=r.a+(r.b-r.a)*k/n, b=r.a+(r.b-r.a)*(k+1)/n;
+        html+=`<div class="tseg" style="left:${X(a)}px;width:${X(b-a)}px;
+          background:linear-gradient(150deg,${c[0]},${c[1]})"></div>`;
+      }
+      html+=`<div class="thit${r.locked?' locked':''}${r.muted?' muted':''}" data-id="${r.id}"
+        style="left:${X(r.a)}px;width:${X(r.b-r.a)}px"></div>`;
+      if(r.muted) html+=`<div class="tmutebadge" style="left:${X(r.b)-20}px"><svg class="ic"><use href="#ic-mute2"/></svg></div>`;
+    });
+    if(selectedId!=null){
+      const r=regions.find(x=>x.id===selectedId);
+      if(r) html+=`<div class="tframe" style="display:block;left:${X(r.a)}px;width:${X(r.b-r.a)}px">
+        <span class="dur">${(r.b-r.a).toFixed(2)}s</span></div>`;
+    }
+    // 片段交界处的「+」插入点
+    regions.forEach((r,i)=>{
+      if(i<regions.length-1){
+        html+=`<div class="tadd" data-add="${regions[i+1].id}" style="left:${X(regions[i+1].a)}px">
+          <svg class="ic"><use href="#ic-plus"/></svg></div>`;
+      }
+    });
+    el.innerHTML=html;
+    el.querySelectorAll('.thit').forEach(h=>{
+      h.onclick=(e)=>{ e.stopPropagation(); selectBlock('main',+h.dataset.id); };
+    });
+    el.querySelectorAll('.tadd').forEach(a=>{
+      a.onclick=(e)=>{ e.stopPropagation(); toast('在 '+fmtT(regions.find(x=>x.id===+a.dataset.add).a)+' 处插入片段'); };
+    });
+  }
+
+  function offsetIn(el, ancestor){let x=0,y=0,n=el;while(n&&n!==ancestor){x+=n.offsetLeft;y+=n.offsetTop;n=n.offsetParent;}return {x,y};}
+
+  /* ---------- 主轨道：声音包络波形 ---------- */
+  function renderWave(){
+    const body=document.getElementById('waveBody'); if(!body)return;
+    const W=contentW(), H=42, base=H-3, plotH=H-6;
+    const n=Math.max(120, Math.round(TOTAL*8));
+    // ★ ENV 必须按当前 TOTAL 重新生成：复制/插入后 TOTAL 变大，旧 ENV 长度不够会越界出 NaN
+    if(!ENV || ENV.length < n) ENV=genEnv(n);
+    const bw=W/n;
+    let top='';
+    for(let i=0;i<n;i++){const x=i*bw;const y=base-ENV[i%ENV.length]*plotH;top+=`${i===0?'M':'L'}${x.toFixed(1)} ${y.toFixed(1)} `;}
+    const fill=top+`L${W} ${base} L0 ${base} Z`;
+
+    // 编辑页不显示红区/红罩/折叠线 —— 红绿气口只在「波剪」页表达
+    let flags='',hits='';
+    regions.forEach(r=>{
+      const a=X(r.a), w=X(r.b-r.a);
+      if(r.locked) flags+=`<div class="lockflag" style="left:${a+4}px"><svg class="ic"><use href="#ic-lock"/></svg></div>`;
+      hits+=`<div class="hit${r.locked?' locked':''}" data-id="${r.id}" style="left:${a}px;width:${w}px"></div>`;
+    });
+
+    body.innerHTML=`
+      <svg class="wave-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        <defs><linearGradient id="wg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#3ECC77"/><stop offset="1" stop-color="#239554"/></linearGradient></defs>
+        <path d="${fill}" fill="url(#wg)"/>
+      </svg>
+      ${flags}${hits}`;
+    body.querySelectorAll('.hit').forEach(h=>{
+      h.onclick=(e)=>{ e.stopPropagation(); selectBlock('main',+h.dataset.id); };
+    });
+  }
+
+  /* ---------- 时间刻度（随内容滚动） ---------- */
+  function buildRuler(){
+    const r=document.getElementById('ruler'); if(!r)return;
+    let html='';
+    for(let sec=0;sec<=TOTAL;sec++){
+      const x=X(sec);
+      // 每 5 秒一个「长刻度 + 文字」，每秒只给一个短刻度，避免标签挤成一团
+      const major = (sec % 5 === 0);
+      html+=`<div class="tick${major?' major':''}" style="left:${x}px"></div>`;
+      if(major) html+=`<div class="rl" style="left:${x}px">${fmtT(sec)}</div>`;
+    }
+    for(let sec=0;sec<=TOTAL;sec++){
+      for(let f=1;f<5;f++){ if(sec+f/5>TOTAL) break;
+        html+=`<div class="tick" style="left:${X(sec+f/5)}px"></div>`; }
+    }
+    r.innerHTML=html;
+  }
+
+  /* ---------- 迷你概览（全局，不滚动） ---------- */
+  function renderMini(){
+    const m=document.getElementById('mini'); if(!m)return;
+    const W=1000,H=100; if(!ENV)ENV=genEnv(240);
+    let top='';
+    for(let i=0;i<240;i++){const x=i/240*W;const y=H-8-(ENV[i%ENV.length])*(H-16);top+=`${i===0?'M':'L'}${x.toFixed(1)} ${y.toFixed(1)} `;}
+    const fill=top+`L${W} ${H-8} L0 ${H-8} Z`;
+    // 迷你条同样不显示红区（中性灰波形 + 蓝色视窗框）
+    m.innerHTML=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><path d="${fill}" fill="#5C6668" opacity="0.85"/></svg><div class="selb" id="miniView"></div>`;
+    applyScroll();
+  }
+
+  /* ==========================================================================
+     选区 + 悬浮菜单
+     ========================================================================== */
+  const MENUS={
+    main:[
+      {ic:'ic-swap',   tx:'替换', fn:()=>startReplace()},
+      {ic:'ic-wavecut',tx:'波剪', fn:()=>goWcut()},
+      {id:'fiLock', ic:'ic-lock', tx:'上锁', fn:()=>toggleLock()},
+      {ic:'ic-copy',   tx:'复制', fn:()=>dupRegion()},
+      {sep:true},
+      {ic:'ic-trash',  tx:'删除', fn:()=>delRegion(), del:true},
+    ],
+    pip:[
+      {ic:'ic-swap',   tx:'替换', fn:()=>startReplace()},
+      {ic:'ic-scissors', tx:'切开', fn:()=>toast('画中画：在此处切开')},
+      {id:'fiLock', ic:'ic-lock', tx:'上锁', fn:()=>toast('画中画片段已上锁')},
+      {ic:'ic-copy',   tx:'复制', fn:()=>toast('已复制画中画片段')},
+      {sep:true},
+      {ic:'ic-trash',  tx:'删除', fn:()=>toast('已删除画中画片段'), del:true},
+    ],
+    rec:[
+      {ic:'ic-scissors', tx:'切开', fn:()=>toast('录音：在此处切开')},
+      {ic:'ic-tune',   tx:'音量', fn:()=>toast('调节录音音量')},
+      {id:'fiLock', ic:'ic-lock', tx:'上锁', fn:()=>toast('录音片段已上锁')},
+      {ic:'ic-copy',   tx:'复制', fn:()=>toast('已复制录音片段')},
+      {sep:true},
+      {ic:'ic-trash',  tx:'删除', fn:()=>toast('已删除录音片段'), del:true},
+    ],
+  };
+
+  function buildFloatbar(track){
+    const fb=document.getElementById('floatbar'); if(!fb)return;
+    fb.innerHTML='';
+    (MENUS[track]||[]).forEach(it=>{
+      if(it.sep){ const d=document.createElement('div'); d.className='sep'; fb.appendChild(d); return; }
+      const b=document.createElement('div');
+      b.className='fi'+(it.del?' del':'');
+      if(it.id) b.id=it.id;
+      b.innerHTML=`<svg class="ic"><use href="#${it.ic}"/></svg><span class="tx">${it.tx}</span>`;
+      b.onclick=()=>{ it.fn(); };
+      fb.appendChild(b);
+    });
+  }
+  // 垂直：紧贴所点轨道上方 6pt；水平：50%（中央指针 = 可视区中央）
+  function placeFloatbar(track){
+    const fb=document.getElementById('floatbar');
+    const stack=document.getElementById('trackStack');
+    const row=document.querySelector(track==='main'?'.trow.main':(track==='pip'?'.trow.pip':'.trow.rec'));
+    if(!fb||!stack||!row) return;
+    const y=offsetIn(row, stack).y, h=row.offsetHeight, bh=fb.offsetHeight;
+    // 默认：紧贴轨道上方 6pt（空间不够时向上压到 0，允许盖住上一条轨 —— 与竞品一致）
+    // 只有「最顶轨」上方完全无处可放时，才改放到轨道下方，避免盖住自己
+    let top=y-bh-6;
+    if(top<2) top = (y<=1) ? (y+h+6) : 2;
+    fb.style.left='50%';
+    fb.style.top=Math.max(2, top)+'px';
+  }
+
+  // 预览区跟随选中轨道
+  function setPreviewTrack(track){
+    const f=document.querySelector('.canvas .frame-img');
+    const ct=document.getElementById('centerTime');
+    if(!f||!ct) return;
+    const map={
+      main:['radial-gradient(120px 80px at 30% 25%, rgba(91,140,255,.35), transparent 70%), radial-gradient(160px 120px at 75% 70%, rgba(62,204,119,.25), transparent 70%), linear-gradient(135deg,#101826,#0a0f17)','00:12'],
+      pip:['radial-gradient(110px 70px at 34% 30%, rgba(140,170,255,.40), transparent 70%), linear-gradient(150deg,#1b2436,#0b0f16)','画中画'],
+      rec:['radial-gradient(120px 90px at 50% 40%, rgba(62,204,119,.30), transparent 72%), linear-gradient(150deg,#141d1a,#080b0a)','录音'],
+    };
+    f.style.background=map[track][0];
+    ct.textContent=map[track][1];
+    ct.style.fontSize = track==='main'? '34px' : '19px';
+  }
+
+  // 统一入口：点选某轨某区块 → 三轨同步滚动对齐指针 → 弹菜单
+  function selectBlock(track, id){
+    selTrack=track;
+    let a,b;
+    if(track==='main'){
+      selectedId=id;
+      const r=regions.find(x=>x.id===id); if(!r)return; a=r.a; b=r.b;
+    }else if(track==='pip'){
+      pipSelId=id; const it=pipItems.find(x=>x.id===id); if(!it)return; a=it.a; b=it.b;
+    }else{
+      recSelId=id; const it=recItems.find(x=>x.id===id); if(!it)return; a=it.a; b=it.b;
+    }
+    scrollToT((a+b)/2, false);     // ① 三轨同步滚动，区块中心对准中央指针（不触发自动蓝框覆盖）
+    renderWave(); renderThumbs(); renderSideTrack('pip'); renderSideTrack('rec');
+    setPreviewTrack(track);          // ② 预览区跟随轨道
+    buildFloatbar(track);            // ③ 按轨道重建菜单（图标+文字）
+    const fb=document.getElementById('floatbar');
+    fb.classList.add('show');
+    placeFloatbar(track);            // ④ 水平居中于指针 + 垂直紧贴该轨上方
+    if(track==='main') syncFloatbar(regions.find(x=>x.id===id));
+    updateMiniSel(track==='main'? regions.find(x=>x.id===id) : null);
+    updateBarContext();
+    applyCanvasTransform();
+  }
+
+  function syncFloatbar(r){
+    const lk=document.getElementById('fiLock');
+    if(!lk||!lk.querySelector('.ic')) return;
+    const on = !!(r&&r.locked);
+    lk.style.background = on? 'rgba(255,255,255,.22)' : '';
+    lk.querySelector('.ic').style.stroke = on? '#FFD60A' : '#fff';
+  }
+
+  /* ====== 悬浮菜单动作（主轨道） ====== */
+  function rerenderAll(){
+    renderWave(); renderThumbs(); renderSideTrack('pip'); renderSideTrack('rec');
+  }
+  function refreshMenu(){
+    if(selTrack!=='main'||selectedId==null) return;
+    buildFloatbar('main');
+    const fb=document.getElementById('floatbar'); fb.classList.add('show');
+    placeFloatbar('main');
+    syncFloatbar(regions.find(x=>x.id===selectedId));
+  }
+
+  // 上锁
+  function toggleLock(){
+    if(selTrack!=='main'||selectedId==null) return;
+    const r=regions.find(x=>x.id===selectedId);
+    r.locked=!r.locked;
+    rerenderAll(); refreshMenu(); renderMini();
+    toast(r.locked? '已上锁：不可拖出 / 移动 / 替换' : '已解锁');
+  }
+  // 复制（含红区数据一起深拷贝）
+  function dupRegion(){
+    if(selTrack!=='main'||selectedId==null) return;
+    const r=regions.find(x=>x.id===selectedId);
+    const len=r.b-r.a;
+    regions.filter(x=>x.a>=r.b).forEach(x=>{ x.a+=len; x.b+=len; });
+    const cp=JSON.parse(JSON.stringify(r));
+    cp.id=++uid; cp.locked=false;
+    regions.push(cp); regions.sort((a,b)=>a.a-b.a);
+    TOTAL+=len;
+    rerenderAll(); buildRuler(); renderMini(); syncTotal();
+    selectBlock('main', cp.id);
+    toast('已复制一段（'+len+'s，含红区数据 '+((cp.cuts||[]).length)+' 处）· 轨道 '+TOTAL+'s');
+  }
+  // 删除（后续片段前移补空位）
+  function delRegion(){
+    if(selTrack!=='main'||selectedId==null) return;
+    const i=regions.findIndex(x=>x.id===selectedId);
+    if(i<0) return;
+    const r=regions[i], len=r.b-r.a;
+    regions.splice(i,1);
+    regions.filter(x=>x.a>=r.b).forEach(x=>{ x.a-=len; x.b-=len; });
+    TOTAL=Math.max(1, TOTAL-len);
+    rerenderAll(); buildRuler(); renderMini(); syncTotal();
+    clearSel();
+    toast('已删除片段（'+r.src+' · '+len+'s）· 轨道 '+TOTAL+'s');
+  }
+  // 替换：记录目标 → 素材库 → 预览 → 片段选择 → 回填（主轨 / 画中画通用）
+  function startReplace(){
+    const track = selTrack==='pip' ? 'pip' : 'main';
+    const id = track==='pip' ? pipSelId : selectedId;
+    if(id==null){ toast('请先选中'+(track==='pip'?'画中画':'主轨')+'片段'); return; }
+    const arr = track==='pip' ? pipItems : regions;
+    const r = arr.find(x=>x.id===id);
+    if(!r){ toast('未找到选中的片段'); return; }
+    if(r.locked){ toast('片段已上锁，无法替换'); return; }
+    replaceTrack=track; replaceTargetId=r.id; replaceOldSrc=r.src;
+    goLib();
+    toast('选择新素材替换「'+r.src+'」· 时长将锁定为 '+(r.b-r.a).toFixed(2)+'s');
+  }
+  function applyReplace(clipName, trimInfo){
+    if(replaceTargetId==null) return;
+    const track=replaceTrack||'main';
+    const arr = track==='pip' ? pipItems : regions;
+    const r=arr.find(x=>x.id===replaceTargetId);
+    if(r) r.src=clipName;
+    replaceTargetId=null; replaceTrack='main';
+    rerenderAll(); renderMini();
+    goEditor();
+    if(r) selectBlock(track, r.id);
+    toast('已替换为「'+clipName+'」'+(trimInfo||''));
+  }
+
+  function clearSel(){
+    selectedId=null; pipSelId=null; recSelId=null;
+    const fb=document.getElementById('floatbar'); if(fb) fb.classList.remove('show');
+    renderThumbs(); renderSideTrack('pip'); renderSideTrack('rec');
+    updateMiniSel(null);
+    updateBarContext();
+    applyCanvasTransform();
+  }
+  (function(){
+    const sc=document.getElementById('tlScroll'); if(!sc)return;
+    let dg=false, moved=false, sx=0, s0=0;
+    sc.addEventListener('pointerdown',e=>{
+      if(e.target.closest('.thit,.pblk,.rblk,.tadd')) return;   // 点区块交给各自 onclick
+      if(isPinching) return;                                    // ★ 双指缩放中不计为拖动
+      dg=true; moved=false; sx=e.clientX; s0=tlScrollPx; cancelAnimationFrame(rbRaf);
+      try{sc.setPointerCapture(e.pointerId);}catch(_){}
+    });
+    sc.addEventListener('pointermove',e=>{
+      if(!dg || isPinching) return;                             // ★ 双指缩放中跳过
+      const dx=e.clientX-sx;
+      if(Math.abs(dx)>3) moved=true;
+      tlScrollPx=rubberScroll(s0-dx); applyScroll();          // ★ 橡皮筋：越界越拖越紧
+    });
+    sc.addEventListener('pointerup',e=>{
+      if(isPinching){ dg=false; return; }                       // ★ 缩放中松手不触发回弹
+      if(dg && !moved && !e.target.closest('.thit,.pblk,.rblk,.tadd')) clearSel();  // 点空白 → 关菜单
+      if(dg&&moved) bounceBack();                              // ★ 松手回弹到最近静止边界
+      dg=false;
+    });
+    sc.addEventListener('pointercancel',()=>{ if(!isPinching){ dg=false; bounceBack(); } });
+  })();
+  // ★ 双指缩放（触屏双指 / Mac 触控板捏合）：两指距离比驱动 PPS，中点为焦点
+  (function(){
+    const sc=document.getElementById('tlScroll'); if(!sc) return;
+    const pts=new Map();
+    let prevDist=0, focusX=0;
+    const relX=e=>{ const r=sc.getBoundingClientRect(); return e.clientX-r.left; };
+    sc.addEventListener('pointerdown', e=>{
+      pts.set(e.pointerId, e);
+      if(pts.size>=2){
+        isPinching=true; cancelAnimationFrame(rbRaf);
+        const a=[...pts.values()];
+        prevDist=Math.hypot(a[0].clientX-a[1].clientX, a[0].clientY-a[1].clientY)||1;
+        focusX=(relX(a[0])+relX(a[1]))/2;
+      }
+    });
+    sc.addEventListener('pointermove', e=>{
+      if(!isPinching || !pts.has(e.pointerId)) return;
+      pts.set(e.pointerId, e);
+      if(pts.size<2) return;
+      const a=[...pts.values()];
+      const dist=Math.hypot(a[0].clientX-a[1].clientX, a[0].clientY-a[1].clientY)||1;
+      const ratio=dist/prevDist;
+      if(ratio>1.003 || ratio<0.997){
+        zoomTo(PPS*ratio, focusX);
+        focusX=(relX(a[0])+relX(a[1]))/2;   // 焦点跟随当前中点，保持连续
+        prevDist=dist;
+      }
+    });
+    const end=e=>{ pts.delete(e.pointerId); if(pts.size<2){ isPinching=false; prevDist=0; } };
+    sc.addEventListener('pointerup', end);
+    sc.addEventListener('pointercancel', end);
+    // 桌面回退：Ctrl+滚轮（Mac 触控板捏合也发此事件）缩放，焦点取光标屏内 x
+    sc.addEventListener('wheel', e=>{
+      if(!e.ctrlKey) return;
+      e.preventDefault();
+      zoomTo(PPS*(1 - e.deltaY*0.0015), relX(e));
+    }, {passive:false});
+  })();
+  // 点悬浮菜单 / 迷你条 / 轨道区之外，也关闭菜单
+  ['floatbar','mini'].forEach(id=>{
+    const el=document.getElementById(id); if(!el)return;
+    el.addEventListener('pointerdown',e=>e.stopPropagation());
+  });
+  // ★ 迷你概览条：拖动蓝框（视窗框）左右移动整个轨道区
+  (function(){
+    const mini=document.getElementById('mini'); if(!mini)return;
+    let dg=false, grabFrac=0, centerFrac0=0;
+    const frac=x=>{ const r=mini.getBoundingClientRect(); return Math.max(0,Math.min(1,(x-r.x)/r.width)); };
+    mini.addEventListener('pointerdown',e=>{
+      e.preventDefault();
+      try{mini.setPointerCapture(e.pointerId);}catch(_){}
+      dg=true;
+      grabFrac=frac(e.clientX);
+      centerFrac0=(tlScrollPx+viewW()/2)/contentW();
+    });
+    mini.addEventListener('pointermove',e=>{
+      if(!dg)return;
+      let cf=centerFrac0+(frac(e.clientX)-grabFrac);
+      cf=Math.max(0,Math.min(1,cf));
+      scrollToT(cf*TOTAL);            // 滚动三轨 + 同步更新 miniView 蓝框
+    });
+    const end=()=>{ dg=false; };
+    mini.addEventListener('pointerup',end);
+    mini.addEventListener('pointercancel',end);
+  })();
+  const lab=document.querySelector('.tl-labels');
+  if(lab) lab.addEventListener('pointerdown',e=>e.stopPropagation());
+  (function(){
+    const ph=document.getElementById('phone'); if(!ph)return;
+    ph.addEventListener('pointerdown',e=>{
+      // ★ 底栏 / 工具面板必须放行：底部按钮要对「当前框选区块」操作，
+      //    若在 pointerdown 阶段先 clearSel()，selectedId 会被清空，按钮就找不到目标。
+      if(e.target.closest('#floatbar,#recPop,#recLive,.thit,.pblk,.rblk,.tadd,.mini,#tlLabels,#tlScroll,#bottombar,#toolPanel,#spdPanel')) return;
+      if(document.getElementById('floatbar').classList.contains('show')) clearSel();
+    });
+  })();
+
+  function updateMiniSel(r){
+    const s=document.getElementById('miniView'); if(!s)return;
+    if(!r){ s.style.display='none'; return; }
+    s.style.display='block';
+    const l=r.a/TOTAL*100, w=(r.b-r.a)/TOTAL*100;
+    // 迷你条上的视窗框优先显示
+    const cw=contentW();
+    const vl=tlScrollPx/cw*100, vw=viewW()/cw*100;
+    const il=Math.max(0,Math.max(vl,l)), ir=Math.min(100,Math.min(vl+vw,l+w));
+    s.style.left=il+'%';
+    s.style.width=Math.max(0,ir-il)+'%';
+  }
+
+  function placePlayhead(){ applyScroll(); }
+
+  let editorBuilt=false;
+  function renderEditor(){
+    if(typeof placeRecPop==='function') placeRecPop();
+    if(!editorBuilt){
+      buildRuler(); renderBottombar(); renderMini(); renderWave(); renderThumbs();
+      renderSideTrack('pip'); renderSideTrack('rec');
+      editorBuilt=true;
+      setTimeout(()=>selectBlock('main',2), 200);
+    }else{
+      applyScroll();
+    }
+  }
+
+  function togglePlay(){
+    const ic=document.getElementById('pbPlayIc');
+    const playing = ic.getAttribute('href')==='#ic-play';
+    ic.setAttribute('href', playing?'#ic-pause':'#ic-play');
+    toast(playing?'播放':'暂停');
+  }
+  // 播放控制条（参考老版布局：左时间 / 中三键 / 右三键）
+  let pbCur=12, pbTimer=null;
+  function setPb(pct){
+    pbCur=Math.max(0,Math.min(100,pct));
+    document.getElementById('scrFill').style.width=pbCur+'%';
+    document.getElementById('scrKn').style.left=pbCur+'%';
+    document.getElementById('centerTime').textContent=fmtT(pbCur/100*TOTAL);
+    document.getElementById('pbTime').innerHTML=fmtT(pbCur/100*TOTAL)+' / <b>'+fmtT(TOTAL)+'</b>';
+  }
+  document.getElementById('pbPlay').onclick=togglePlay;
+  document.getElementById('pbPrev').onclick=()=>{ pbCur=0; setPb(0); toast('回到开头'); };
+  document.getElementById('pbNext').onclick=()=>{ setPb(100); toast('跳到结尾'); };
+  document.getElementById('pbTune').onclick=()=>toast('调节：音量 / 速度 / 色调');
+  document.getElementById('pbUndo').onclick=()=>toast('撤销（示意）');
+  document.getElementById('pbRedo').onclick=()=>toast('重做（示意）');
+  (function(){
+    const sc=document.getElementById('pbScr'); let dg=false;
+    function at(e){ const r=sc.getBoundingClientRect(); setPb((e.clientX-r.left)/r.width*100); }
+    sc.addEventListener('pointerdown',e=>{dg=true;try{sc.setPointerCapture(e.pointerId);}catch(_){}at(e);});
+    sc.addEventListener('pointermove',e=>{if(dg)at(e);});
+    sc.addEventListener('pointerup',()=>{dg=false;});
+    sc.addEventListener('pointercancel',()=>{dg=false;});
+  })();
+
+  /* ====== 导出面板（参考老版） ====== */
+  const EX_RES=[
+    {v:'480p', w:854,  h:480,  kbps:2.6},
+    {v:'720p', w:1280, h:720,  kbps:5.2},
+    {v:'1080p',w:1920, h:1080, kbps:10.5},
+    {v:'2.7K', w:2700, h:1520, kbps:21},
+    {v:'4K',  w:3840, h:2160, kbps:44},
+  ];
+  const EX_FPS=[24,25,30,50,60];
+  let exRes=2, exFps=2, exAudio=false;   // 默认 1080p / 30fps
+
+  function exKeepDur(){ return regions.filter(r=>r.type==='keep').reduce((a,r)=>a+(r.b-r.a),0); }
+
+  // 缩略图 = 视频主轨道第一帧
+  function renderExThumb(){
+    const r0=regions[0];
+    const c=thumbPal[0];
+    const box=document.getElementById('exThumb');
+    if(!box) return;
+    box.style.background='linear-gradient(150deg,'+c[0]+','+c[1]+')';
+    document.getElementById('exTc').textContent='00:00.00';
+    document.getElementById('exSrc').textContent = r0? r0.src : '—';
+  }
+
+  // 刻度条
+  function buildScales(){
+    const rs=document.getElementById('exResScale');
+    rs.innerHTML=EX_RES.map((o,i)=>'<span data-i="'+i+'">'+o.v+'</span>').join('');
+    const fs=document.getElementById('exFpsScale');
+    fs.innerHTML=EX_FPS.map((o,i)=>'<span data-i="'+i+'">'+o+'</span>').join('');
+  }
+
+  // 预计文件大小（码率 × 时长 / 8 / 1024²）
+  function renderExSize(){
+    const dur=Math.max(exKeepDur(),0.1);
+    let bytes;
+    if(exAudio){
+      bytes = 192000/8*dur;                       // AAC 192kbps
+    }else{
+      const kbps=EX_RES[exRes].kbps*(EX_FPS[exFps]/30);
+      bytes = kbps*1000/8*dur;
+    }
+    const mb=bytes/1024/1024;
+    document.getElementById('exSize').textContent = mb.toFixed(2)+' MB';
+    return mb;
+  }
+
+  function placeExSlider(which){
+    // ★ which 可能是 'res' 也可能是 'exRes'，统一归一化，否则会串到另一条滑杆的状态
+    const isRes = (which==='res' || which==='exRes');
+    const pre   = isRes ? 'exRes' : 'exFps';
+    const max   = (isRes ? EX_RES.length : EX_FPS.length) - 1;
+    const idx   = isRes ? exRes : exFps;
+    const pct   = max ? (idx/max*100) : 0;
+    document.getElementById(pre+'Fl').style.width=pct+'%';
+    document.getElementById(pre+'Kn').style.left=pct+'%';
+    document.getElementById(pre+'Scale').querySelectorAll('span').forEach(s=>{
+      s.classList.toggle('on', +s.dataset.i===idx);
+    });
+  }
+  function renderExAll(){
+    document.getElementById('exResVal').textContent = exAudio? '—' : EX_RES[exRes].v;
+    document.getElementById('exFpsVal').textContent = exAudio? '—' : EX_FPS[exFps]+' fps';
+    document.getElementById('exResWrap').classList.toggle('off',exAudio);
+    document.getElementById('exFpsWrap').classList.toggle('off',exAudio);
+    placeExSlider('exRes'); placeExSlider('exFps');
+    renderExSize(); renderExThumb();
+  }
+
+  function openExport(){
+    buildScales(); renderExAll();
+    // ★ 遮罩与内层面板都要加 show：.sheet 自身是 display:none
+    document.getElementById('exportMask').classList.add('show');
+    const sh=document.querySelector('#exportMask .sheet'); if(sh) sh.classList.add('show');
+  }
+  function closeExport(reset){
+    document.getElementById('exportMask').classList.remove('show');
+    const sh=document.querySelector('#exportMask .sheet'); if(sh) sh.classList.remove('show');
+    if(reset){ document.getElementById('prog').classList.remove('show');
+      document.getElementById('doneBox').style.display='none';
+      document.getElementById('exportBtn').style.display=''; }
+  }
+  function fmtT(s){ const m=Math.floor(s/60), ss=Math.floor(s%60); return m+':'+(ss<10?'0':'')+ss; }
+  function syncTotal(){ setPb(pbCur); if(document.getElementById('exportMask').classList.contains('show')) renderExAll(); }
+  function updateExportNote(){ /* 摘要行已按反馈移除，仅刷新缩略图与大小 */ if(document.getElementById('exThumb')) renderExSize(); }
+
+  // 分辨率 / 帧率 滑杆拖拽
+  function bindExSlider(which, getLen, setIdx){
+    const tr=document.getElementById(which); if(!tr)return;
+    let dg=false;
+    function at(e){
+      const r=tr.getBoundingClientRect();
+      const p=Math.min(1,Math.max(0,(e.clientX-r.left)/r.width));
+      const n=getLen();
+      setIdx(n>1? Math.round(p*(n-1)) : 0);
+      renderExAll();
+    }
+    tr.addEventListener('pointerdown',e=>{dg=true;try{tr.setPointerCapture(e.pointerId);}catch(_){}at(e);});
+    tr.addEventListener('pointermove',e=>{if(dg)at(e);});
+    tr.addEventListener('pointerup',()=>{dg=false;});
+    tr.addEventListener('pointercancel',()=>{dg=false;});
+  }
+  bindExSlider('exRes', ()=>EX_RES.length, i=>{exRes=i;});
+  bindExSlider('exFps', ()=>EX_FPS.length, i=>{exFps=i;});
+
+  // 仅导出音频开关
+  document.getElementById('exAudio').onclick=function(){
+    exAudio=!exAudio; this.classList.toggle('on',exAudio);
+    this.setAttribute('aria-checked', exAudio?'true':'false');
+    renderExAll();
+    toast(exAudio? '仅导出音频（分辨率/帧率已锁定）' : '恢复视频导出');
+  };
+
+  function doExport(){
+    const btn=document.getElementById('exportBtn'); btn.style.display='none';
+    const prog=document.getElementById('prog'); prog.classList.add('show');
+    const pf=document.getElementById('pf'), pct=document.getElementById('pct'), stage=document.getElementById('pstage');
+    const steps= exAudio? [
+      [18,'分离导出：抽取音频轨…'],
+      [52,'编码 AAC 192kbps…'],
+      [82,'写入元数据…'],
+      [100,'导出完成'],
+    ] : [
+      [15,'分离导出：视频轨逐段生成…'],
+      [38,'分离导出：音频轨逐段生成…'],
+      [58,'校验音画长度：比对两条轨…'],
+      [78,'长度一致，合成 MP4…'],
+      [100,'导出完成'],
+    ];
+    let i=0;
+    const tick=()=>{
+      if(i>=steps.length){ document.getElementById('doneBox').style.display='block';
+        const spec = exAudio? 'AAC · 192kbps'
+          : EX_RES[exRes].v+' · '+EX_FPS[exFps]+'fps';
+        document.getElementById('doneSub').textContent=spec+' · '+exKeepDur().toFixed(1)+'s';
+        return; }
+      const [v,msg]=steps[i]; pf.style.width=v+'%'; pct.textContent=v+'%'; stage.textContent=msg; i++;
+      setTimeout(tick, 650);
+    };
+    setTimeout(tick, 300);
+  }
+  document.getElementById('exportMask').addEventListener('click',e=>{ if(e.target.id==='exportMask') closeExport(true); });
+
+  /* ====== Toast ====== */
+  let toastTimer=null;
+  function toast(msg){
+    const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
+    clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'),1600);
+  }
+
+  /* ====== 自适应缩放（让 430×932 完整可见） ====== */
+  function fit(){
+    const wrap=document.getElementById('phoneWrap');
+    const scale=Math.min((window.innerWidth-360)/430, (window.innerHeight-40)/932, 1);
+    wrap.style.transform='scale('+Math.max(scale,0.5)+')';
+    if(typeof placePlayhead==='function') placePlayhead();
+  }
+  window.addEventListener('resize',fit); fit();
+</script>
+</body>
+</html>

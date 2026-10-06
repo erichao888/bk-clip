@@ -24,193 +24,20 @@
 
 import UIKit
 
-// MARK: - 日志级别
+// MARK: - 日志级别配色
+//
+// BKLogLevel / BKLogEntry / BKLog 本体已搬到 app/Core/BKLog.swift（纯 Foundation）。
+// Core 层禁 import UIKit，颜色这种「只在面板上显示」的东西不能跟过去，
+// 所以留在这里用扩展补上 —— 逻辑归 Core，显示归 UI。
 
-public enum BKLogLevel: Int, CaseIterable, Comparable {
-    case verbose = 0, debug, info, warn, error
-
-    public static func < (lhs: BKLogLevel, rhs: BKLogLevel) -> Bool { lhs.rawValue < rhs.rawValue }
-
-    var tag: String {
-        switch self {
-        case .verbose: return "V"
-        case .debug:   return "D"
-        case .info:    return "I"
-        case .warn:    return "W"
-        case .error:   return "E"
-        }
-    }
-
-    var color: UIColor {
+extension BKLogLevel {
+    var uiColor: UIColor {
         switch self {
         case .verbose: return UIColor(hex: 0x8E8E93)
         case .debug:   return UIColor(hex: 0x85B7EB)
         case .info:    return UIColor(hex: 0x8FC98A)
         case .warn:    return UIColor(hex: 0xEF9F27)
         case .error:   return UIColor(hex: 0xE24B4A)
-        }
-    }
-}
-
-public struct BKLogEntry {
-    let timestamp: Date
-    let level: BKLogLevel
-    let message: String
-    let file: String
-    let line: Int
-    let function: String
-
-    var formatted: String {
-        "\(Self.stamp(timestamp)) [\(level.tag)] \(file):\(line) \(function) | \(message)"
-    }
-
-    var shortTime: String {
-        Self.clockFormat(timestamp)
-    }
-
-    private static let fmt: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MM-dd HH:mm:ss.SSS"
-        f.locale = Locale(identifier: "zh_CN")
-        return f
-    }()
-
-    private static let clock: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss.SSS"
-        return f
-    }()
-
-    static func stamp(_ d: Date) -> String { fmt.string(from: d) }
-    static func clockFormat(_ d: Date) -> String { clock.string(from: d) }
-}
-
-protocol BKLogSink: AnyObject {
-    func logDidAppend()
-}
-
-// MARK: - 日志核心
-
-public final class BKLog {
-
-    public static let shared = BKLog()
-
-    /// 内存里保留的条数，防止长时间跑占内存
-    public let capacity = 3000
-
-    weak var sink: BKLogSink?
-
-    private let lock = NSLock()
-    private var records: [BKLogEntry] = []
-    private let fileURL: URL
-    private let rotatedURL: URL
-    private let maxFileSize: UInt64 = 4 * 1024 * 1024
-
-    private init() {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("logs", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        fileURL = base.appendingPathComponent("bk.log")
-        rotatedURL = base.appendingPathComponent("bk.old.log")
-    }
-
-    // MARK: 写入
-
-    public func log(_ message: String,
-                    level: BKLogLevel = .info,
-                    file: String = #file,
-                    line: Int = #line,
-                    function: String = #function) {
-        let entry = BKLogEntry(timestamp: Date(),
-                               level: level,
-                               message: message,
-                               file: (file as NSString).lastPathComponent,
-                               line: line,
-                               function: function)
-        lock.lock()
-        records.append(entry)
-        if records.count > capacity { records.removeFirst(records.count - capacity) }
-        lock.unlock()
-
-        let captured = entry
-        DispatchQueue.global(qos: .utility).async { [weak self] in self?.writeToDisk(captured) }
-        DispatchQueue.main.async { [weak self] in self?.sink?.logDidAppend() }
-    }
-
-    public func v(_ m: String, file: String = #file, line: Int = #line, function: String = #function) { log(m, level: .verbose, file: file, line: line, function: function) }
-    public func d(_ m: String, file: String = #file, line: Int = #line, function: String = #function) { log(m, level: .debug, file: file, line: line, function: function) }
-    public func i(_ m: String, file: String = #file, line: Int = #line, function: String = #function) { log(m, level: .info, file: file, line: line, function: function) }
-    public func w(_ m: String, file: String = #file, line: Int = #line, function: String = #function) { log(m, level: .warn, file: file, line: line, function: function) }
-    public func e(_ m: String, file: String = #file, line: Int = #line, function: String = #function) { log(m, level: .error, file: file, line: line, function: function) }
-
-    /// 计时埋点，自动打印耗时
-    @discardableResult
-    public static func measure<T>(_ label: String, _ block: () throws -> T) rethrows -> T {
-        let start = Date()
-        defer {
-            let ms = Int(Date().timeIntervalSince(start) * 1000)
-            shared.d("⏱ \(label) 耗时 \(ms)ms")
-        }
-        return try block()
-    }
-
-    // MARK: 读取
-
-    public func snapshot(minLevel: BKLogLevel = .verbose, keyword: String = "") -> [BKLogEntry] {
-        let kw = keyword.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        lock.lock()
-        let all = records
-        lock.unlock()
-        return all.filter { entry in
-            guard entry.level >= minLevel else { return false }
-            if kw.isEmpty { return true }
-            return entry.message.lowercased().contains(kw)
-                || entry.file.lowercased().contains(kw)
-                || entry.function.lowercased().contains(kw)
-        }
-    }
-
-    public func clear() {
-        lock.lock()
-        records.removeAll()
-        lock.unlock()
-        try? FileManager.default.removeItem(at: fileURL)
-        DispatchQueue.main.async { [weak self] in self?.sink?.logDidAppend() }
-    }
-
-    public var logFileURL: URL { fileURL }
-
-    public var logFileSizeText: String {
-        let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap { UInt64($0) } ?? 0
-        return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
-    }
-
-    // MARK: 落盘
-
-    private var didHint = false
-
-    private func writeToDisk(_ entry: BKLogEntry) {
-        let text = entry.formatted + "\n"
-        guard let data = text.data(using: .utf8) else { return }
-        let fm = FileManager.default
-
-        let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap { UInt64($0) } ?? 0
-        if size > maxFileSize {
-            try? fm.removeItem(at: rotatedURL)
-            try? fm.moveItem(at: fileURL, to: rotatedURL)
-        }
-
-        if !fm.fileExists(atPath: fileURL.path) {
-            try? data.write(to: fileURL)
-        } else if let handle = try? FileHandle(forWritingTo: fileURL) {
-            defer { try? handle.close() }
-            try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
-        }
-
-        if !didHint {
-            didHint = true
-            i("日志文件：\(fileURL.path)")
         }
     }
 }
@@ -569,7 +396,7 @@ extension BKDebugPanelViewController: UITableViewDataSource, UITableViewDelegate
                                        attributes: [.foregroundColor: UIColor(hex: 0x8E8E93),
                                                     .font: UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)]))
         text.append(NSAttributedString(string: entry.level.tag + " ",
-                                       attributes: [.foregroundColor: entry.level.color,
+                                       attributes: [.foregroundColor: entry.level.uiColor,
                                                     .font: UIFont.systemFont(ofSize: 11, weight: .bold)]))
         text.append(NSAttributedString(string: entry.message + "\n",
                                        attributes: [.foregroundColor: UIColor(hex: 0xF5F5F5),

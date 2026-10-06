@@ -1,0 +1,20 @@
+import { chromium } from 'playwright';
+import { pathToFileURL } from 'url';
+const FILE = pathToFileURL('C:/Users/Administrator/WorkBuddy/2026-10-04-23-40-52/bk-clip-v15-ui/index.html').href;
+const b = await chromium.launch();
+const p = await b.newPage({ viewport: { width: 1100, height: 1060 }, deviceScaleFactor: 2 });
+await p.goto(FILE, { waitUntil: 'load' });
+await p.waitForTimeout(400);
+const nav = async i => { await p.locator('.nav button').nth(i).click({ force: true }); await p.waitForTimeout(450); };
+const shot = async n => { await p.locator('#phone').screenshot({ path: `shot-${n}.png` }); };
+
+await nav(7);
+await p.locator('#trackStack .pblk').nth(1).click({ force: true });
+await p.waitForTimeout(500); await shot('1-editor-pip');
+await p.locator('#trackStack .thit').nth(2).click({ force: true });
+await p.waitForTimeout(500); await shot('2-editor-main');
+await p.evaluate(() => openExport()); await p.waitForTimeout(500); await shot('3-export');
+await p.evaluate(() => closeExport(true)); await p.waitForTimeout(300);
+await nav(6); await shot('4-wcut');
+await b.close();
+console.log('screenshots saved');

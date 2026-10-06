@@ -75,7 +75,7 @@ targets:
         # 不参与文件路径，中文随便用
         PRODUCT_NAME: BKClip
         CFBundleName: BKClip
-        MARKETING_VERSION: "1.4.8"
+        MARKETING_VERSION: "2.0.0"
         CURRENT_PROJECT_VERSION: "1"
         CODE_SIGN_STYLE: Automatic
         # 换成你自己的 Team ID 更稳；留 AUTO 就让 Xcode 自己去猜有时会挑错证书
@@ -94,6 +94,12 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleName: BKClip
+        # ★ 2026-10-05 新增：把编译时的 git commit 烙进包里。
+        #   没有它，我拿到真机日志只能看到版本号，无法对应到具体哪一份代码 ——
+        #   排障时「这是哪个提交跑出来的」永远是最先要确认的事。
+        #   值由 CI 在 xcodebuild 命令行传入 GIT_SHA=xxx；本地编译没传就是字面量，
+        #   BKLog 里已做兜底（以 $ 开头的当 unknown）。
+        BKCommitSHA: "$(GIT_SHA)"
 
         # ---- App 图标 ----
         # 不写这一句 Xcode 不会去 assets 里找 AppIcon，主屏上就是系统默认白底占位图。

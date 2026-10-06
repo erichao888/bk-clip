@@ -19,6 +19,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
 
+        // ★ 先装崩溃捕获，越早越好：它会自己打一行会话头（版本 / commit / 机型 / 系统），
+        //   并检查上一次是不是没正常退出（崩溃或被系统杀）。没这一步，日志拿不到崩溃现场
+        BKLog.shared.install()
+
         // 启动第一行永远是版本和设备。排查问题时你要知道
         // 「这个日志是哪一个包跑出来的」，靠的就是这一行
         BKLog.shared.i("=== bk剪辑 \(BKConfig.appVersion) (\(BKConfig.buildNumber)) 启动 ===")
@@ -39,6 +43,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         // 这里只做一次「补刀」：把还没写完的立即刷下去。
         BKDraftStore.shared.flushIfNeeded()
         BKLog.shared.d("进入后台，草稿已尝试落盘")
+        BKLog.shared.flush()            // ★ 把还没落完的日志刷下去，别等异步队列
+        BKLog.shared.markCleanExit()    // ★ 标记本次为正常挂起，下次启动不误报「异常退出」
     }
 
     func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
