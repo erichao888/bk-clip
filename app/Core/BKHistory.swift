@@ -24,10 +24,10 @@
 
 import Foundation
 
-struct BKHistory {
+struct BKHistory<T> {
 
     /// 快照栈。index 指向「当前这一格」
-    private(set) var items: [BKProject] = []
+    private(set) var items: [T] = []
     private(set) var index: Int = -1
 
     /// 撤销容量。皓哥 2026-10-02 晚拍板**改掉了原来的 60**：
@@ -45,7 +45,7 @@ struct BKHistory {
     var canUndo: Bool { index > 0 }
     var canRedo: Bool { index >= 0 && index < items.count - 1 }
 
-    var current: BKProject? {
+    var current: T? {
         guard index >= 0, index < items.count else { return nil }
         return items[index]
     }
@@ -55,14 +55,14 @@ struct BKHistory {
     // MARK: - 变更
 
     /// 装进初始状态。每次打开一个素材都要调一次，旧栈整个作废
-    mutating func reset(_ project: BKProject) {
+    mutating func reset(_ project: T) {
         items = [project]
         index = 0
     }
 
     /// 提交一个新状态。当前不在栈顶时（也就是刚撤销过），
     /// 后面那些「重做分支」会被砍掉 —— 撤销之后又改了主意，旧分支就不该再存在
-    mutating func push(_ project: BKProject) {
+    mutating func push(_ project: T) {
         if index < items.count - 1 {
             items.removeSubrange((index + 1)...)
         }
@@ -77,7 +77,7 @@ struct BKHistory {
     }
 
     /// 改当前这一格，不新增。拖动边界的中间帧走这里
-    mutating func amend(_ project: BKProject) {
+    mutating func amend(_ project: T) {
         // 空栈时退化成 push —— 否则 index 是 -1，直接写会越界崩
         guard index >= 0 else {
             push(project)
@@ -93,7 +93,7 @@ struct BKHistory {
     /// 撤销只把 index 往左挪，右边的格子还在那里 —— 不裁的话，
     /// 撤 15 步之后右边的「重做分支」还有 15 格，跟「重做只留 1 步」的口径对不上。
     /// 砍最右边 = 砍最早被撤下去的那个状态，留下最近撤掉的那一步给用户反悔。
-    mutating func undo() -> BKProject? {
+    mutating func undo() -> T? {
         guard canUndo else { return nil }
         index -= 1
         while (items.count - 1 - index) > BKHistory.redoLimit {
@@ -102,7 +102,7 @@ struct BKHistory {
         return items[index]
     }
 
-    mutating func redo() -> BKProject? {
+    mutating func redo() -> T? {
         guard canRedo else { return nil }
         index += 1
         return items[index]

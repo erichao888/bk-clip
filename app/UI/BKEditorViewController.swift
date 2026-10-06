@@ -11,12 +11,12 @@
 //
 //  【数据流】
 //  asset → BKAudioAnalyzer 提取包络 → BKDetector 出切点
-//        → BKTimeline.build 合成 marks → 轨道画出来
-//  手动拖边界 / 点片段 / 切口 → 改 marks → 走 commit() 入撤销栈 → 重画 + 落盘
+//        → BKTrackModel.displayPieces 合成 marks → 轨道画出来
+//  手动拖边界 / 点片段 / 切口 → 改红区或接缝 → 走 commit() 入撤销栈 → 重画 + 落盘
 //
-//  【一个草稿 = 一整批，这一页只编辑批里的其中一条】
-//  batch 是整批，itemIndex 指出正在编辑第几条。切换素材 = 换 itemIndex（换 VC 实例），
-//  批里其余素材的刀口原封不动地留在 batch 里。
+//  【一个草稿 = 一条主轨，这一页只编辑主轨里的其中一块】
+//  draft 是整条草稿，blockIndex 指出正在编辑第几块。切换素材 = 换 blockIndex（换 VC 实例），
+//  主轨其余块的刀口原封不动地留在 draft.track.blocks 里。
 //
 //  【两个播放键】
 //  ▶ 原片播（红区绿区都播） ｜ `|▶|` 联播（按 keepRanges 拼起来播，跳过红区）
@@ -44,16 +44,36 @@ final class BKEditorViewController: UIViewController {
         case joint
     }
 
+    /// 撤销栈快照：块 + 波剪瞬态。
+    /// 波剪检测态（阈值/红区）不落盘，但撤销要能回退到上一步显示状态
+    private struct EditState {
+        var block: BKClipBlock
+        var redCuts: [BKRange]
+        var thresholdDb: Double
+        var autoThresholdDb: Double?
+        var sourceApplicable: Bool
+        var splits: [Double]
+    }
+
     // MARK: - 状态
 
     private let asset: AVAsset
     private let probeInfo: BKAssetProbe.Info
-    private var batch: BKDraftBatch
-    private var itemIndex: Int
+    private var draft: BKDraft
+    private var blockIndex: Int
     private var envelope: BKEnvelope?
 
-    /// 撤销栈。所有编辑改动都从它进出，绝不允许有第二处直接改 batch.items[i].marks
-    private var history = BKHistory()
+    /// 波剪检测态（瞬态，不落盘）：进页重检测、不记忆上次阈值
+    private var thresholdDb: Double = 0
+    private var autoThresholdDb: Double?
+    private var sourceApplicable: Bool = false
+    /// 第一阶段红区（检测出来的气口，瞬态）—— 点「删红」才写成 block.keptRanges
+    private var redCuts: [BKRange] = []
+    /// 纯显示接缝（不改数据，Q3 拍板）
+    private var splits: [Double] = []
+
+    /// 撤销栈。所有编辑改动都从它进出，绝不允许有第二处直接改 draft.track.blocks[i].keptRanges
+    private var history = BKHistory<EditState>()
     /// 是否正在拖边界。拖动过程中的连续改动只占撤销栈一格
     private var boundaryDragging = false
     /// 这一次拖动是否已经入过栈。false 时下一次提交走 push，之后走 amend
@@ -79,7 +99,6 @@ final class BKEditorViewController: UIViewController {
     private var sliderWork: DispatchWorkItem?
 
     private var lastTime: Double = 0
-    private var isExporting = false
     /// 整批被 ✕ 删空后短路 finishSession，避免把一个空草稿又存回磁盘
     private var didDiscard = false
     /// 换素材的加载锁。**一次只准换一条** —— 不锁的话手指使劲一划能连跳三四条，
@@ -115,7 +134,6 @@ final class BKEditorViewController: UIViewController {
     private let zoomOutButton = UIButton(type: .system)
     private let zoomInButton = UIButton(type: .system)
 
-    private let exportButton = UIButton(type: .system)
     private let thresholdTitle = UILabel()
     private let thresholdSlider = UISlider()
     private let thresholdAutoButton = UIButton(type: .system)
@@ -126,9 +144,9 @@ final class BKEditorViewController: UIViewController {
 
     // MARK: - 初始化
 
-    init(batch: BKDraftBatch, index: Int, asset: AVAsset, probeInfo: BKAssetProbe.Info) {
-        self.batch = batch
-        self.itemIndex = index
+    init(draft: BKDraft, blockIndex: Int, asset: AVAsset, probeInfo: BKAssetProbe.Info) {
+        self.draft = draft
+        self.blockIndex = blockIndex
         self.asset = asset
         self.probeInfo = probeInfo
         super.init(nibName: nil, bundle: nil)
@@ -143,8 +161,8 @@ final class BKEditorViewController: UIViewController {
         if let o = jointObserver { jointPlayer?.removeTimeObserver(o) }
     }
 
-    /// 当前正在编辑的素材项
-    private var item: BKProject { batch.items[itemIndex] }
+    /// 当前正在编辑的块（v2：主轨上的一块）
+    private var item: BKClipBlock { draft.track.blocks[blockIndex] }
 
     // MARK: - 生命周期
 
@@ -188,42 +206,36 @@ final class BKEditorViewController: UIViewController {
         playerLayer?.frame = previewContainer.bounds
     }
 
-    /// 第一次拿到探针结果时，把素材的显示尺寸 / 时长补进素材项。
-    /// 老草稿和新建的批里这些字段可能是 0，导出和封面都要用
+    /// 第一次拿到探针结果时补一次 assetName（几何不存块上，导出时由 BKAssetProbe 实时取）
     private func prepareItem() {
-        if probeInfo.duration > 0 { batch.items[itemIndex].duration = probeInfo.duration }
-        batch.items[itemIndex].displayWidth = probeInfo.displayWidth
-        batch.items[itemIndex].displayHeight = probeInfo.displayHeight
-        batch.items[itemIndex].sourceRotationDegrees = probeInfo.rotationDegrees
-        if batch.items[itemIndex].assetName.isEmpty {
-            batch.items[itemIndex].assetName = BKVideoLibrary.assetName(localID: item.assetLocalID)
+        if item.assetName.isEmpty {
+            var b = item
+            b.assetName = BKVideoLibrary.assetName(localID: item.assetLocalID)
+            draft.track.blocks[blockIndex] = b
         }
-        batch.items[itemIndex].marks =
-            BKTimeline.normalize(item.marks, duration: batch.items[itemIndex].duration)
-        lastTime = min(max(item.playheadTime, 0), batch.items[itemIndex].duration)
+        // 指针一律停在片头（检测态瞬态，不记忆上次位置）
+        lastTime = 0
     }
 
-    /// 返回起始页时的结算：存草稿 + 生成封面 + 「整批没动过刀就丢掉」
+    /// 返回起始页时的结算：存草稿 + 生成封面 + 「整草稿没动过刀就丢掉」
     private func finishSession() {
         guard !didDiscard else { return }
         savePlayhead()
-        batch.lastEditedAt = Date()
+        draft.lastEditedAt = Date()
 
-        // 定稿 3.1：整批从头到尾一刀没切 → 不留。
-        // 判据是 everEdited（**曾经**动过刀），只置不清 ——
-        // 切过刀后来又把刀删干净的，照样留着
-        if !batch.everEdited {
-            // 先撤掉待写的那一次，否则它两秒后照写，把刚删的文件又变回来
-            BKDraftStore.shared.cancelPending()
-            BKDraftStore.shared.permanentlyDelete(batch)
-            BKLog.shared.i("整批未编辑，草稿已丢弃 \(batch.id.uuidString.prefix(8))")
+        // 定稿 3.1：整个草稿从头到尾一刀没切 → 不留。
+        // 判据是 everEdited（**曾经**动过刀），只置不清
+        if !draft.everEdited {
+            BKDraftStore.shared.cancelPendingV2()
+            BKDraftStore.shared.permanentlyDeleteDraft(draft)
+            BKLog.shared.i("整草稿未编辑，已丢弃 \(draft.id.uuidString.prefix(8))")
             return
         }
-        BKDraftStore.shared.scheduleSave(batch)
-        BKDraftStore.shared.flushIfNeeded()
+        BKDraftStore.shared.scheduleSaveV2(draft)
+        BKDraftStore.shared.flushV2IfNeeded()
 
-        // 封面 = 最后编辑那条素材、上次停住的那一帧（定稿 3.1）
-        let bid = batch.id
+        // 封面 = 当前块、上次停住的那一帧（定稿 3.1）
+        let bid = draft.id
         let aid = item.assetLocalID
         let t = lastTime
         BKCovers.generate(asset: asset, at: t) { img in
@@ -233,8 +245,8 @@ final class BKEditorViewController: UIViewController {
     }
 
     private func savePlayhead() {
-        batch.items[itemIndex].playheadTime = lastTime
-        batch.lastAssetId = item.assetLocalID
+        // 指针为瞬态不落盘；lastAssetId 仅用于起始页「回到上次那条」
+        draft.lastAssetId = item.assetLocalID
     }
 
     // MARK: - 导航栏
@@ -255,19 +267,8 @@ final class BKEditorViewController: UIViewController {
                                        target: self,
                                        action: #selector(toggleListTapped))
         // 定稿 4.2：素材 ≤1 条时 ☰ 置灰
-        listItem.isEnabled = batch.items.count > 1
+        listItem.isEnabled = draft.track.blocks.count > 1
         navigationItem.leftBarButtonItems = [backItem, listItem]
-
-        // 右：导出。定稿里唯一「图标 + 文字」的按钮 ——
-        // 它按下去不可逆，只给图标认错代价太大
-        exportButton.frame = CGRect(x: 0, y: 0, width: 84, height: 32)
-        exportButton.setImage(UIImage(systemName: "square.and.arrow.up"), for: .normal)
-        exportButton.setTitle(" 导出", for: .normal)
-        exportButton.tintColor = BKTheme.Color.text
-        exportButton.setTitleColor(BKTheme.Color.text, for: .normal)
-        exportButton.titleLabel?.font = BKTheme.Font.caption
-        exportButton.addTarget(self, action: #selector(exportTapped), for: .touchUpInside)
-        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: exportButton)
     }
 
     // MARK: - 播放器
@@ -375,7 +376,7 @@ final class BKEditorViewController: UIViewController {
 
         // 画面上左右滑 = 换上一条 / 下一条。**必须加 40pt 门槛**：
         // 画面区又大又居中，剪辑到片头想停在那的时候手一蹭就可能翻篇
-        if batch.items.count >= 2 {
+        if draft.track.blocks.count >= 2 {
             let pan = UIPanGestureRecognizer(target: self, action: #selector(onPreviewPan(_:)))
             previewContainer.addGestureRecognizer(pan)
             previewContainer.isUserInteractionEnabled = true
@@ -427,8 +428,8 @@ final class BKEditorViewController: UIViewController {
 
         thresholdSlider.minimumValue = Float(BKConfig.Detect.clampLow)
         thresholdSlider.maximumValue = Float(BKConfig.Detect.clampHigh)
-        thresholdSlider.value = Float(item.thresholdDb)
-        thresholdTitle.text = String(format: "阈值 %.1f dB", item.thresholdDb)
+        thresholdSlider.value = Float(thresholdDb)
+        thresholdTitle.text = String(format: "阈值 %.1f dB", thresholdDb)
         thresholdSlider.minimumTrackTintColor = BKTheme.Color.warning
         thresholdSlider.addTarget(self, action: #selector(thresholdChanged), for: .valueChanged)
 
@@ -681,9 +682,9 @@ final class BKEditorViewController: UIViewController {
         listPanel.isHidden = !listVisible
         if listVisible {
             listTable.reloadData()
-            listTable.scrollToRow(at: IndexPath(row: itemIndex, section: 0),
+            listTable.scrollToRow(at: IndexPath(row: blockIndex, section: 0),
                                   at: .middle, animated: false)
-            BKLog.shared.d("打开素材列表，共 \(batch.items.count) 条")
+            BKLog.shared.d("打开素材列表，共 \(draft.track.blocks.count) 条")
         }
     }
 
@@ -702,31 +703,28 @@ final class BKEditorViewController: UIViewController {
         present(alert, animated: true)
     }
 
-    /// 真正执行移除：从 batch.items 里删掉当前条（不是「跳过导出」，是真删）。
+    /// 真正执行移除：从 draft.track.blocks 里删掉当前块（不是「跳过导出」，是真删）。
     /// 和列表面板那套同源 —— BKAssetRowCell 只负责显示，数据只在这一个地方改。
     /// 删完分两种：① 整批空了 → 回起始页并丢草稿；② 还有别的 → 跳到相邻那条继续编
     private func performRemoveCurrent() {
-        let removedIndex = itemIndex
-        var b = batch
-        b.items.remove(at: removedIndex)
-        b.lastEditedAt = Date()
-        batch = b
-        BKDraftStore.shared.scheduleSave(b)
-        BKDraftStore.shared.flushIfNeeded()
+        let removedIndex = blockIndex
+        draft.track.blocks.remove(at: removedIndex)
+        draft.lastEditedAt = Date()
+        BKDraftStore.shared.scheduleSaveV2(draft)
+        BKDraftStore.shared.flushV2IfNeeded()
 
-        if b.items.isEmpty {
-            // 整批删空：回起始页，并直接把这份空草稿删掉
-            // （finishSession 见 didDiscard 短路，不会再把它存回去）
+        if draft.track.blocks.isEmpty {
+            // 整草稿删空：回起始页，并直接把这份空草稿删掉
             didDiscard = true
-            BKDraftStore.shared.cancelPending()
-            BKDraftStore.shared.permanentlyDelete(b)
+            BKDraftStore.shared.cancelPendingV2()
+            BKDraftStore.shared.permanentlyDeleteDraft(draft)
             navigationController?.popToRootViewController(animated: true)
             return
         }
 
-        // 跳到相邻那条（和 openItem 同一条「换素材」路径，复用已验证的探针 + 换栈顶逻辑）
-        let newIndex = min(removedIndex, b.items.count - 1)
-        let targetID = b.items[newIndex].assetLocalID
+        // 跳到相邻那块（和 openItem 同一条「换素材」路径，复用已验证的探针 + 换栈顶逻辑）
+        let newIndex = min(removedIndex, draft.track.blocks.count - 1)
+        let targetID = draft.track.blocks[newIndex].assetLocalID
         isSwitchingAsset = true
         stopPlayback()
         BKVideoLibrary.loadAVAsset(localID: targetID) { [weak self] asset in
@@ -734,19 +732,18 @@ final class BKEditorViewController: UIViewController {
             self.isSwitchingAsset = false
             guard let asset = asset, let nav = self.navigationController else { return }
             let probe = BKAssetProbe.probe(asset)
-            var bb = self.batch
-            if probe.duration > 0 { bb.items[newIndex].duration = probe.duration }
-            bb.items[newIndex].displayWidth = probe.displayWidth
-            bb.items[newIndex].displayHeight = probe.displayHeight
-            bb.items[newIndex].sourceRotationDegrees = probe.rotationDegrees
-            bb.items[newIndex].playheadTime = 0
+            // 几何不落块，只保证 srcDuration 一致（防 probe 偏差导致坐标错位）
+            var bb = self.draft
+            if probe.duration > 0, abs(bb.track.blocks[newIndex].srcDuration - probe.duration) > 0.05 {
+                bb.track.blocks[newIndex].srcDuration = probe.duration
+            }
             bb.lastAssetId = targetID
-            let vc = BKEditorViewController(batch: bb, index: newIndex, asset: asset, probeInfo: probe)
+            let vc = BKEditorViewController(draft: bb, blockIndex: newIndex, asset: asset, probeInfo: probe)
             var stack = nav.viewControllers
             if stack.last === self { stack.removeLast() }
             stack.append(vc)
             nav.setViewControllers(stack, animated: true)
-            BKLog.shared.i("移除第 \(removedIndex + 1) 条，跳到第 \(newIndex + 1)/\(bb.items.count) 条")
+            BKLog.shared.i("移除第 \(removedIndex + 1) 块，跳到第 \(newIndex + 1)/\(bb.track.blocks.count) 块")
         }
     }
 
@@ -765,7 +762,7 @@ final class BKEditorViewController: UIViewController {
             if abs(t.x) >= BKConfig.Layout.swipeMinX && abs(t.y) < BKConfig.Layout.swipeMaxY {
                 swipeFired = true
                 g.isEnabled = false       // 触发一次就锁住，避免一划连跳好几条
-                if t.x < 0 { openItem(at: itemIndex + 1) } else { openItem(at: itemIndex - 1) }
+                if t.x < 0 { openItem(at: blockIndex + 1) } else { openItem(at: blockIndex - 1) }
             }
         case .ended, .cancelled, .failed:
             g.isEnabled = true
@@ -777,7 +774,7 @@ final class BKEditorViewController: UIViewController {
 
     /// 路②：轨道拖到片头/片尾再狠拽 >60pt。两条路底层调的是同一个函数
     private func openItem(at index: Int) {
-        guard index >= 0, index < batch.items.count else { return }
+        guard index >= 0, index < draft.track.blocks.count else { return }
         guard !isSwitchingAsset else {
             // 加载锁：上一次还没回来，直接短路返回，不排队
             BKLog.shared.d("换素材被锁：上一次还没加载完")
@@ -786,9 +783,9 @@ final class BKEditorViewController: UIViewController {
         isSwitchingAsset = true
         stopPlayback()
         savePlayhead()
-        BKDraftStore.shared.flushIfNeeded()
+        BKDraftStore.shared.flushV2IfNeeded()
 
-        let targetID = batch.items[index].assetLocalID
+        let targetID = draft.track.blocks[index].assetLocalID
         BKVideoLibrary.loadAVAsset(localID: targetID) { [weak self] asset in
             guard let self = self else { return }
             self.isSwitchingAsset = false
@@ -799,73 +796,76 @@ final class BKEditorViewController: UIViewController {
             let probe = BKAssetProbe.probe(asset)
             BKLog.shared.i(probe.logLine)
 
-            var b = self.batch
-            if probe.duration > 0 { b.items[index].duration = probe.duration }
-            b.items[index].displayWidth = probe.displayWidth
-            b.items[index].displayHeight = probe.displayHeight
-            b.items[index].sourceRotationDegrees = probe.rotationDegrees
-            // 定稿 4.5.3：**指针一律停在新素材片头**，不分从上一条进来还是下一条进来
-            b.items[index].playheadTime = 0
+            var b = self.draft
+            if probe.duration > 0, abs(b.track.blocks[index].srcDuration - probe.duration) > 0.05 {
+                b.track.blocks[index].srcDuration = probe.duration
+            }
             b.lastAssetId = targetID
             b.lastEditedAt = Date()
 
-            let vc = BKEditorViewController(batch: b, index: index, asset: asset, probeInfo: probe)
+            let vc = BKEditorViewController(draft: b, blockIndex: index, asset: asset, probeInfo: probe)
             var stack = nav.viewControllers
             if stack.last === self { stack.removeLast() }
             stack.append(vc)
             nav.setViewControllers(stack, animated: true)
-            BKLog.shared.i("切换到第 \(index + 1)/\(b.items.count) 条：\(b.items[index].assetName)")
+            BKLog.shared.i("切换到第 \(index + 1)/\(b.track.blocks.count) 块：\(b.track.blocks[index].assetName)")
         }
     }
 
     // MARK: - 提交与撤销
 
-    private func commit(_ updated: BKProject, coalesce: Bool = false) {
+    // MARK: - 提交与撤销
+
+    /// 抓当前完整编辑态（块 + 波剪瞬态）。撤销要能回退到上一步显示状态
+    private func captureState() -> EditState {
+        EditState(block: item, redCuts: redCuts, thresholdDb: thresholdDb,
+                  autoThresholdDb: autoThresholdDb, sourceApplicable: sourceApplicable,
+                  splits: splits)
+    }
+
+    /// 把一份编辑态写回：块落盘（必要时标 everEdited）+ 瞬态恢复 + 刷新
+    private func applyState(_ s: EditState) {
+        draft.track.blocks[blockIndex] = s.block
+        draft.lastEditedAt = Date()
+        // everEdited **只置不清**：撤销是把刀撤掉，不是把「我编辑过这件事」抹掉
+        if s.block.isWaveCut { draft.everEdited = true }
+        redCuts = s.redCuts
+        thresholdDb = s.thresholdDb
+        autoThresholdDb = s.autoThresholdDb
+        sourceApplicable = s.sourceApplicable
+        splits = s.splits
+        refreshTrack()
+        updateInfo()
+        updateUndoButtons()
+        BKDraftStore.shared.scheduleSaveV2(draft)
+    }
+
+    private func commit(_ s: EditState, coalesce: Bool = false) {
         if coalesce && boundaryDragging {
             // 一次拖动只占一格：第一帧 push，之后 amend。
             // 反过来（先 amend）会把拖动前的状态覆盖掉，那一步就永远撤不回来了
             if boundaryCommitted {
-                history.amend(updated)
+                history.amend(s)
             } else {
-                history.push(updated)
+                history.push(s)
                 boundaryCommitted = true
             }
         } else {
-            history.push(updated)
+            history.push(s)
         }
-        applyItem(updated)
-    }
-
-    private func applyItem(_ updated: BKProject) {
-        batch.items[itemIndex] = updated
-        // everEdited **只置不清**：撤销是把刀撤掉，不是把「我编辑过这件事」抹掉
-        if updated.isEdited { batch.everEdited = true }
-        batch.lastAssetId = updated.assetLocalID
-        batch.lastEditedAt = Date()
-        refreshTrack()
-        updateInfo()
-        updateUndoButtons()
-        BKDraftStore.shared.scheduleSave(batch)
+        applyState(s)
     }
 
     @objc private func undoTapped() {
         guard let restored = history.undo() else { return }
-        batch.items[itemIndex] = restored
-        refreshTrack()
-        updateInfo()
-        updateUndoButtons()
-        BKDraftStore.shared.scheduleSave(batch)
+        applyState(restored)
         statusLabel.text = "已撤销"
         BKLog.shared.i("撤销 → 栈内第 \(history.depth) 格")
     }
 
     @objc private func redoTapped() {
         guard let restored = history.redo() else { return }
-        batch.items[itemIndex] = restored
-        refreshTrack()
-        updateInfo()
-        updateUndoButtons()
-        BKDraftStore.shared.scheduleSave(batch)
+        applyState(restored)
         statusLabel.text = "已重做"
         BKLog.shared.i("重做 → 栈内第 \(history.depth) 格")
     }
@@ -881,11 +881,10 @@ final class BKEditorViewController: UIViewController {
 
     // MARK: - 编辑操作
 
-    private func applyMarks(_ marks: [BKMark], coalesce: Bool = false) {
-        var p = item
-        p.marks = BKTimeline.normalize(marks, duration: p.duration)
-        p.updatedAt = Date()
-        commit(p, coalesce: coalesce)
+    /// 把第一阶段红区写回（瞬态，不落盘；落盘只发生在「删红」写 keptRanges 时）
+    private func applyRedCuts(_ cuts: [BKRange], coalesce: Bool = false) {
+        redCuts = BKTrackModel.mergeRanges(cuts, duration: item.duration)
+        commit(captureState(), coalesce: coalesce)
     }
 
     /// 按一下，就从**橙色指针现在指的地方**把轨道切开。
@@ -893,24 +892,23 @@ final class BKEditorViewController: UIViewController {
     /// 【切开 ≠ 删除】切口不进 cutRanges，所以导出时长纹丝不动。
     /// 它的作用是把一段划成两段，好让你单独处理其中一半
     @objc private func cutTapped() {
-        var p = item
-        let t = min(max(lastTime, 0), p.duration)
+        let t = min(max(lastTime, 0), item.duration)
 
-        guard t > 0.05, t < p.duration - 0.05 else {
+        guard t > 0.05, t < item.duration - 0.05 else {
             statusLabel.text = "指针太靠两头了，这里切不出东西"
             return
         }
-        guard !p.splits.contains(where: { abs($0 - t) < 0.05 }) else {
+        guard !splits.contains(where: { abs($0 - t) < 0.05 }) else {
             statusLabel.text = "这里已经有一道切口了"
             return
         }
 
-        p.splits.append(t)
-        p.splits.sort()
-        p.updatedAt = Date()
-        commit(p)
-        statusLabel.text = String(format: "在 %.2fs 处切开 —— 点旁边的片段就能把那一段删掉", t)
-        BKLog.shared.i(String(format: "手动切口 %.2fs（现有 %d 道）", t, p.splits.count))
+        // 纯显示接缝（Q3 拍板）：不改 keptRanges，只画一条分割线
+        splits.append(t)
+        splits.sort()
+        statusLabel.text = String(format: "在 %.2fs 处加了一道分割线（仅显示）", t)
+        BKLog.shared.i(String(format: "手动接缝 %.2fs（现有 %d 道）", t, splits.count))
+        refreshTrack()
     }
 
     /// ✗✗ 一键去红（v1.3.4）：进入**第二阶段**。
@@ -934,14 +932,14 @@ final class BKEditorViewController: UIViewController {
             statusLabel.text = "已经删过红区了 —— 长按某块可以调它的长短"
             return
         }
-        let cuts = item.cutRanges
+        let cuts = redCuts
         guard !cuts.isEmpty else {
             statusLabel.text = "当前没有红区可删"
             return
         }
 
-        // 记录A → 记录B：这是两阶段的**唯一一次**坐标系转换，做完 A 就冻结
-        let keeps = BKTimeline.deriveKeeps(duration: item.duration, cuts: cuts)
+        // 记录A（红区）→ 记录B（绿区）：v2 唯一一次坐标系转换，做完就冻结
+        let keeps = BKTrackModel.keptFromRed(cuts, duration: item.duration)
         guard !keeps.isEmpty else {
             statusLabel.text = "没有可保留的绿区"
             return
@@ -949,27 +947,24 @@ final class BKEditorViewController: UIViewController {
 
         var p = item
         p.keptRanges = keeps
-        commit(p)
+        // 删红后红区并入绿区，瞬态红区清空
+        commit(EditState(block: p, redCuts: [], thresholdDb: thresholdDb,
+                         autoThresholdDb: autoThresholdDb, sourceApplicable: sourceApplicable,
+                         splits: splits))
 
         let total = keeps.reduce(0.0) { $0 + $1.duration }
-        // ⚠️ 诊断（v1.4.7）：红区贴着素材首尾时，红红红 的排布会「少一段绿区」
-        // （开头是红区就没有绿区可留，这是数学正确的）。
-        // 但用户看到的是「界面上 N 个红区，删完只有 M-1 道分割线」，
-        // 容易误判成没删干净。**把真实区间全打出来**，一眼能核对。
         let keepDesc = keeps.map { String(format: "%.2f→%.2f", $0.start, $0.end) }
         BKLog.shared.i(String(format:
             "一键去红：删 %d 段 → 留 %d 段绿区，成品 %.2fs（原片 %.2fs）| 绿区区间: %@",
             cuts.count, keeps.count, total, item.duration, keepDesc.joined(separator: " ")))
         BKLog.shared.i(String(format:
-            "红区区间: %@", cuts.map { String(format: "%.2f→%.2f", $0.0, $0.1) }
+            "红区区间: %@", cuts.map { String(format: "%.2f→%.2f", $0.start, $0.end) }
                 .joined(separator: " ")))
 
         let edgeNote = (keeps.first?.start ?? 0) < 0.01
             ? "（首段贴素材开头，其前无绿区）" : ""
         statusLabel.text = String(format: "已删 %d 段气口，剩 %d 段绿区 · 成品 %.1fs · 长按可调长短%@",
                                   cuts.count, keeps.count, total, edgeNote)
-        BKLog.shared.i(String(format: "一键去红：删 %d 段 → 留 %d 段绿区，成品 %.2fs（原片 %.2fs）",
-                              cuts.count, keeps.count, total, item.duration))
     }
 
     /// 点段 toggle 绿↔红（v1.3.0 沿用界面定稿第 5 节第 692 行）。
@@ -982,12 +977,13 @@ final class BKEditorViewController: UIViewController {
             statusLabel.text = "已经删过红区了 —— 长按某块可以调它的长短"
             return
         }
-        let shown = BKTimeline.pieces(duration: p.duration, cuts: p.cutRanges, splits: p.splits)
+        let shown = BKTrackModel.displayPieces(stage2: false, kept: [], red: redCuts,
+                                               splits: splits, duration: p.duration)
         for pc in shown where time >= pc.start && time <= pc.end {
-            var cuts = p.cutRanges
+            var cuts = redCuts
 
             if pc.kind == .cut {
-                cuts.removeAll { abs($0.0 - pc.start) < 1e-6 && abs($0.1 - pc.end) < 1e-6 }
+                cuts.removeAll { abs($0.start - pc.start) < 1e-6 && abs($0.end - pc.end) < 1e-6 }
                 statusLabel.text = String(format: "恢复 %.2f~%.2fs", pc.start, pc.end)
                 BKLog.shared.i(String(format: "恢复 %.2f~%.2fs", pc.start, pc.end))
             } else {
@@ -996,11 +992,11 @@ final class BKEditorViewController: UIViewController {
                                               pc.end - pc.start, BKConfig.Detect.minCut)
                     return
                 }
-                cuts.append((pc.start, pc.end))
+                cuts.append(BKRange(pc.start, pc.end))
                 statusLabel.text = String(format: "删掉 %.2f~%.2fs", pc.start, pc.end)
                 BKLog.shared.i(String(format: "删掉 %.2f~%.2fs", pc.start, pc.end))
             }
-            applyMarks(BKTimeline.build(duration: p.duration, cuts: cuts))
+            applyRedCuts(cuts)
             return
         }
         statusLabel.text = "指针这儿没有片段"
@@ -1023,20 +1019,10 @@ final class BKEditorViewController: UIViewController {
             case .success(let env):
                 self.envelope = env
                 self.statusLabel.text = ""
-                if self.item.autoThresholdDb == nil, self.item.exportHistory.isEmpty,
-                   !self.item.isEdited {
-                    // 全新的素材：跑一次自动检测
-                    self.history.reset(self.item)
-                    self.runDetection(override: nil)
-                } else {
-                    // 恢复编辑：不重跑检测，尊重上次保存的刀口
-                    self.history.reset(self.item)
-                    self.refreshTrack()
-                    self.updateInfo()
-                    self.track.setPointerTime(self.lastTime)
-                    self.statusLabel.text = "已恢复上次的编辑进度"
-                }
-                BKDraftStore.shared.markOpened(self.batch.id)
+                // v2：检测态瞬态，进页即重跑检测（不恢复上次阈值/红区）
+                self.history.reset(self.captureState())
+                self.runDetection(override: nil)
+                BKDraftStore.shared.markDraftOpened(self.draft.id)
                 self.updateUndoButtons()
                 self.updateThresholdAutoButton()
                 self.schedulePreroll()
@@ -1049,8 +1035,7 @@ final class BKEditorViewController: UIViewController {
         statusLabel.text = "正在检测气口…"
         spinner.startAnimating()
 
-        let p = item
-        let dur = p.duration
+        let dur = item.duration
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let outcome = BKDetector.detect(envelope: env,
                                             totalDuration: dur,
@@ -1058,16 +1043,15 @@ final class BKEditorViewController: UIViewController {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.spinner.stopAnimating()
-                var proj = self.item
-                proj.thresholdDb = outcome.info.thresholdDb
+                self.redCuts = BKTrackModel.mergeRanges(
+                    outcome.cuts.map { BKRange($0.0, $0.1) }, duration: dur)
+                self.thresholdDb = outcome.info.thresholdDb
                 if override == nil {
                     // 记下这次自动算出来的**实际使用值**（夹逼之后的）——
                     // 「恢复自动」要回到的就是它，不是未夹逼的原始 Otsu
-                    proj.autoThresholdDb = outcome.info.thresholdDb
+                    self.autoThresholdDb = outcome.info.thresholdDb
                 }
-                proj.sourceApplicable = outcome.info.applicable
-                proj.marks = BKTimeline.build(duration: proj.duration, cuts: outcome.cuts)
-                proj.updatedAt = Date()
+                self.sourceApplicable = outcome.info.applicable
 
                 if outcome.info.applicable {
                     self.statusLabel.text = ""
@@ -1086,7 +1070,7 @@ final class BKEditorViewController: UIViewController {
                 self.thresholdTitle.text = String(format: "阈值 %.1f dB", outcome.info.thresholdDb)
                 self.detectButton.isEnabled = outcome.info.applicable
                 self.detectButton.alpha = outcome.info.applicable ? 1.0 : 0.35
-                self.commit(proj)
+                self.commit(self.captureState())
                 self.updateThresholdAutoButton()
             }
         }
@@ -1095,21 +1079,19 @@ final class BKEditorViewController: UIViewController {
     /// 轨道 + 概览条一起刷新。分开刷迟早会出现「轨道已经切了，概览条还画着旧的」
     private func refreshTrack() {
         let p = item
-        // 【v1.3.4 两套记录】
-        //   第一阶段：红绿交替（含红区，可拖红区边缘），画布时间轴 = **原片时长**
-        //   第二阶段：只有绿区（每块之间有分割线），画布时间轴**仍然是原片时长**
-        //
-        // ⚠️ 关键差异：v1.3.0~1.3.4 第二阶段把绿区 ripple 拼成「成品时间轴」
-        // （长度 = 各绿区之和，比原片短），于是长按拿到的是成品时间、
-        // 改数据要换算回原片时间 —— 换算出错就改错段（实测第3段会改到第1段）。
-        // 两套记录下第二阶段**全程原片时间、零换算**，所以 duration 不用变。
+        // v2：第一阶段红绿交替（含红区，可拖红区边缘），第二阶段只有绿区，
+        // 画布时间轴**始终是原片时长**（零换算）。
         let stage2 = p.isStage2
-        let shown = p.displayPieces
+        let shown = BKTrackModel.displayPieces(stage2: stage2,
+                                               kept: p.keptRanges,
+                                               red: redCuts,
+                                               splits: splits,
+                                               duration: p.duration)
         track.setContent(envelope: envelope,
                          pieces: shown,
-                         splits: stage2 ? [] : p.splits,
+                         splits: stage2 ? [] : splits,
                          duration: p.duration,
-                         thresholdDb: p.thresholdDb,
+                         thresholdDb: thresholdDb,
                          foldMap: nil,
                          redFolded: stage2)
         overview.setContent(envelope: envelope,
@@ -1170,13 +1152,13 @@ final class BKEditorViewController: UIViewController {
 
     /// `|▶|` 联播：按保留段临时拼一条来播，等于预演成品（定稿 4.5.4）
     ///
-    /// 【v1.3.4】`item.keepRanges` 已按阶段自动取记录（第二阶段返回记录B），
+    /// 【v1.3.4】`item.keptRanges` 已按阶段自动取记录（第二阶段返回记录B），
     /// 所以这里不用再判阶段，也不用换算坐标系。
     @objc private func jointTapped() {
         if playMode == .joint { stopPlayback(); return }
         stopPlayback()
 
-        let keeps = item.keepRanges
+        let keeps = item.keptRanges.map { ($0.start, $0.end) }
         guard let built = BKJointBuilder.build(asset: asset, keeps: keeps) else {
             statusLabel.text = "没有可播放的绿区"
             return
@@ -1257,7 +1239,7 @@ final class BKEditorViewController: UIViewController {
 
     /// 「恢复自动」：当前就是自动值时置灰，手动拖过就亮，按一下回到 Otsu 的值并重算
     @objc private func thresholdAutoTapped() {
-        guard let auto = item.autoThresholdDb else {
+        guard let auto = autoThresholdDb else {
             statusLabel.text = "还没有自动值，先按一次吸管检测"
             return
         }
@@ -1269,203 +1251,16 @@ final class BKEditorViewController: UIViewController {
 
     /// 阈值是不是还停在自动算出来的那个值上
     private func updateThresholdAutoButton() {
-        guard let auto = item.autoThresholdDb else {
+        guard let auto = autoThresholdDb else {
             thresholdAutoButton.isEnabled = false
             thresholdAutoButton.alpha = 0.30
             return
         }
-        let isAuto = abs(item.thresholdDb - auto) < 0.01
+        let isAuto = abs(thresholdDb - auto) < 0.01
         thresholdAutoButton.isEnabled = !isAuto
         thresholdAutoButton.alpha = isAuto ? 0.30 : 1.0
     }
 
-    // MARK: - 导出
-
-    @objc private func exportTapped() {
-        guard !isExporting else { return }
-        stopPlayback()
-        savePlayhead()
-        BKDraftStore.shared.flushIfNeeded()
-
-        let panel = BKExportPanelViewController(batch: batch, currentIndex: itemIndex)
-        panel.onStart = { [weak self] scope, spec in
-            self?.runExport(scope: scope, spec: spec)
-        }
-        present(panel, animated: true)
-    }
-
-    private func runExport(scope: BKExportScope, spec: BKConfig.ExportSpec) {
-        let targets: [Int]
-        switch scope {
-        case .current:
-            targets = [itemIndex]
-        case .allEdited:
-            // 「改过的」= cuts 或 splits 非空 —— 跟列表红字、草稿留存**同一个判定**
-            targets = batch.items.indices.filter { batch.items[$0].isEdited }
-        }
-        guard !targets.isEmpty else {
-            statusLabel.text = "这一批还没有动过刀的素材"
-            return
-        }
-
-        isExporting = true
-        setControlsEnabled(false)
-        spinner.startAnimating()
-
-        // 批量 + 选了「同源文件」→ 按**时长最长那条**的参数全批统一（定稿 4.9.1）。
-        // 帧率只有从 AVAsset 上才读得到，所以先加载一次那条素材
-        if scope == .allEdited, let li = batch.longestItemIndex() {
-            let refItem = batch.items[li]
-            BKVideoLibrary.loadAVAsset(localID: refItem.assetLocalID) { [weak self] asset in
-                guard let self = self else { return }
-                var ref: BKExporter.ExportReference?
-                if let a = asset, let t = a.tracks(withMediaType: .video).first {
-                    // 显示尺寸一律走 BKAssetProbe —— 它已经把 preferredTransform 应用过了。
-                    // ⚠️ **别用 `asset.naturalSize`**：Swift 4.2 起它在 iOS SDK 上是
-                    // `unavailable`（不是 deprecated），因为一个 asset 可能挂多条视频轨，
-                    // 没说清是哪一条。只有 `AVAssetTrack.naturalSize` 能用。
-                    let probe = BKAssetProbe.probe(a)
-                    ref = BKExporter.ExportReference(
-                        displayWidth: refItem.displayWidth > 0 ? refItem.displayWidth : probe.displayWidth,
-                        displayHeight: refItem.displayHeight > 0 ? refItem.displayHeight : probe.displayHeight,
-                        fps: t.nominalFrameRate > 0 ? Double(t.nominalFrameRate) : 30)
-                    if let r = ref {
-                        BKLog.shared.i(String(format: "批量导出统一按最长那条：%@ %.0f×%.0f %.0ffps",
-                                              refItem.assetName, r.displayWidth, r.displayHeight, r.fps))
-                    }
-                }
-                self.exportLoop(targets, spec: spec, reference: ref,
-                                done: 0, ok: 0, failed: [], skipped: [])
-            }
-        } else {
-            exportLoop(targets, spec: spec, reference: nil, done: 0, ok: 0, failed: [], skipped: [])
-        }
-    }
-
-    /// 逐条排队。单条失败记下来继续跑完剩下的，最后统一报一句 ——
-    /// 中途弹窗把整批打断比让它跑完难受得多（定稿 4.8）
-    private func exportLoop(_ targets: [Int],
-                            spec: BKConfig.ExportSpec,
-                            reference: BKExporter.ExportReference?,
-                            done: Int,
-                            ok: Int,
-                            failed: [(String, String)],
-                            skipped: [String]) {
-        // 每一轮（一条素材）开始前清一次历史，
-        // 免得复制诊断信息时把上一批的旧报告也带进去
-        if done == 0 {
-            BKDiag.shared.clearHistory()
-        }
-        if done >= targets.count {
-            finishExport(ok: ok, failed: failed, skipped: skipped)
-            return
-        }
-        let idx = targets[done]
-        let it = batch.items[idx]
-
-        // 整条都是红区（没有可保留片段）：按「跳过 + 明确提示」处理，不跑导出器。
-        // 这是之前两条视频导出失败的根因 —— keepRanges 为空时原代码直接抛错，
-        // 把整批记成失败。现在跳过它，让批量继续跑完，最后汇总告诉用户哪几条全红
-        if it.keepRanges.isEmpty {
-            BKLog.shared.w("跳过 \(it.assetName)：全是红区，没有可保留片段")
-            exportLoop(targets, spec: spec, reference: reference, done: done + 1,
-                       ok: ok, failed: failed, skipped: skipped + [it.assetName])
-            return
-        }
-
-        statusLabel.text = "正在导出 \(done + 1)/\(targets.count) · \(it.assetName)"
-
-        BKVideoLibrary.loadAVAsset(localID: it.assetLocalID) { [weak self] asset in
-            guard let self = self else { return }
-            guard let asset = asset else {
-                self.exportLoop(targets, spec: spec, reference: reference, done: done + 1,
-                                ok: ok, failed: failed + [(it.assetName, "素材加载失败（AVAsset 为 nil）")], skipped: skipped)
-                return
-            }
-            let name = it.nextExportFileName
-            BKExporter.export(project: it, asset: asset, spec: spec, reference: reference,
-                              progress: { [weak self] _, _, f in
-                                  self?.statusLabel.text = String(
-                                      format: "正在导出 %d/%d · %d%%", done + 1, targets.count, Int(f * 100))
-                              },
-                              completion: { [weak self] result in
-                guard let self = self else { return }
-                switch result {
-                case .failure(let err):
-                    BKLog.shared.e("导出失败 \(it.assetName)：\(err.localizedDescription)")
-                    self.exportLoop(targets, spec: spec, reference: reference, done: done + 1,
-                                    ok: ok, failed: failed + [(it.assetName, err.localizedDescription)], skipped: skipped)
-                case .success(let url):
-                    BKRootViewController.saveToPhotos(url: url, fileName: name) { [weak self] success in
-                        guard let self = self else { return }
-                        if success {
-                            // 记进导出历史：文件名后缀序号（exportCount）就靠它递增
-                            let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
-                            let rec = BKExportRecord(id: UUID(), date: Date(),
-                                                     fileSize: (attr?[.size] as? Int64) ?? 0,
-                                                     duration: it.outputDuration,
-                                                     fileName: name,
-                                                     elapsedSec: 0)
-                            self.batch.items[idx].exportHistory.append(rec)
-                            self.batch.lastEditedAt = Date()
-                            BKDraftStore.shared.scheduleSave(self.batch)
-                            self.updateInfo()
-                            self.exportLoop(targets, spec: spec, reference: reference,
-                                            done: done + 1, ok: ok + 1, failed: failed, skipped: skipped)
-                        } else {
-                            self.exportLoop(targets, spec: spec, reference: reference, done: done + 1,
-                                            ok: ok, failed: failed + [(it.assetName, "保存到相册失败")], skipped: skipped)
-                        }
-                    }
-                }
-            })
-        }
-    }
-
-    private func finishExport(ok: Int, failed: [(String, String)], skipped: [String]) {
-        isExporting = false
-        setControlsEnabled(true)
-        spinner.stopAnimating()
-        BKDraftStore.shared.flushIfNeeded()
-
-        // 三类结果分开说：成功 / 全红跳过 / 真失败。只有「全成功」才自动回起始页，
-        // 其余都弹一句让用户看清楚再走（弹窗和 pop 会打架，所以回起始页放在按钮里）
-        if failed.isEmpty, skipped.isEmpty {
-            statusLabel.text = "已导出 \(ok) 条，即将返回草稿列表"
-            // 皓哥定：全部导出完成后默认回到起始草稿页。
-            // 用延时 1.2s 而非弹 modal alert —— 延时够看清结果即可
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-                self?.navigationController?.popToRootViewController(animated: true)
-            }
-        } else {
-            var title = "\(ok) 条成功"
-            if skipped.count > 0 { title += "，\(skipped.count) 条全是红区已跳过" }
-            if failed.count > 0 { title += "，\(failed.count) 条失败" }
-            statusLabel.text = title
-
-            let detail = (skipped.map { "（全红跳过）\($0)" } + failed.map { "\($0.0)：\($0.1)" }).joined(separator: "\n")
-            let alert = UIAlertController(title: title,
-                                          message: detail.isEmpty ? nil : detail,
-                                          preferredStyle: .alert)
-            // 【IMG_4873 案】有真失败时给一条「复制诊断信息」：
-            // 报告里有素材规格 / 导出参数 / 段边界 / 卡在哪一段 / writer 真实错误，
-            // 粘贴给巴蒂就能直接定位，不用再靠猜（UIAlert 按钮从 2 个变 3 个是可读的）
-            if !failed.isEmpty {
-                alert.addAction(UIAlertAction(title: "复制诊断信息", style: .default) { [weak self] _ in
-                    UIPasteboard.general.string = BKDiag.shared.allReportsText()
-                    let ok = UIAlertController(title: "已复制",
-                                               message: "直接粘贴给巴蒂就行，他看到的是完整现场（哪一段卡死、参数、真实错误）。",
-                                               preferredStyle: .alert)
-                    ok.addAction(UIAlertAction(title: "好", style: .default))
-                    self?.present(ok, animated: true)
-                })
-            }
-            alert.addAction(UIAlertAction(title: "返回草稿列表", style: .default) { [weak self] _ in
-                self?.navigationController?.popToRootViewController(animated: true)
-            })
-            present(alert, animated: true)
-        }
-    }
 
     /// 状态机统一入口：提波形 / 导出期间把整个工具栏灰掉，
     /// 免得在半成品状态上再叠一层编辑
@@ -1476,8 +1271,6 @@ final class BKEditorViewController: UIViewController {
             b.isEnabled = enabled
             b.alpha = enabled ? 1.0 : 0.4
         }
-        exportButton.isEnabled = enabled
-        exportButton.alpha = enabled ? 1.0 : 0.4
         thresholdSlider.isEnabled = enabled
         // 撤销 / 重做 / 恢复自动 三个按钮的可用性各有各的判据，不能一刀切全亮。
         // 少了这一句，恢复之后「恢复自动」会在还是自动值的时候亮着
@@ -1526,7 +1319,7 @@ private final class BKAssetRowCell: UITableViewCell {
 extension BKEditorViewController: UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        batch.items.count
+        draft.track.blocks.count
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -1534,8 +1327,8 @@ extension BKEditorViewController: UITableViewDataSource, UITableViewDelegate {
             withIdentifier: "BKAssetRowCell", for: indexPath) as? BKAssetRowCell else {
             return UITableViewCell()
         }
-        let it = batch.items[indexPath.row]
-        let isCurrent = (indexPath.row == itemIndex)
+        let it = draft.track.blocks[indexPath.row]
+        let isCurrent = (indexPath.row == blockIndex)
 
         cell.backgroundColor = .clear
         cell.textLabel?.text = it.assetName
@@ -1555,7 +1348,7 @@ extension BKEditorViewController: UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        guard indexPath.row != itemIndex else {
+        guard indexPath.row != blockIndex else {
             toggleListTapped()      // 点的是当前这条 —— 收起列表就好
             return
         }
@@ -1610,11 +1403,11 @@ extension BKEditorViewController: BKTrackViewDelegate {
 
     /// 拖红区边缘。红区是**记录A**（cuts），改它不影响记录B —— 还没进第二阶段
     func track(_ view: BKTrackView, didDragRedEdgeNear near: Double, to newTime: Double) {
-        guard let next = BKTimeline.moveRedEdge(cuts: item.cutRanges,
-                                               near: near,
-                                               to: newTime,
-                                               duration: item.duration) else { return }
-        applyMarks(BKTimeline.build(duration: item.duration, cuts: next), coalesce: true)
+        guard let next = BKTrackModel.moveRedEdge(cuts: redCuts,
+                                                  near: near,
+                                                  to: newTime,
+                                                  duration: item.duration) else { return }
+        applyRedCuts(next, coalesce: true)
     }
 
     func trackDidEndRedEdgeDrag(_ view: BKTrackView) {
@@ -1675,24 +1468,25 @@ extension BKEditorViewController: BKTrackViewDelegate {
         // 拖的是哪一端：区间变了的那头
         let edge: BKHandleEnd = (abs(start - base.start) < 1e-6) ? .head : .tail
         let newTime = (edge == .head) ? start : end
-        guard let next = BKTimeline.resizeKeeps(p.keptRanges,
-                                                index: idx,
-                                                edge: edge,
-                                                to: newTime,
-                                                duration: p.duration,
-                                                minSeg: BKConfig.RegionEdit.minSegmentSec) else {
+        guard let next = BKTrackModel.resizeKept(p.keptRanges,
+                                                 at: idx,
+                                                 isHead: edge == .head,
+                                                 to: newTime,
+                                                 duration: p.duration,
+                                                 minSeg: BKConfig.RegionEdit.minSegmentSec) else {
             statusLabel.text = "拖不过去了（会越界或短于 0.1 秒）"
             return
         }
 
         var q = item
         q.keptRanges = next
-        q.updatedAt = Date()
-        commit(q)
+        commit(EditState(block: q, redCuts: redCuts, thresholdDb: thresholdDb,
+                          autoThresholdDb: autoThresholdDb, sourceApplicable: sourceApplicable,
+                          splits: splits))
 
         // ⚠️ 显式 Double(...)：`Segment.duration` 与 Swift 内置的同名类型会撞，
         // 推断出来的类型不满足 String(format:) 要的 CVarArg。
-        let grew = Double(next[idx].duration) - Double(p.keptRanges[idx].duration)
+        let grew = Double(next[idx].length) - Double(p.keptRanges[idx].length)
         let totalNow = Double(q.outputDuration)
         statusLabel.text = grew >= 0
             ? String(format: "这段变长 %.2fs · 成品共 %.1fs", grew, totalNow)
@@ -1709,8 +1503,8 @@ extension BKEditorViewController: BKTrackViewDelegate {
     func trackDidPullBeyondHead(_ view: BKTrackView) {
         // 加载期间把开关关掉，回来之前不再响应第二次（三个坑里的第一个）
         view.allowsSiblingSwitch = false
-        if itemIndex > 0 {
-            openItem(at: itemIndex - 1)
+        if blockIndex > 0 {
+            openItem(at: blockIndex - 1)
         } else {
             // 已经是第一条 / 只有一条素材 → 只回弹，弹到片头那一帧
             view.setPointerTime(0)
@@ -1722,8 +1516,8 @@ extension BKEditorViewController: BKTrackViewDelegate {
 
     func trackDidPullBeyondTail(_ view: BKTrackView) {
         view.allowsSiblingSwitch = false
-        if itemIndex < batch.items.count - 1 {
-            openItem(at: itemIndex + 1)
+        if blockIndex < draft.track.blocks.count - 1 {
+            openItem(at: blockIndex + 1)
         } else {
             view.setPointerTime(item.duration)
             lastTime = item.duration

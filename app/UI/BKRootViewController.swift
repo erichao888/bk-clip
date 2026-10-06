@@ -14,9 +14,9 @@
 //  【起始页不显示「一刀没切」的草稿】整批从头到尾没动过刀 → 退出编辑页时直接丢掉
 //  （定稿 3.1）。判据是 everEdited（曾经动过刀），只置不清。
 //
-//  【Batch 1 临时：编辑页走桥接】编辑页（BKEditorViewController）还没迁 v2，仍吃 v1
-//  BKDraftBatch。点开草稿时 bridgeToV1 把 v2 草稿转成 v1 喂给它；编辑页的改动落在 v1
-//  草稿文件，v2 草稿文件保持创建时状态。Batch 2 重写编辑页为 v2 后桥接删除、统一走 v2。
+//  【Batch 2 已迁 v2】编辑页（BKEditorViewController）现直吃 v2 BKDraft + blockIndex，
+//  点开/导入草稿直接 push，改动落 v2 草稿文件。bridgeToV1 仅剩网格「直接导出」用
+//  （confirmDirectExport，属 2C 导出管线），其余入口不再走桥接。
 //
 
 import UIKit
@@ -172,8 +172,8 @@ final class BKRootViewController: UIViewController {
             let probe = BKAssetProbe.probe(asset)
             BKLog.shared.i(probe.logLine)
             BKDraftStore.shared.markDraftOpened(draft.id)
-            // ★ TEMP 桥接：编辑页还吃 v1，把 v2 草稿转成 v1 批喂给它
-            let editor = BKEditorViewController(batch: bridgeToV1(draft), index: idx,
+            // 波剪子页已迁 v2：直接喂 v2 草稿 + 块下标
+            let editor = BKEditorViewController(draft: draft, blockIndex: idx,
                                                 asset: asset, probeInfo: probe)
             self.navigationController?.pushViewController(editor, animated: true)
         }
@@ -241,7 +241,8 @@ final class BKRootViewController: UIViewController {
         let now = Date()
         let blocks = ids.map { id -> BKClipBlock in
             let dur = BKVideoLibrary.duration(localID: id)
-            return BKClipBlock.uncutted(assetLocalID: id, srcDuration: dur)
+            return BKClipBlock.uncutted(assetLocalID: id, srcDuration: dur,
+                                        assetName: BKVideoLibrary.assetName(localID: id))
         }
         return BKDraft(id: UUID(), title: "", blocks: blocks,
                        lastAssetId: ids.first, createdAt: now, lastEditedAt: now, everEdited: false)
@@ -269,8 +270,8 @@ final class BKRootViewController: UIViewController {
                 return
             }
             let idx = draft.track.blocks.firstIndex(where: { $0.assetLocalID == first }) ?? 0
-            // ★ TEMP 桥接：编辑页还吃 v1，转成 v1 批进编辑
-            let editor = BKEditorViewController(batch: bridgeToV1(draft), index: idx,
+            // 波剪子页已迁 v2：直接喂 v2 草稿 + 块下标
+            let editor = BKEditorViewController(draft: draft, blockIndex: idx,
                                                 asset: asset, probeInfo: probe)
             self.navigationController?.pushViewController(editor, animated: true)
         }

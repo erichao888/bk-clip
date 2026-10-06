@@ -52,6 +52,8 @@ struct BKRange: Codable, Equatable {
 struct BKClipBlock: Codable, Identifiable {
     var id: UUID
     var assetLocalID: String
+    /// 素材展示名（仅元数据，不参与坐标/几何计算；导出几何由 BKAssetProbe 实时取）
+    var assetName: String
 
     /// 源素材总时长，永不改变
     var srcDuration: Double
@@ -68,21 +70,44 @@ struct BKClipBlock: Codable, Identifiable {
     /// 只是给调试/日志看的便利属性，**业务逻辑不要用它做分支**
     var isWaveCut: Bool { keptRanges.count > 1 }
 
+    // MARK: - 波剪子页兼容层（让 BKEditorViewController 平滑吃 v2 块，不引入第二套数据）
+    // 这些只读计算属性把 v1 的 item.xxx 语义映射到 v2 块；写操作一律走 commit 改写整块。
+
+    /// 源素材总时长（波剪子页 `item.duration`）
+    var duration: Double { srcDuration }
+    /// 红区 = 绿区补集（第一阶段检测态的瞬态红区靠 redCuts，这里只用于显示推导）
+    var cutRanges: [BKRange] { BKTrackModel.redFromKept(keptRanges, duration: srcDuration) }
+    /// 已进入「删红后」阶段 = 已波剪（绿区多段）
+    var isStage2: Bool { isWaveCut }
+    /// 动过刀：判据与 v1 一致（曾经改过绿区）
+    var isEdited: Bool { isWaveCut }
+    /// 切了几刀 = 绿区段数 - 1
+    var cutCount: Int { max(0, keptRanges.count - 1) }
+    /// 成品时长（波剪子页只看 speed=1 的绿区之和）
+    var outputDuration: Double { baseDuration }
+    /// 删掉的总时长
+    var removedDuration: Double { srcDuration - baseDuration }
+    /// 删除占比
+    var removedRatio: Double { srcDuration > 0 ? (srcDuration - baseDuration) / srcDuration : 0 }
+
     init(id: UUID = UUID(),
          assetLocalID: String,
+         assetName: String = "",
          srcDuration: Double,
          keptRanges: [BKRange],
          speed: Double = 1.0) {
         self.id = id
         self.assetLocalID = assetLocalID
+        self.assetName = assetName
         self.srcDuration = srcDuration
         self.keptRanges = keptRanges
         self.speed = speed
     }
 
     /// 未波剪：整段保留，单段
-    static func uncutted(assetLocalID: String, srcDuration: Double, speed: Double = 1.0) -> BKClipBlock {
+    static func uncutted(assetLocalID: String, srcDuration: Double, assetName: String = "", speed: Double = 1.0) -> BKClipBlock {
         BKClipBlock(assetLocalID: assetLocalID,
+                    assetName: assetName,
                     srcDuration: srcDuration,
                     keptRanges: [BKRange(0, srcDuration)],
                     speed: speed)
@@ -427,5 +452,160 @@ struct BKTrackModel: Codable {
         }
 
         return bad
+    }
+}
+
+// MARK: - 波剪子页辅助（v2 · 操作 [BKRange]，产出 [BKMark] 供波形视图）
+//
+// v2 波剪子页只存 keptRanges（绿区）。红区 = 绿区补集（瞬态、不落盘）。
+// 这套函数与 v1 的 BKTimeline.* 一一对应，但吃 v2 的 [BKRange] 而非 v1 的
+// Segment / (Double, Double)，让波剪子页不再依赖 v1 模型类型（v1 模型 2C 才删）。
+
+extension BKTrackModel {
+
+    /// 红区 = 绿区（keptRanges）补集
+    static func redFromKept(_ kept: [BKRange], duration: Double) -> [BKRange] {
+        var red: [BKRange] = []
+        var prev = 0.0
+        for r in kept where r.length > eps {
+            if r.start > prev + eps { red.append(BKRange(prev, r.start)) }
+            prev = max(prev, r.end)
+        }
+        if duration > prev + eps { red.append(BKRange(prev, duration)) }
+        return red
+    }
+
+    /// 绿区 = 红区补集
+    static func keptFromRed(_ red: [BKRange], duration: Double) -> [BKRange] {
+        let merged = mergeRanges(red, duration: duration)
+        var kept: [BKRange] = []
+        var prev = 0.0
+        for c in merged where c.length > eps {
+            if c.start > prev + eps { kept.append(BKRange(prev, c.start)) }
+            prev = max(prev, c.end)
+        }
+        if duration > prev + eps { kept.append(BKRange(prev, duration)) }
+        return kept
+    }
+
+    /// 洗净若干区间：夹回 [0,duration]、去重叠、排序、滤零宽
+    static func mergeRanges(_ ranges: [BKRange], duration: Double) -> [BKRange] {
+        let cleaned = ranges
+            .map { BKRange(min(max($0.start, 0), duration), min(max($0.end, 0), duration)) }
+            .filter { $0.length > 0.001 }
+            .sorted { $0.start < $1.start }
+        var out: [BKRange] = []
+        for r in cleaned {
+            if let last = out.last, last.end > r.start + eps {
+                out[out.count - 1].end = r.start
+            }
+            out.append(r)
+        }
+        return out.filter { $0.length > 0.001 }
+    }
+
+    /// 生成波形视图要画的 [BKMark]
+    /// - stage2: 是否已进入「删红后」阶段（轨道全绿区）
+    /// - kept: 绿区
+    /// - red: 红区（第一阶段检测出来的，瞬态）
+    /// - splits: 纯显示接缝（不改数据，Q3 拍板）
+    static func displayPieces(stage2: Bool,
+                              kept: [BKRange],
+                              red: [BKRange],
+                              splits: [Double],
+                              duration: Double) -> [BKMark] {
+        if stage2 {
+            // 直接用绿区在原片时间轴铺开，段间插零宽 seam（视觉上的分割线）
+            var out: [BKMark] = []
+            for (i, k) in kept.enumerated() {
+                if i > 0 { out.append(BKMark(start: k.start, end: k.start, kind: .keep)) }
+                out.append(BKMark(start: k.start, end: k.end, kind: .keep))
+            }
+            return out
+        }
+        // 第一阶段：红绿交替 + 接缝
+        let redMerged = mergeRanges(red, duration: duration)
+        let cutList = redMerged.filter { $0.length > eps }
+        let edges = Set(splits.map { min(max($0, 0), duration) })
+            .filter { t in t > eps && t < duration - eps
+                && !cutList.contains { t >= $0.start - eps && t <= $0.end + eps } }
+            .sorted()
+        var out: [BKMark] = []
+        var cursor: Double = 0
+        func splitKeep(_ a: Double, _ b: Double) {
+            guard b > a else { return }
+            var from = a
+            for t in edges where t > a + eps && t < b - eps {
+                if t > from { out.append(BKMark(start: from, end: t, kind: .keep)) }
+                from = t
+            }
+            if b > from { out.append(BKMark(start: from, end: b, kind: .keep)) }
+        }
+        for iv in redMerged {
+            splitKeep(cursor, iv.start)
+            if iv.end > iv.start { out.append(BKMark(start: iv.start, end: iv.end, kind: .cut)) }
+            cursor = iv.end
+        }
+        splitKeep(cursor, duration)
+        return out
+    }
+
+    /// 第一阶段拖红区边缘：改红区某一端。返回新红区；非法 nil
+    static func moveRedEdge(cuts: [BKRange],
+                            near: Double,
+                            to newTime: Double,
+                            duration: Double,
+                            minSeg: Double = 0.05) -> [BKRange]? {
+        guard !cuts.isEmpty else { return nil }
+        var hitIndex = -1
+        var whichEnd = 0
+        var bestDist = Double.greatestFiniteMagnitude
+        for (i, iv) in cuts.enumerated() {
+            if near >= iv.start - 0.02 && near <= iv.end + 0.02 {
+                let dHead = abs(iv.start - near)
+                let dTail = abs(iv.end - near)
+                if min(dHead, dTail) < bestDist {
+                    bestDist = min(dHead, dTail)
+                    hitIndex = i
+                    whichEnd = dHead <= dTail ? 0 : 1
+                }
+            }
+        }
+        guard hitIndex >= 0 else { return nil }
+        var out = cuts
+        let cur = out[hitIndex]
+        if whichEnd == 0 {
+            let ns = min(max(newTime, 0), cur.end - minSeg)
+            guard ns >= 0, cur.end - ns >= minSeg else { return nil }
+            out[hitIndex].start = ns
+        } else {
+            let ne = max(min(newTime, duration), cur.start + minSeg)
+            guard ne <= duration, ne - cur.start >= minSeg else { return nil }
+            out[hitIndex].end = ne
+        }
+        return out
+    }
+
+    /// 第二阶段调绿区边界。isHead=true 调开头、false 调结尾。返回新绿区；非法 nil
+    static func resizeKept(_ kept: [BKRange],
+                           at index: Int,
+                           isHead: Bool,
+                           to newTime: Double,
+                           duration: Double,
+                           minSeg: Double) -> [BKRange]? {
+        guard index >= 0, index < kept.count else { return nil }
+        let s = kept[index].start
+        let e = kept[index].end
+        var next = kept
+        if isHead {
+            let ns = min(max(newTime, 0), e - minSeg)
+            guard ns >= 0, e - ns >= minSeg else { return nil }
+            next[index].start = ns
+        } else {
+            let ne = max(min(newTime, duration), s + minSeg)
+            guard ne <= duration, ne - s >= minSeg else { return nil }
+            next[index].end = ne
+        }
+        return next
     }
 }
