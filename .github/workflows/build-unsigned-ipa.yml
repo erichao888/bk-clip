@@ -70,6 +70,12 @@ jobs:
         # Codable 终点但没有 Yams —— 用 JSON 能跑通就说明是 YAML 层的坑，
         # 跑不通则诊断器（同样走 JSON）会把肇事块直接点名
         run: |
+          # 统一转 LF：仓库文本文件是 Windows 提交的 CRLF，在 macOS runner 上
+          # 残留的 \r 会让 grep/awk 取到的值带 \r（典型如 PRODUCT_NAME=BKClip\r），
+          # 被误判成非 ASCII。XcodeGen/Yams 能容忍 CRLF，但 shell 文本处理不能，
+          # 所以生成前先把 project.yml 归一为 LF，根治 CRLF 引发的各类误判。
+          tr -d '\r' < project.yml > project.yml.lf && mv -f project.yml.lf project.yml
+
           # 【主路径：直接让 XcodeGen 读 YAML】
           # XcodeGen 自带 Yams，能直接解析 project.yml，不需要 pyyaml / 系统 ruby。
           # 之前绕 JSON 转换，是因为旧版 project.yml 缺 info.path 触发 Yams 报错；
@@ -164,7 +170,7 @@ jobs:
         run: |
           # 缩进容忍：匹配任意前导空格的 PRODUCT_NAME:（排除注释行），
           # 避免因缩进漂移被误杀（2026-10-06 那次红曾疑似踩到）
-          NAME=$(grep -m1 '^[[:space:]]*PRODUCT_NAME:' project.yml | grep -v '^[[:space:]]*#' | awk '{print $2}')
+          NAME=$(grep -m1 '^[[:space:]]*PRODUCT_NAME:' project.yml | grep -v '^[[:space:]]*#' | awk '{print $2}' | tr -d '\r')
           echo "PRODUCT_NAME = [$NAME]"
           if [ -z "$NAME" ]; then
             echo "::error::没从 project.yml 里取到 PRODUCT_NAME"
