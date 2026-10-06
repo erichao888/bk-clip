@@ -165,8 +165,8 @@ enum BKCompositionBuilder {
     /// 【朝向】composition 一条轨只能挂一个 transform，取**第一块有视频轨的**素材的。
     /// 皓哥的素材全是同一台手机拍的，实践里一致；混入不同朝向时按第一块出并记警告。
     ///
-    /// 【音频音高】铁律：变速**保持音高**。音频轨挂 `.spectral` 算法（变调不变速的反义词：
-    /// 变速不变调），由 scaleTimeRange 触发重采样。
+    /// 【⚠️ 音频音高还没保】scaleTimeRange 对音频是重采样，变速时音调会跟着变。
+    /// 保音高的正解见下面 dstAudio 处的注释，等变速面板批次一起做。
     static func makeMain(_ parts: [Part]) -> BKCompositionBuild? {
         guard !parts.isEmpty else { return nil }
 
@@ -183,10 +183,19 @@ enum BKCompositionBuilder {
         }
         dstVideo.preferredTransform = srcVideo0.preferredTransform
 
+        // ⚠️ **变速保音高：这一版还没做到**（别当成已实现）。
+        // `scaleTimeRange` 对音频是**重采样** —— 2x 时音调会跟着升八度，
+        // 铁律要的是「变速不变调」，那需要换成：
+        //   AVAssetReaderAudioMixOutput + AVMutableAudioMix(
+        //     inputParameters: { p in p.audioTimePitchAlgorithm = .spectral })
+        // 而导出现在用的是 AVAssetReaderTrackOutput（不吃 audioMix）。
+        // ⚠️ `audioTimePitchAlgorithm` **不在** AVMutableCompositionTrack 上（CI 实测报错），
+        //    它在 AVMutableAudioMixInputParameters / AVPlayerItem 上。
+        // 改这条要连带把 drainComposition 的音频参数类型放宽到 AVAssetReaderOutput，
+        // 等变速面板（规格第二批）真正落地时和 UI 一起做。
         var dstAudio: AVMutableCompositionTrack?
         if let da = comp.addMutableTrack(withMediaType: .audio,
                                          preferredTrackID: kCMPersistentTrackID_Invalid) {
-            da.audioTimePitchAlgorithm = .spectral     // 变速保持音高（铁律）
             dstAudio = da
         }
 
