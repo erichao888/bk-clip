@@ -258,11 +258,15 @@ struct BKTrackModel: Codable {
                 var rightKept = [BKRange(src, r.end)]
                 rightKept.append(contentsOf: b.keptRanges[(j + 1)...])
 
+                // ⚠️ assetName / srcDuration 必须一起带给左右两块：
+                // 漏了 assetName 会让主轨上被切开的两块变成空名字（2B 主轨要显示块名）
                 let left = BKClipBlock(assetLocalID: b.assetLocalID,
+                                       assetName: b.assetName,
                                        srcDuration: b.srcDuration,
                                        keptRanges: leftKept,
                                        speed: b.speed)
                 let right = BKClipBlock(assetLocalID: b.assetLocalID,
+                                        assetName: b.assetName,
                                         srcDuration: b.srcDuration,
                                         keptRanges: rightKept,
                                         speed: b.speed)
@@ -336,6 +340,16 @@ struct BKTrackModel: Codable {
         let b = blocks.remove(at: from)
         let k = max(0, min(to, blocks.count))
         blocks.insert(b, at: k)
+        normalizeOverlays()
+    }
+
+    /// 删除主轨上第 i 块。
+    /// ★ 走这里而不是 UI 里直接 `blocks.remove(at:)`：锚在它身上的叠加 clip 会变成孤儿，
+    /// 需要 normalizeOverlays 一并清掉，否则它们会永远留在 overlays 里占位
+    /// （resolveOverlay 找不到锚块返回 nil，但数组越来越大）
+    mutating func removeBlock(at index: Int) {
+        guard index >= 0, index < blocks.count else { return }
+        blocks.remove(at: index)
         normalizeOverlays()
     }
 

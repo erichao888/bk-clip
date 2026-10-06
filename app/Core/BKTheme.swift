@@ -96,6 +96,15 @@ enum BKTheme {
         /// 手动切口的缝线
         static let selection = UIColor(hex: 0x1A1A1A)
 
+        // ---- 主编辑页（v2 · 上下文底栏与参数面板规格）----
+        /// 选中蓝框 #2F6DF4。主编辑页「当前框选的区块」专用 ——
+        /// 它是**唯一**的蓝色，别拿去做普通点缀，否则和「选中」这件事抢语义
+        static let select   = UIColor(hex: 0x2F6DF4)
+        /// 选中态的淡蓝底 rgba(47,109,244,.12)
+        static let selectBg = UIColor(hex: 0x2F6DF4, alpha: 0.12)
+        /// 参数面板滑块填充 / 变速档位黄 #EAC54F
+        static let slider = UIColor(hex: 0xEAC54F)
+
         // ---- 预览区 ----
         /// 播放器背景。给视频画面染色会污染你对画面的判断，一律近黑不解释
         static let preview = UIColor(hex: 0x141414)

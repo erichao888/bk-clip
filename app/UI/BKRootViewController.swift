@@ -147,36 +147,17 @@ final class BKRootViewController: UIViewController {
         versionLabel.text = "BK剪辑 专剪口播 v\(BKConfig.appVersion) · 已导出 \(BKDraftStore.shared.totalExportCount) 条"
     }
 
-    // MARK: - 打开草稿（Batch 1 桥接到 v1 编辑页）
+    // MARK: - 打开草稿
 
+    /// 2B：点草稿进**主编辑页**，不再直接进波剪子页。
+    /// 主编辑页管结构（这条片子由哪几块组成），点「波剪」键才进某一块内部剪气口。
+    /// 这里不再预加载 AVAsset —— 主编辑页只在进波剪那一步才需要素材，
+    /// 素材丢了的话在那一层提示，比在这儿拦住整条草稿更准（一条草稿可能有多条素材）
     private func open(draft: BKDraft) {
-        guard let assetId = draft.coverAssetId() else { return }
-        guard let idx = draft.track.blocks.firstIndex(where: { $0.assetLocalID == assetId }) else { return }
-
-        let spinner = UIActivityIndicatorView(style: .medium)
-        spinner.color = BKTheme.Color.gold
-        spinner.center = view.center
-        spinner.startAnimating()
-        view.addSubview(spinner)
-
-        BKVideoLibrary.loadAVAsset(localID: assetId) { [weak self] asset in
-            guard let self = self else { return }
-            spinner.stopAnimating()
-            spinner.removeFromSuperview()
-            guard let asset = asset else {
-                self.showAlert(title: "素材找不到了",
-                               message: "这条草稿对应的原视频可能已经从相册里删除了。")
-                BKLog.shared.e("打开草稿失败：AVAsset 取不到 \(assetId)")
-                return
-            }
-            let probe = BKAssetProbe.probe(asset)
-            BKLog.shared.i(probe.logLine)
-            BKDraftStore.shared.markDraftOpened(draft.id)
-            // 波剪子页已迁 v2：直接喂 v2 草稿 + 块下标
-            let editor = BKEditorViewController(draft: draft, blockIndex: idx,
-                                                asset: asset, probeInfo: probe)
-            self.navigationController?.pushViewController(editor, animated: true)
-        }
+        guard !draft.track.blocks.isEmpty else { return }
+        BKDraftStore.shared.markDraftOpened(draft.id)
+        let editor = BKMainEditorViewController(draft: draft)
+        navigationController?.pushViewController(editor, animated: true)
     }
 
     // MARK: - 导入
@@ -255,26 +236,11 @@ final class BKRootViewController: UIViewController {
         BKDraftStore.shared.markDraftOpened(draft.id)
         BKLog.shared.i("新建 v2 草稿 \(draft.id.uuidString.prefix(8)) · \(ids.count) 条")
 
-        guard let first = ids.first else { return }
-        BKVideoLibrary.loadAVAsset(localID: first) { [weak self] asset in
-            guard let self = self else { return }
-            guard let asset = asset else {
-                self.showAlert(title: "读取失败", message: "拿不到这个视频的数据，可能还在 iCloud 上。")
-                return
-            }
-            let probe = BKAssetProbe.probe(asset)
-            BKLog.shared.i(probe.logLine)
-            if !probe.hasAudio {
-                self.showAlert(title: "这条视频没有声音",
-                               message: "去气口靠音轨判断呼吸停顿，无声视频没法自动找气口。")
-                return
-            }
-            let idx = draft.track.blocks.firstIndex(where: { $0.assetLocalID == first }) ?? 0
-            // 波剪子页已迁 v2：直接喂 v2 草稿 + 块下标
-            let editor = BKEditorViewController(draft: draft, blockIndex: idx,
-                                                asset: asset, probeInfo: probe)
-            self.navigationController?.pushViewController(editor, animated: true)
-        }
+        // 2B：导入完先进主编辑页。原来这里会先 probe 一遍首条素材判「有没有声音」——
+        // 那条告警挪到真正点「波剪」时再给（见 BKMainEditorViewController.openWaveCut），
+        // 放进主编辑页没意义：主轨本身不需要音轨，无声素材照样能排版
+        let editor = BKMainEditorViewController(draft: draft)
+        navigationController?.pushViewController(editor, animated: true)
     }
 
     // MARK: - 批量多选

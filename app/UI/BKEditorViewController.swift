@@ -197,7 +197,9 @@ final class BKEditorViewController: UIViewController {
             finishSession()
         } else {
             savePlayhead()
-            BKDraftStore.shared.flushIfNeeded()
+            // ⚠️ 必须 flush **V2**：波剪页落的是 v2 草稿，刷 v1 的挂起保存等于没刷，
+            // 主编辑页回来从磁盘重载会读到旧内容（2B 接线时发现的漏网点）
+            BKDraftStore.shared.flushV2IfNeeded()
         }
     }
 
