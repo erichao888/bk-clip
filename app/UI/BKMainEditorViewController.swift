@@ -13,7 +13,7 @@
 //    ⏸ 音量·画面大小·旋转·左右镜像·变速·录音：底栏先占位（灰），面板属规格「第二批」
 //    ⏸ 录音轨 / 画中画轨 UI：5 键 / 9 键的分支骨架已按规格写好（currentBarTrack），
 //       但侧轨还没有数据入口，所以暂时恒为主轨 10 键
-//    ⏸ 播放：整条主轨要跨素材合成，和第二段的导出管线是同一个 builder，一并做
+//    ✅ 播放：整条主轨用 BKCompositionBuilder.makeMain 合成，AVPlayerLayer 在预览区播放（指针随播放滚动）
 //
 //  【和波剪子页的分工】
 //  这一页管「结构」：这条片子由哪几块组成、顺序、切分。
@@ -70,6 +70,15 @@ final class BKMainEditorViewController: UIViewController {
     /// 上次已抓帧的「块×0.25s 桶」键，避免快速滚动反复起生成器
     private var lastPosterKey: Int = Int.min
 
+    // MARK: 播放
+    private let player = AVPlayer()
+    private let playerView = BKPlayerView()
+    private let playButton = UIButton(type: .system)
+    private var isPlaying = false
+    private var timeObserver: Any? = nil
+    /// 合成好的可播放 item；草稿结构一变（reload）就置空，下次播放重建
+    private var playerItem: AVPlayerItem? = nil
+
     // MARK: - 初始化
 
     init(draft: BKDraft) {
@@ -104,6 +113,7 @@ final class BKMainEditorViewController: UIViewController {
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         navigationController?.interactivePopGestureRecognizer?.isEnabled = true
+        if isPlaying { teardownPlayback() }
         if isMovingFromParent { finishSession() }
     }
 
@@ -126,6 +136,11 @@ final class BKMainEditorViewController: UIViewController {
         let previewH: CGFloat = max(150, min(260, (h - top - bottomSafe) * 0.36))
         previewContainer.frame = CGRect(x: 0, y: top, width: w, height: previewH)
         posterView.frame = previewContainer.bounds
+        playerView.frame = previewContainer.bounds
+        let pbS: CGFloat = 44
+        playButton.frame = CGRect(x: (previewContainer.bounds.width - pbS) / 2,
+                                  y: previewContainer.bounds.height - pbS - 10,
+                                  width: pbS, height: pbS)
 
         let trackY = previewContainer.frame.maxY + 10
         trackView.frame = CGRect(x: 0, y: trackY, width: w, height: 92)
@@ -143,6 +158,20 @@ final class BKMainEditorViewController: UIViewController {
         posterView.contentMode = .scaleAspectFit
         posterView.clipsToBounds = true
         previewContainer.addSubview(posterView)
+
+        // 预览视频层：播放时盖在海报上；player 常驻，item 每次播放重建
+        playerView.playerLayer.videoGravity = .resizeAspect
+        playerView.playerLayer.player = player
+        playerView.isHidden = true
+        previewContainer.addSubview(playerView)
+
+        // 播放/暂停按钮（底部居中，单线条图标，跟底栏控件风格一致）
+        playButton.setImage(UIImage(systemName: "play.fill"), for: .normal)
+        playButton.tintColor = .white
+        playButton.backgroundColor = UIColor(hex: 0x0A0C10, alpha: 0.55)
+        playButton.layer.cornerRadius = 22
+        playButton.addTarget(self, action: #selector(playTapped), for: .touchUpInside)
+        previewContainer.addSubview(playButton)
 
         trackView.delegate = self
         view.addSubview(trackView)
@@ -190,6 +219,9 @@ final class BKMainEditorViewController: UIViewController {
     /// 重新铺轨 + 选中 + 刷底栏/信息。select 不传 = 尽量保持当前选中
     private func reload(select: Int? = nil) {
         let n = draft.track.blocks.count
+        // 结构一变，播放合成失效（下个播放键重新合成）；正在播就先停
+        playerItem = nil
+        if isPlaying { pausePlayback() }
         trackView.setContent(blocks: draft.track.blocks)
         guard n > 0 else {
             trackView.selectedIndex = nil
@@ -234,6 +266,7 @@ final class BKMainEditorViewController: UIViewController {
     /// 按「块序号 × 0.25s 桶」去重，避免快速滚动反复起 AVAssetImageGenerator；
     /// posterToken 保证只有最新一次滚动的结果会落屏。
     private func updatePosterAtPlayhead() {
+        guard !isPlaying else { return }   // 播放时视频层盖着，省掉无谓的抓帧
         guard let info = trackView.playheadFrameInfo() else {
             posterView.image = nil
             return
@@ -249,6 +282,116 @@ final class BKMainEditorViewController: UIViewController {
             guard token == self.posterToken else { return }   // 已被更新的滚动覆盖
             if let img = img { self.posterView.image = img }
         }
+    }
+
+    // MARK: - 播放
+
+    @objc private func playTapped() {
+        if isPlaying { pausePlayback() } else { startPlayback() }
+    }
+
+    private func startPlayback() {
+        // App 内播视频须 playback，否则静音键一开整条无声
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [])
+        try? AVAudioSession.sharedInstance().setActive(true, options: [])
+
+        let apply: (AVPlayerItem?) -> Void = { [weak self] item in
+            guard let self = self else { return }
+            guard let item = item else {
+                self.statusLabel.text = "播放合成失败（素材读不到？）"
+                return
+            }
+            self.playerItem = item
+            self.player.replaceCurrentItem(with: item)
+            self.playerView.isHidden = false
+            self.posterView.isHidden = true
+            self.isPlaying = true
+            self.playButton.setImage(UIImage(systemName: "pause.fill"), for: .normal)
+            self.addTimeObserver()
+            self.player.play()
+        }
+
+        if let existing = playerItem {
+            apply(existing)
+        } else {
+            statusLabel.text = "正在合成播放预览…"
+            buildPlaybackItem(completion: apply)
+        }
+    }
+
+    /// 加载所有块的素材 → makeMain 合成 → 带淡入淡出 + 保音高的 audioMix 的 AVPlayerItem
+    private func buildPlaybackItem(completion: @escaping (AVPlayerItem?) -> Void) {
+        let blocks = draft.track.blocks
+        guard !blocks.isEmpty else { completion(nil); return }
+        var loaded: [(Int, BKCompositionBuilder.Part)] = []
+        let group = DispatchGroup()
+        for (i, b) in blocks.enumerated() {
+            group.enter()
+            BKVideoLibrary.loadAVAsset(localID: b.assetLocalID) { asset in
+                defer { group.leave() }
+                guard let asset = asset else { return }
+                let p = BKCompositionBuilder.Part(
+                    asset: asset, name: b.assetName,
+                    keeps: b.keptRanges.map { ($0.start, $0.end) }, speed: b.speed)
+                loaded.append((i, p))
+            }
+        }
+        group.notify(queue: .main) { [weak self] in
+            guard let self = self else { return }
+            let parts = loaded.sorted { $0.0 < $1.0 }.map { $0.1 }
+            guard !parts.isEmpty else { completion(nil); return }
+            guard let build = BKCompositionBuilder.makeMain(parts) else { completion(nil); return }
+            let item = AVPlayerItem(asset: build.comp)
+            // 接缝淡入淡出 + 保音高（播放器支持 audioMix，导出器那个铁律缺口在这里先补上）
+            if let mix = BKCompositionBuilder.makeFadeMix(build) {
+                for p in mix.inputParameters {
+                    if let mp = p as? AVMutableAudioMixInputParameters {
+                        mp.audioTimePitchAlgorithm = .spectral
+                    }
+                }
+                item.audioMix = mix
+            }
+            completion(item)
+        }
+    }
+
+    private func pausePlayback() {
+        player.pause()
+        removeTimeObserver()
+        isPlaying = false
+        playButton.setImage(UIImage(systemName: "play.fill"), for: .normal)
+        playerView.isHidden = true
+        posterView.isHidden = false
+        updatePosterAtPlayhead()   // 停在暂停处那一帧
+    }
+
+    /// 离开页面：停播 + 释放音频会话，免得霸着扬声器
+    private func teardownPlayback() {
+        player.pause()
+        removeTimeObserver()
+        isPlaying = false
+        playButton.setImage(UIImage(systemName: "play.fill"), for: .normal)
+        playerView.isHidden = true
+        posterView.isHidden = false
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    /// 播放时指针随播放时间走（合成时间轴 == 主轨 trackT，直接滚到对应位置）
+    private func addTimeObserver() {
+        removeTimeObserver()
+        let interval = CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600)
+        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] t in
+            guard let self = self else { return }
+            let sec = CMTimeGetSeconds(t)
+            self.trackView.scrollTo(time: sec, autoFrame: false)   // autoFrame:false 让选中不被指针抢走
+            if sec >= self.draft.track.total - 0.05 {
+                self.pausePlayback()
+            }
+        }
+    }
+
+    private func removeTimeObserver() {
+        if let o = timeObserver { player.removeTimeObserver(o); timeObserver = nil }
     }
 
     // MARK: - 底栏
@@ -570,4 +713,13 @@ extension BKMainEditorViewController: BKMainTrackViewDelegate {
         refreshBar()
         updateInfo()
     }
+}
+
+// MARK: - 预览播放层
+
+/// 预览视频层（让 UIView 直接持有 AVPlayerLayer）。标准 iOS 写法：
+/// 子类把 layerClass 设成 AVPlayerLayer，比往 layer 上 addSublayer 更稳（布局/生命周期不丢）
+private final class BKPlayerView: UIView {
+    override class var layerClass: AnyClass { AVPlayerLayer.self }
+    var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
 }
