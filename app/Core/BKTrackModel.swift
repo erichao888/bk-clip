@@ -16,6 +16,13 @@
 //    主轨上：local = trackT − T_i → folded = local × speed → foldMap → src
 //    out == trackT（决策 ⑤），先折叠再变速（决策 ④）
 //
+//  【叠加 clip 的存储（决策 ①② 已拍板）】
+//  clip 存 { anchorBlockID, inBlockStart, inBlockEnd }，单位是「该块的 out/时间线坐标」。
+//  ★ 重排/变速的「跟随内容」由 resolveOverlay 按 anchor 实时解析得到，
+//    不需要任何手动平移逻辑（旧的 shiftOverlays/clamp_clips 已删除）。
+//  ★ 变速不缩放（决策 ③）：块内坐标不变 → 绝对时长不变。
+//  ★ 切割块时压在其上的 clip 按切点劈到左右两块（剪映式）。
+//
 //  【本文件只 import Foundation】—— 这样 macOS 上也能编译，
 //  可以进 SPM 测试 target（Core 里 BKTheme / BKDiag / BKCovers 因 import UIKit 进不去）。
 //
@@ -84,16 +91,25 @@ struct BKClipBlock: Codable, Identifiable {
 
 // MARK: - 叠加轨片段（录音 / 画中画）
 
-/// 锚定**输出时间 = trackT**（主轨标记存源时间，两者不要混）
+/// 锚定「某块 + 块内 out/时间线偏移」，不是绝对输出时间。
+/// ★ 重排/变速的「跟随内容」靠 resolveOverlay 按 anchor 实时算出，无需手动平移。
 struct BKOverlayClip: Codable, Identifiable {
     var id: UUID
-    var start: Double
-    var end: Double
+    /// 锚定的主轨块
+    var anchorBlockID: UUID
+    /// 块内起点（out/时间线坐标，0..anchorBlock.timelineDuration）
+    var inBlockStart: Double
+    /// 块内终点
+    var inBlockEnd: Double
 
-    init(id: UUID = UUID(), start: Double, end: Double) {
+    init(id: UUID = UUID(),
+         anchorBlockID: UUID,
+         inBlockStart: Double,
+         inBlockEnd: Double) {
         self.id = id
-        self.start = start
-        self.end = end
+        self.anchorBlockID = anchorBlockID
+        self.inBlockStart = inBlockStart
+        self.inBlockEnd = inBlockEnd
     }
 }
 
@@ -126,6 +142,11 @@ struct BKTrackModel {
             k += 1
         }
         return acc
+    }
+
+    /// 按块 id 找下标
+    func indexOfBlock(id: UUID) -> Int? {
+        blocks.firstIndex { $0.id == id }
     }
 
     // MARK: 坐标映射（两级）
@@ -180,19 +201,34 @@ struct BKTrackModel {
         return startOf(i)
     }
 
+    // MARK: 叠加 clip 解析（★ 跟随内容的核心）
+
+    /// 把 clip 解析成绝对输出时间区间。锚块不存在返回 nil。
+    /// 重排/变速后位置自动正确——因为此处实时读 blocks 的当前排列与时长。
+    func resolveOverlay(_ clip: BKOverlayClip) -> (outStart: Double, outEnd: Double)? {
+        guard let idx = indexOfBlock(id: clip.anchorBlockID) else { return nil }
+        let base = startOf(idx)
+        let tl = blocks[idx].timelineDuration
+        let s = min(max(clip.inBlockStart, 0), tl)
+        let e = min(max(clip.inBlockEnd, s), tl)
+        return (base + s, base + e)
+    }
+
     // MARK: 编辑操作
 
     /// 在 trackT 处切割。返回 false = 落在绿区边界（不切，避免零宽）
     mutating func cut(at t: Double) -> Bool {
         guard !blocks.isEmpty else { return false }
-        let hit = trackToSrc(t)
-        let i = hit.block
+        let i = trackToSrc(t).block
+        let oldStart = startOf(i)
+        let localCut = t - oldStart                 // 块内切割点（out 坐标）
         let b = blocks[i]
         for (j, r) in b.keptRanges.enumerated() {
-            if r.start + BKTrackModel.eps < hit.src && hit.src < r.end - BKTrackModel.eps {
+            let src = trackToSrc(t).src
+            if r.start + BKTrackModel.eps < src && src < r.end - BKTrackModel.eps {
                 var leftKept = Array(b.keptRanges[..<j])
-                leftKept.append(BKRange(r.start, hit.src))
-                var rightKept = [BKRange(hit.src, r.end)]
+                leftKept.append(BKRange(r.start, src))
+                var rightKept = [BKRange(src, r.end)]
                 rightKept.append(contentsOf: b.keptRanges[(j + 1)...])
 
                 let left = BKClipBlock(assetLocalID: b.assetLocalID,
@@ -206,9 +242,34 @@ struct BKTrackModel {
                 guard left.baseDuration > BKTrackModel.minLen,
                       right.baseDuration > BKTrackModel.minLen else { return false }
 
+                let oldID = b.id
+                let leftDur = left.timelineDuration
                 blocks.remove(at: i)
                 blocks.insert(left, at: i)
                 blocks.insert(right, at: i + 1)
+
+                // ★ 切割：压在旧块上的 clip 按 localCut 劈到左右两块
+                var newClips: [BKOverlayClip] = []
+                for c in overlays {
+                    if c.anchorBlockID == oldID {
+                        let le = min(c.inBlockEnd, leftDur)
+                        if le - c.inBlockStart > BKTrackModel.minLen {
+                            newClips.append(BKOverlayClip(id: c.id,
+                                anchorBlockID: left.id,
+                                inBlockStart: c.inBlockStart, inBlockEnd: le))
+                        }
+                        let rs = max(c.inBlockStart, localCut) - leftDur
+                        let re = c.inBlockEnd - leftDur
+                        if re - rs > BKTrackModel.minLen {
+                            newClips.append(BKOverlayClip(id: UUID(),
+                                anchorBlockID: right.id,
+                                inBlockStart: rs, inBlockEnd: re))
+                        }
+                    } else {
+                        newClips.append(c)
+                    }
+                }
+                overlays = newClips
                 normalizeOverlays()
                 return true
             }
@@ -234,17 +295,15 @@ struct BKTrackModel {
         return true
     }
 
-    /// 变速：块时长变化 → 其后的叠加 clip 联动平移
+    /// 变速：★ 不手动平移 clip。clip 锚在该块/其后块上，resolveOverlay 自动跟随。
+    /// 仅需要 normalize 把可能因块变短而越界的 clip 夹回块内。
     mutating func setSpeed(_ sp: Double, blockAt i: Int) {
         guard i >= 0 && i < blocks.count else { return }
-        let oldEnd = startOf(i) + blocks[i].timelineDuration
         blocks[i].speed = sp
-        let newEnd = startOf(i) + blocks[i].timelineDuration
-        shiftOverlays(after: oldEnd, by: newEnd - oldEnd)
         normalizeOverlays()
     }
 
-    /// 主轨拖动重排
+    /// 主轨拖动重排：clip 按 anchor 实时解析 → 自动跟着原块走
     mutating func move(from: Int, to: Int) {
         guard from >= 0 && from < blocks.count, from != to else { return }
         let b = blocks.remove(at: from)
@@ -253,47 +312,34 @@ struct BKTrackModel {
         normalizeOverlays()
     }
 
-    /// 波剪页改了绿区 → 块时长变化 → 联动
+    /// 波剪页改了绿区 → 块时长变化 → 仅 normalize（夹回可能因变短越界的 clip）
     mutating func setKeptRanges(blockAt i: Int, _ newKept: [BKRange]) {
         guard i >= 0 && i < blocks.count else { return }
-        let oldEnd = startOf(i) + blocks[i].timelineDuration
         blocks[i].keptRanges = newKept
-        let newEnd = startOf(i) + blocks[i].timelineDuration
-        shiftOverlays(after: oldEnd, by: newEnd - oldEnd)
         normalizeOverlays()
     }
 
-    // MARK: 叠加轨联动与归一化
+    // MARK: 叠加轨归一化
 
-    /// ★ 联动（技术方案 §11，默认开）：块之后的所有 clip 整体平移 Δ
-    private mutating func shiftOverlays(after boundary: Double, by delta: Double) {
-        for k in overlays.indices {
-            if overlays[k].start >= boundary - BKTrackModel.eps {
-                overlays[k].start += delta
-                overlays[k].end += delta
-            }
-        }
-    }
-
-    /// 排序 → 挤压保序 → 夹回 [0, total] → 丢弃零宽
-    /// ★ 为什么有「挤压」：Δ<0 时后续 clip 左移会撞上前面的，同轨不允许重叠
+    /// 丢弃锚块已不存在的 clip（孤儿）；把块内坐标夹回 [0, 该块 timelineDuration]。
+    /// ★ 这里不做任何「平移/挤压」，跟随由 resolveOverlay 负责。
     private mutating func normalizeOverlays() {
-        let total = self.total
-        overlays.sort { $0.start < $1.start }
         var out: [BKOverlayClip] = []
-        var prevEnd = 0.0
         for c in overlays {
-            let s = min(max(c.start, prevEnd), total)
-            let e = min(max(c.end, s), total)
+            guard let idx = indexOfBlock(id: c.anchorBlockID) else { continue }
+            let tl = blocks[idx].timelineDuration
+            let s = min(max(c.inBlockStart, 0), tl)
+            let e = min(max(c.inBlockEnd, s), tl)
             if e - s > BKTrackModel.minLen {
-                out.append(BKOverlayClip(id: c.id, start: s, end: e))
-                prevEnd = e
+                out.append(BKOverlayClip(id: c.id,
+                    anchorBlockID: c.anchorBlockID,
+                    inBlockStart: s, inBlockEnd: e))
             }
         }
         overlays = out
     }
 
-    // MARK: 自检（对应 verify_v2_model.py 的 I1–I11，供单元测试调用）
+    // MARK: 自检（对应 verify_v2_model.py 的 I1–I12，供单元测试调用）
 
     /// 返回违规描述，空数组 = 全绿
     func validate() -> [String] {
@@ -356,13 +402,26 @@ struct BKTrackModel {
             }
         }
 
-        // I11 叠加 clip
-        var prevEnd: Double?
+        // I11 / I12 叠加 clip（锚定模型）
+        let ids = Set(blocks.map { $0.id })
         for (k, c) in overlays.enumerated() {
-            if c.end - c.start <= BKTrackModel.eps { bad.append("I11 clip\(k) 零宽") }
-            if c.start < -1e-6 || c.end > total + 1e-6 { bad.append("I11 clip\(k) 越出 TOTAL") }
-            if let p = prevEnd, c.start + BKTrackModel.eps < p { bad.append("I11 clip\(k) 重叠/乱序") }
-            prevEnd = c.end
+            guard ids.contains(c.anchorBlockID) else {
+                bad.append("I11 clip\(k) 锚块不存在")
+                continue
+            }
+            guard let idx = indexOfBlock(id: c.anchorBlockID) else { continue }
+            let tl = blocks[idx].timelineDuration
+            if c.inBlockStart < -BKTrackModel.eps || c.inBlockEnd > tl + 1e-6 {
+                bad.append("I11 clip\(k) 块内越界")
+            }
+            if c.inBlockEnd - c.inBlockStart <= BKTrackModel.eps {
+                bad.append("I11 clip\(k) 零宽")
+            }
+            let os = startOf(idx) + c.inBlockStart
+            let oe = startOf(idx) + c.inBlockEnd
+            if os < -1e-6 || oe > total + 1e-6 {
+                bad.append("I11 clip\(k) 越出 TOTAL")
+            }
         }
 
         return bad

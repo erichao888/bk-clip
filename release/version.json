@@ -1,12 +1,13 @@
 {
-  "version": "1.4.8",
-  "build": 1,
-  "date": "2026-10-04",
+  "version": "2.0.0-b3",
+  "build": 3,
+  "date": "2026-10-06",
   "size": "待打包后回填",
   "note": [
-    "修复导出闪退：帧率改为传整数（源 59.95 这类非整数帧率会让编码器崩溃）",
-    "修复上一版误判导致的朝向问题：竖拍素材本来就应该存横看竖，撤销了那个错误的安全降级",
-    "导出前打印完整参数（旋转矩阵/尺寸/帧率/码率），万一再崩看日志最后一条就能定位"
+    "v2.0 数据模型：叠加 clip（录音/画中画）改为锚定块 + 块内 out 偏移",
+    "重排主轨时 clip 自动跟着原块走（剪映式），变速不缩放",
+    "切割块时压在其上的 clip 按切点劈到左右两块",
+    "配套 verify_v2_model.py 5000 轮模糊验证全绿（I1–I12）"
   ],
   "url": "itms-services://?action=download-manifest&url=https%3A%2F%2Fexample.com%2Fbk%2Fmanifest.plist",
   "mandatory": false
