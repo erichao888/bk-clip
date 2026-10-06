@@ -1,2 +1,27 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# 统一 LF 归一：checkout/commit 都使用 LF，覆盖 Windows core.autocrlf 的 CRLF 转换
+* text=auto eol=lf
+
+# 明确二进制：不参与文本归一，防止误伤
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.heic binary
+*.webp binary
+*.icns binary
+*.mp4 binary
+*.mov binary
+*.m4v binary
+*.wav binary
+*.mp3 binary
+*.aac binary
+*.zip binary
+*.ipa binary
+*.pdf binary
+*.ttf binary
+*.otf binary
+*.car binary
+*.a binary
+*.o binary
+*.so binary
+*.dylib binary
