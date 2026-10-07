@@ -32,7 +32,15 @@ import AVFoundation
 // MARK: - 底栏上下文
 
 /// 三条轨（底栏显示哪套键由它决定）
-private enum BKTrackKind { case main, pip, rec }
+// ⚠️ 2026-10-07 删除：此处原有一份 `private enum BKTrackKind { case main, pip, rec }`，
+//    与 app/UI/BKBottomBar.swift:54 的 `enum BKTrackKind` 构成重名 ——
+//    后者是 internal（进 module 名字空间），前者是 private，
+//    于是该名字在本文件内产生**两条解析路径**，CI 报：
+//        error: invalid redeclaration of 'BKTrackKind'
+//        error: 'BKTrackKind' is ambiguous for type lookup in this context
+//    （注意：两处**都是** private/fileprivate 时并不会冲突，
+//      BKMainTrackView/BKTrackView 里的 TrackCanvas 就是那种合法情形。）
+//    两版定义逐字相同（case main, pip, rec），用到它的成员都是 private，零语义变化。
 
 /// 底栏一个键
 private struct BKBottomKey {
